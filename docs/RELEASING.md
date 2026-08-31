@@ -137,6 +137,35 @@ before it builds anything, and fails the release if the three disagree. That is
 the one failure mode the whole ordering above exists to prevent, and it is
 cheap to assert.
 
+## Third-party notices
+
+MIT and every other permissive licence in the tree put the same duty on whoever
+distributes a copy: the copyright and permission notices travel with it. The
+source on GitHub satisfies that. The installer is also a copy, and on its own it
+does not — so the notices ship with the build, in the About panel (brief §236).
+
+Regenerate them when dependencies change, not every release:
+
+```powershell
+cargo about generate --format json > third-party-notices.json
+```
+
+Then add by hand the three things `cargo-about` and `cargo deny` both miss,
+because they read crate metadata and these are vendored C source:
+
+- **SQLCipher**, BSD-3-clause, © Zetetic LLC — via `libsqlite3-sys`, which
+  declares only `MIT` for its own wrapper.
+- **OpenSSL 3.6.3**, Apache-2.0 — vendored by `openssl-src` under
+  `bundled-sqlcipher-vendored-openssl`.
+- The **OpenSSL advertising acknowledgement** required by `aws-lc-sys`'s
+  licence, which by its wording reaches the marketing page as well as the app:
+
+  > This product includes software developed by the OpenSSL Project for use in
+  > the OpenSSL Toolkit.
+
+[`docs/LICENSING.md`](LICENSING.md) has the reasoning and the per-licence
+obligations.
+
 ### Before announcing
 
 Install the previous version in a clean Windows 11 VM and open the app. It

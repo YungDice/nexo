@@ -27,6 +27,7 @@ pub mod limits;
 pub mod media;
 pub mod posts;
 pub mod profiles;
+pub mod reports;
 pub mod state;
 pub mod storage;
 pub mod stream;
@@ -52,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .merge(media::router())
         .merge(profiles::router())
         .merge(posts::router())
+        .merge(reports::router())
         .merge(stream::router())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

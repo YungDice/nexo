@@ -103,6 +103,9 @@ fn unique_handle() -> String {
 struct Party {
     token: String,
     handle: String,
+    /// The device this account is in MLS as. Needed to tell a replaced device
+    /// from a live one.
+    device_id: Uuid,
     provider: OpenMlsRustCrypto,
     credential: CredentialWithKey,
     signer: SignatureKeyPair,
@@ -137,6 +140,7 @@ async fn register(app: &axum::Router) -> Party {
     Party {
         token: session["access_token"].as_str().unwrap().to_string(),
         handle,
+        device_id,
         provider,
         credential,
         signer,
@@ -163,6 +167,113 @@ async fn a_garbage_token_is_refused() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// S1: a reinstall must not leave peers claiming packages for a dead device.
+///
+/// Signing in on a machine with no local store generates a *fresh* identity
+/// keypair, so login inserts a second device row rather than updating the
+/// first. Before this was fixed both stayed live, and `claim_key_package`
+/// reached across every device a handle owned — so a peer starting a
+/// conversation was handed a Welcome addressed to the device that had been
+/// replaced. It could never be read, and the claimer was told it succeeded.
+#[tokio::test]
+async fn a_replaced_device_stops_handing_out_key_packages() {
+    let Some(app) = app().await else {
+        eprintln!("skipping: DATABASE_URL not set");
+        return;
+    };
+
+    // A device, with packages published against it.
+    let alice = register(&app).await;
+    let old_packages =
+        generate_key_packages(&alice.provider, &alice.signer, alice.credential.clone(), 2).unwrap();
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/keypackages",
+        Some(&alice.token),
+        Some(json!({ "key_packages": old_packages.iter().map(|p| hex(p)).collect::<Vec<_>>() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // The same account signs in from a machine with no store: a new identity
+    // key, and therefore a different device.
+    let reinstalled = IdentityKeypair::generate();
+    let (status, session) = call(
+        &app,
+        "POST",
+        "/v1/auth/login",
+        None,
+        Some(json!({
+            "handle": alice.handle,
+            "pw_verifier": hex(&[7u8; 32]),
+            "identity_pubkey": hex(&reinstalled.public_bytes()),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login after a reinstall: {session}");
+    let new_device: Uuid = session["device_id"].as_str().unwrap().parse().unwrap();
+    assert_ne!(
+        new_device, alice.device_id,
+        "a fresh identity key is a different device -- that is the premise"
+    );
+
+    // A peer tries to start a conversation. There is nothing to claim: the old
+    // device's packages went with it, and the new one has published none.
+    let bob = register(&app).await;
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/v1/keypackages/{}", alice.handle),
+        Some(&bob.token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a retired device's packages must not be handed out -- they address a device \
+         that will never read them, and the claimer is told nothing is wrong"
+    );
+
+    // Once the new device publishes, claiming works again. Without this the
+    // fix would be indistinguishable from breaking the endpoint.
+    let fresh =
+        generate_key_packages(&alice.provider, &alice.signer, alice.credential.clone(), 1).unwrap();
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/keypackages",
+        Some(session["access_token"].as_str().unwrap()),
+        Some(json!({ "key_packages": [hex(&fresh[0])] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, claimed) = call(
+        &app,
+        "GET",
+        &format!("/v1/keypackages/{}", alice.handle),
+        Some(&bob.token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the live device can still be reached"
+    );
+    assert_eq!(
+        claimed["device_id"]
+            .as_str()
+            .unwrap()
+            .parse::<Uuid>()
+            .unwrap(),
+        new_device,
+        "and the package claimed belongs to it"
+    );
 }
 
 #[tokio::test]

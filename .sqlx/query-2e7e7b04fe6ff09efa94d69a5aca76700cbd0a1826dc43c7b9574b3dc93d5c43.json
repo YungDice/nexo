@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE key_packages SET consumed_at = now()\n         WHERE id = (\n             SELECT kp.id\n             FROM key_packages kp\n             JOIN devices d ON d.id = kp.device_id\n             JOIN users u ON u.id = d.user_id\n             WHERE u.handle = $1\n               AND kp.consumed_at IS NULL\n               -- A retired device cannot read what is addressed to it. Handing\n               -- out its package would produce a Welcome that silently goes\n               -- nowhere, and the claimer is told it succeeded.\n               AND d.retired_at IS NULL\n             ORDER BY kp.created_at\n             FOR UPDATE SKIP LOCKED\n             LIMIT 1\n         )\n         RETURNING data, device_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "data",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "device_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "2e7e7b04fe6ff09efa94d69a5aca76700cbd0a1826dc43c7b9574b3dc93d5c43"
+}

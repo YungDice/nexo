@@ -1,4 +1,4 @@
-import { useApp } from "../../app/store";
+import { markVerified } from "../../lib/conversations";
 import { fileSize, relativeTime, safetyNumber } from "../../lib/format";
 import { confirm, notify, pickSavePath } from "../../lib/native";
 import { asConversationError, saveAttachmentTo } from "../../lib/conversations";
@@ -21,9 +21,12 @@ import { Panel } from "../../components/ui/Surface";
 export function ContextPanel({
   conversation,
   now,
+  onRefresh,
 }: {
   conversation: Conversation;
   now: Date;
+  /// Re-reads conversations after something changed their stored state.
+  onRefresh: () => Promise<void>;
 }) {
   // Attachments live inside the messages in the encrypted store and nothing
   // indexes them per conversation yet, so there is nothing to list. Empty is
@@ -126,7 +129,7 @@ export function ContextPanel({
           </ul>
         </section>
 
-        <Encryption conversation={conversation} />
+        <Encryption conversation={conversation} onVerified={onRefresh} />
       </div>
     </Panel>
   );
@@ -173,9 +176,15 @@ function SectionHead({
  * undismissable banner §4.1 asks for is for a key that *changes*, and that
  * arrives with real keys in M4.
  */
-function Encryption({ conversation }: { conversation: Conversation }) {
+function Encryption({
+  conversation,
+  onVerified,
+}: {
+  conversation: Conversation;
+  /// Re-reads the conversation, so the mark shows without waiting for a sync.
+  onVerified: () => Promise<void>;
+}) {
   const groups = safetyNumber(conversation.safetyDigits);
-  const toggleFlag = useApp((s) => s.toggleConversationFlag);
   return (
     <section className="space-y-3">
       <SectionHead label="Encryption" onSeeAll={false} />
@@ -216,7 +225,12 @@ function Encryption({ conversation }: { conversation: Conversation }) {
               "Mark as verified",
               "Only confirm this if you've actually compared these digits with the other side and they matched.",
             );
-            if (ok) toggleFlag(conversation.id, "verified");
+            if (ok) {
+              // Recorded in the encrypted store against the keys that are
+              // current right now, so a later change clears it by itself.
+              await markVerified(conversation.id);
+              await onVerified();
+            }
           }}
           className="text-accent-soft text-meta transition-opacity duration-[var(--motion-fast)] hover:opacity-80"
         >

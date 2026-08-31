@@ -162,6 +162,17 @@ impl std::fmt::Debug for Conversation {
     }
 }
 
+/// One member of a group: where they sit, who they are, and what signs for them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberInfo {
+    /// Position in the ratchet tree. What `remove_member` takes.
+    pub leaf_index: u32,
+    /// The device this member is. MLS names devices, not accounts.
+    pub device_id: DeviceId,
+    /// The key that signs this member's messages.
+    pub signature_key: Vec<u8>,
+}
+
 impl Conversation {
     /// Creates a new conversation with this device as its only member.
     ///
@@ -266,6 +277,39 @@ impl Conversation {
         self.group
             .members()
             .map(|m| m.signature_key.to_vec())
+            .collect()
+    }
+
+    /// Every member, with the leaf they sit at and the device they are.
+    ///
+    /// [`member_identity_keys`](Self::member_identity_keys) answers "what keys
+    /// sign here", which is all a safety number needs. This answers "who is
+    /// here", which is what two other things need and cannot get anywhere else:
+    ///
+    /// - **Noticing a key change.** Comparing keys alone cannot tell a member
+    ///   whose key changed from a member who left and another who joined. The
+    ///   device id is what makes the comparison per-person.
+    /// - **Removing someone.** `remove_member` takes a leaf index, and every
+    ///   caller above this has a handle. The credential carries the device id
+    ///   (see [`credential_for`]), and the server maps handles to devices, so
+    ///   this is the half that closes the gap.
+    ///
+    /// A credential that is not a `BasicCredential`, or whose identity is not a
+    /// device id, is skipped rather than guessed at: it is not a member this
+    /// build put there, and inventing an identity for it would be worse than
+    /// omitting it.
+    pub fn members(&self) -> Vec<MemberInfo> {
+        self.group
+            .members()
+            .filter_map(|m| {
+                let credential = BasicCredential::try_from(m.credential).ok()?;
+                let device_id = DeviceId::from_slice(credential.identity()).ok()?;
+                Some(MemberInfo {
+                    leaf_index: m.index.u32(),
+                    device_id,
+                    signature_key: m.signature_key.to_vec(),
+                })
+            })
             .collect()
     }
 

@@ -452,6 +452,10 @@ pub fn start_group_with<T: Transport>(
     ctx.store.set_conversation_title(&id, title)?;
     ctx.store.set_conversation_meta(&id, "group", handles)?;
     mls_state::save(ctx.provider, ctx.store)?;
+    // A baseline, so the first sync sees these keys as already known. Without
+    // it every new conversation would report a key change on its second pass,
+    // and a warning that fires every time is one nobody reads.
+    record_membership(ctx, conversation_id)?;
     Ok(conversation_id)
 }
 
@@ -516,6 +520,10 @@ pub fn add_to<T: Transport>(
             &outbox::new_message_id(),
         )?;
     }
+
+    // The new member is a peer from now on, and their key at this moment is
+    // the baseline the next sync compares against.
+    record_membership(ctx, conversation_id)?;
 
     mls_state::save(ctx.provider, ctx.store)?;
     Ok(())
@@ -768,7 +776,9 @@ fn title_from(members: &[String], me: Option<&str>) -> Option<String> {
 }
 
 /// What a sync did.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+// No longer `Copy`: `key_changes` is a `Vec`. Nothing moved it by value
+// where a borrow would not do.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SyncOutcome {
     /// New messages written to the local history.
     pub messages: usize,
@@ -777,6 +787,15 @@ pub struct SyncOutcome {
     /// Envelopes that could not be processed. Rule 7: counted and reported,
     /// never silently skipped.
     pub failed: usize,
+    /// Devices whose identity key is not the one last seen here.
+    ///
+    /// The event the verification ceremony exists for. Empty is the normal
+    /// answer; anything in it means somebody's key changed under a device this
+    /// conversation already knew, which is either a reinstall or the attack
+    /// safety numbers are compared to catch. The client cannot tell those
+    /// apart, and neither can this -- which is why it is reported rather than
+    /// judged.
+    pub key_changes: Vec<String>,
     /// Envelopes that predate this device joining, and so are not its to
     /// apply.
     ///
@@ -927,10 +946,49 @@ pub fn sync<T: Transport>(
         }
     }
 
+    // Who is in the group now, and whether anyone's key moved.
+    //
+    // After the commits, because a commit is what changes membership; before
+    // the state is saved, so a crash between them re-runs a comparison rather
+    // than skipping one. Recording is idempotent -- the same members produce
+    // no changes the second time.
+    outcome.key_changes = record_membership(ctx, conversation_id)?;
+
     ctx.store.set_conversation_cursor(&id, cursor)?;
     mls_state::save(ctx.provider, ctx.store)?;
 
     Ok(outcome)
+}
+
+/// Writes down who is in a conversation, and returns whose key changed.
+///
+/// Called after every sync and after this device creates or joins a group, so
+/// that the first sight of a peer is a baseline rather than a change. A
+/// conversation this device is not in yields nothing: there is no membership to
+/// read, and reporting that as "no changes" would be indistinguishable from
+/// reading an empty group.
+fn record_membership<T: Transport>(
+    ctx: &Context<'_, T>,
+    conversation_id: ConversationId,
+) -> Result<Vec<String>, ConversationError> {
+    let Some(conversation) = Conversation::load(ctx.provider, conversation_id, now_ms())? else {
+        return Ok(Vec::new());
+    };
+
+    // Our own device is not a peer. Warning someone that their own key changed
+    // when they reinstalled would be noise, and it is the one key they have no
+    // way to verify out of band with themselves.
+    let me = ctx.store.account()?.map(|a| a.device_id);
+    let peers: Vec<(String, Vec<u8>)> = conversation
+        .members()
+        .into_iter()
+        .map(|m| (m.device_id.to_string(), m.signature_key))
+        .filter(|(device_id, _)| Some(device_id) != me.as_ref())
+        .collect();
+
+    Ok(ctx
+        .store
+        .record_peers(&conversation_id.to_string(), &peers, now_ms())?)
 }
 
 /// Renames a conversation, for everyone in it.

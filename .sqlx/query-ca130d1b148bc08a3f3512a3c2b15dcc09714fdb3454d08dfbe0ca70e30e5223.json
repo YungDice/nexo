@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.id, c.kind, c.epoch,\n                (SELECT max(e.id) FROM envelopes e WHERE e.conversation_id = c.id)\n                    AS latest_envelope_id,\n                ARRAY(\n                    SELECT u.handle::TEXT\n                    FROM conversation_members cm\n                    JOIN users u ON u.id = cm.user_id\n                    WHERE cm.conversation_id = c.id\n                    ORDER BY u.handle\n                ) AS \"members!: Vec<String>\",\n                COALESCE((\n                    SELECT json_agg(json_build_object(\n                               'handle', u.handle::TEXT,\n                               'device_id', d.id\n                           ) ORDER BY u.handle)\n                    FROM conversation_members cm\n                    JOIN users u ON u.id = cm.user_id\n                    JOIN devices d ON d.user_id = u.id AND d.retired_at IS NULL\n                    WHERE cm.conversation_id = c.id\n                ), '[]'::json) AS \"member_devices!: sqlx::types::Json<Vec<MemberDevice>>\"\n         FROM conversations c\n         JOIN conversation_members m ON m.conversation_id = c.id\n         WHERE m.user_id = $1\n         ORDER BY c.created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "epoch",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "latest_envelope_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "members!: Vec<String>",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "member_devices!: sqlx::types::Json<Vec<MemberDevice>>",
+        "type_info": "Json"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "ca130d1b148bc08a3f3512a3c2b15dcc09714fdb3454d08dfbe0ca70e30e5223"
+}

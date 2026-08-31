@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE devices SET retired_at = now()\n         WHERE user_id = $1 AND id <> $2 AND retired_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c4c5ff2c2d3e68a8e6238ab7702f553577ab52fcfe8e7babf0c53b164b258539"
+}

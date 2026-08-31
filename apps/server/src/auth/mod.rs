@@ -306,8 +306,8 @@ async fn login(
     let mut tx = state.db.begin().await?;
 
     // One device per account (PLAN.md, "Decisions taken"): logging in here
-    // revokes whatever was signed in before, and the device row is replaced
-    // rather than added to.
+    // revokes whatever was signed in before, and retires the device it
+    // replaces.
     sqlx::query!(
         "UPDATE refresh_tokens SET revoked_at = now()
          WHERE user_id = $1 AND revoked_at IS NULL",
@@ -320,13 +320,58 @@ async fn login(
         "INSERT INTO devices (user_id, identity_pubkey, last_seen)
          VALUES ($1, $2, now())
          ON CONFLICT (identity_pubkey)
-           DO UPDATE SET last_seen = now()
+           DO UPDATE SET last_seen = now(), retired_at = NULL
          RETURNING id",
         user.id,
         &identity_pubkey[..]
     )
     .fetch_one(&mut *tx)
     .await?;
+
+    // Every *other* device for this account is now retired.
+    //
+    // This is what the comment above claimed for a long time and the code did
+    // not do. Signing in on a machine with no local store generates a fresh
+    // identity keypair, so the upsert above inserted a second row rather than
+    // updating the first, and both stayed live.
+    //
+    // Retiring here rather than deleting: the old row is still referenced by
+    // `conversation_members` and by envelopes that were addressed to it, and a
+    // delete would either cascade history away or fail on the constraint.
+    sqlx::query!(
+        "UPDATE devices SET retired_at = now()
+         WHERE user_id = $1 AND id <> $2 AND retired_at IS NULL",
+        user.id,
+        device.id
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Its unclaimed KeyPackages go with it. They are the live half of the
+    // problem: `claim_key_package` reaches across every device a handle owns,
+    // so leaving these would keep handing peers a Welcome addressed to a
+    // device that will never read it -- and the sender is told the claim
+    // succeeded, which is why nobody could see what had gone wrong.
+    //
+    // Deleted rather than marked consumed: consumed means "somebody has this
+    // one", and nobody does.
+    let orphaned = sqlx::query!(
+        "DELETE FROM key_packages
+         WHERE consumed_at IS NULL
+           AND device_id IN (
+               SELECT id FROM devices WHERE user_id = $1 AND retired_at IS NOT NULL
+           )",
+        user.id
+    )
+    .execute(&mut *tx)
+    .await?;
+    if orphaned.rows_affected() > 0 {
+        tracing::info!(
+            user_id = user.id,
+            count = orphaned.rows_affected(),
+            "discarded key packages belonging to a retired device"
+        );
+    }
 
     let session = issue_session(&mut tx, &state, user.id, device.id).await?;
     tx.commit().await?;

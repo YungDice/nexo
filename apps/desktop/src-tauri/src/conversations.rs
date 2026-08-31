@@ -36,6 +36,20 @@ pub struct ConversationView {
     /// Whether a picture has been set, so the UI asks for one only when there
     /// is one to fetch and decrypt.
     pub has_avatar: bool,
+    /// Whether every current key here was confirmed out of band.
+    ///
+    /// Read from the encrypted store, not from the WebView. It used to be a
+    /// `localStorage` boolean, which meant it survived a key change it knew
+    /// nothing about -- a mark that outlived the thing it was about.
+    pub verified: bool,
+    /// Whether somebody's key changed under a device already known here.
+    ///
+    /// Stays true until acknowledged, across restarts. That persistence is the
+    /// point: a warning that vanishes when the window closes is one that can be
+    /// missed by closing the window.
+    pub key_changed: bool,
+    /// When it changed, so the warning can say when rather than just that.
+    pub key_changed_at_ms: Option<i64>,
 }
 
 /// One message, decrypted.
@@ -126,6 +140,12 @@ pub struct SyncView {
     /// say *whether* anything happened, these say *where*. Only conversations
     /// with at least one new message appear.
     pub arrivals: Vec<ArrivalView>,
+    /// Conversations where somebody's key changed during this sync.
+    ///
+    /// Separate from `arrivals` because it is not about messages arriving. The
+    /// UI raises a banner on these; the totals above decide nothing here.
+    #[serde(default)]
+    pub key_changed: Vec<String>,
 }
 
 /// New messages in one conversation, from one sync pass.
@@ -245,6 +265,12 @@ pub async fn list_conversations(
                 ConversationErrorView::from(conversations::ConversationError::Store(e))
             })?;
             let last = messages.last();
+            // The peers, for the verification state below. Only the derived
+            // booleans cross the IPC boundary -- the keys themselves stay in
+            // Rust, like every other key in this process (rule 2).
+            let peers = client.store.peers(&conversation.id).map_err(|e| {
+                ConversationErrorView::from(conversations::ConversationError::Store(e))
+            })?;
             out.push(ConversationView {
                 conversation_id: conversation.id,
                 // What the server said, once `discover` has asked. Everything
@@ -257,6 +283,15 @@ pub async fn list_conversations(
                 last_message_at_ms: last.map(|m| m.sent_at_ms),
                 last_message_outgoing: last.map(|m| m.sender_device_id.is_none()),
                 has_avatar: conversation.has_avatar,
+                // Verified means every peer's current key is one that was
+                // confirmed. A conversation with no peers yet is not verified:
+                // there is nothing to have compared.
+                verified: !peers.is_empty()
+                    && peers
+                        .iter()
+                        .all(|p| p.verified_key.as_deref() == Some(p.identity_key.as_slice())),
+                key_changed: peers.iter().any(|p| p.changed_at_ms.is_some()),
+                key_changed_at_ms: peers.iter().filter_map(|p| p.changed_at_ms).max(),
             });
         }
 
@@ -492,6 +527,50 @@ pub struct AttachmentEntry {
     pub outgoing: bool,
 }
 
+/// Marks every current key in a conversation as verified.
+///
+/// Called after two people have compared safety numbers out of band. It records
+/// *which* keys were confirmed rather than a flag, so the mark cannot survive
+/// one of them changing -- which is the whole failure this replaced.
+#[tauri::command]
+pub async fn mark_verified(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        client
+            .store
+            .mark_verified(&id.to_string())
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
+        tracing::info!(%id, "safety numbers marked verified");
+        Ok(())
+    })
+    .await
+}
+
+/// Dismisses a key-change warning.
+///
+/// Deliberately not the same as verifying. Being told a key changed and
+/// choosing to carry on is not the same as having compared the new one, and
+/// one button doing both would manufacture a verification nobody performed.
+#[tauri::command]
+pub async fn acknowledge_key_change(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        client
+            .store
+            .acknowledge_key_change(&id.to_string())
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
+        tracing::info!(%id, "key change acknowledged without verifying");
+        Ok(())
+    })
+    .await
+}
+
 /// Sends a message.
 #[tauri::command]
 pub async fn send_message(
@@ -545,6 +624,11 @@ pub async fn sync_conversation(
             commits: outcome.commits,
             failed: outcome.failed,
             arrivals,
+            key_changed: if outcome.key_changes.is_empty() {
+                Vec::new()
+            } else {
+                vec![id.to_string()]
+            },
         })
     })
     .await
@@ -579,6 +663,7 @@ pub async fn sync_all(state: State<'_, ClientState>) -> Result<SyncView, Convers
             commits: 0,
             failed: 0,
             arrivals: Vec::new(),
+            key_changed: Vec::new(),
         };
         for id in ids {
             let Ok(parsed) = id.parse::<ConversationId>() else {
@@ -591,6 +676,12 @@ pub async fn sync_all(state: State<'_, ClientState>) -> Result<SyncView, Convers
                     total.messages += outcome.messages;
                     total.commits += outcome.commits;
                     total.failed += outcome.failed;
+                    if !outcome.key_changes.is_empty() {
+                        // Named, not counted. The UI raises a banner on the
+                        // conversation, and a total would say nothing about
+                        // which one to look at.
+                        total.key_changed.push(id.clone());
+                    }
                     if outcome.messages > 0 {
                         total.arrivals.push(ArrivalView {
                             conversation_id: id,

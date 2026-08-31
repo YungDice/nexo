@@ -78,6 +78,14 @@ export interface Conversation {
   epoch: number;
   /** §4.1: safety numbers verified by hand. Unverified is not "insecure". */
   verified: boolean;
+  /**
+   * Somebody's key changed under a device this conversation already knew.
+   *
+   * Either they reinstalled or the server substituted a key. Nothing here can
+   * tell those apart, which is why it is shown rather than resolved.
+   */
+  keyChanged?: boolean;
+  keyChangedAtMs?: number | null;
   /** 60 digits, rendered as 12 groups of 5 (§4.1). */
   safetyDigits: string;
   /** Whether the conversation has a picture of its own. */

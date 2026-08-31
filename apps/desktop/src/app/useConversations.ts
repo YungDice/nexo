@@ -41,7 +41,11 @@ function toConversation(wire: WireConversation): Conversation {
     memberIds: wire.members,
     unread: 0,
     epoch: 0,
-    verified: false,
+    // From the encrypted store now, not from a browser boolean. The old one
+    // survived key changes it knew nothing about.
+    verified: wire.verified,
+    keyChanged: wire.key_changed,
+    keyChangedAtMs: wire.key_changed_at_ms,
     safetyDigits: "",
     muted: false,
     hasAvatar: wire.has_avatar,

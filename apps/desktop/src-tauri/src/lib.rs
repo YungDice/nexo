@@ -91,6 +91,8 @@ pub fn run() {
             conversations::start_group,
             conversations::add_to_conversation,
             conversations::rename_conversation,
+            conversations::mark_verified,
+            conversations::acknowledge_key_change,
             conversations::set_conversation_avatar,
             conversations::conversation_avatar,
             conversations::attachment_data_url,

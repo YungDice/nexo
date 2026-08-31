@@ -18,7 +18,6 @@ export type Route = "home" | "messages" | "profile" | "settings";
  */
 export interface ConversationOverride {
   mutedUntil?: number | null;
-  verified?: boolean;
   pinned?: boolean;
 }
 
@@ -252,7 +251,7 @@ interface AppState {
   setListDrawer: (open: boolean) => void;
   setHomeSearchQuery: (query: string) => void;
   setBackdropReport: (report: BackdropReport) => void;
-  toggleConversationFlag: (id: string, flag: "verified" | "pinned") => void;
+  toggleConversationFlag: (id: string, flag: "pinned") => void;
   /** `until` is a timestamp, or `null` to unmute. `Infinity` never expires. */
   muteConversation: (id: string, until: number | null) => void;
   /** Drops every choice made about a conversation that no longer exists. */

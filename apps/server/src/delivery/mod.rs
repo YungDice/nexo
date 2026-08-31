@@ -267,7 +267,12 @@ async fn claim_key_package(
              FROM key_packages kp
              JOIN devices d ON d.id = kp.device_id
              JOIN users u ON u.id = d.user_id
-             WHERE u.handle = $1 AND kp.consumed_at IS NULL
+             WHERE u.handle = $1
+               AND kp.consumed_at IS NULL
+               -- A retired device cannot read what is addressed to it. Handing
+               -- out its package would produce a Welcome that silently goes
+               -- nowhere, and the claimer is told it succeeded.
+               AND d.retired_at IS NULL
              ORDER BY kp.created_at
              FOR UPDATE SKIP LOCKED
              LIMIT 1
@@ -312,6 +317,26 @@ pub struct ConversationView {
     /// accounts, so without this there is nothing to call it but "Unnamed".
     #[serde(default)]
     pub members: Vec<String>,
+    /// The same members, paired with the device each is in the group as.
+    ///
+    /// MLS names a *device*, not an account (`crates/crypto/src/mls.rs`), so a
+    /// client holding a handle has no way to say which leaf in the tree that
+    /// handle is — which is what removing someone requires. This is the only
+    /// place the mapping exists: the server already knows both halves, and
+    /// stating them together is what lets a client act on a member by name.
+    ///
+    /// Retired devices are excluded. A member whose device was replaced is
+    /// still in the group at their old leaf, but there is nothing useful a
+    /// client can do with a leaf whose owner will never read from it again.
+    #[serde(default)]
+    pub member_devices: Vec<MemberDevice>,
+}
+
+/// One member, and the device they are in the group as.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemberDevice {
+    pub handle: String,
+    pub device_id: Uuid,
 }
 
 async fn create_conversation(
@@ -393,6 +418,8 @@ async fn create_conversation(
                 epoch: existing.epoch,
                 latest_envelope_id: existing.latest_envelope_id,
                 members: request.members.clone(),
+                // Filled by the next `list_conversations`, as above.
+                member_devices: Vec::new(),
             }),
         ));
     }
@@ -451,6 +478,10 @@ async fn create_conversation(
             // The creator already knows who it invited; this echoes it back
             // rather than reading the rows it just wrote.
             members: request.members.clone(),
+            // The devices are not known here without a read the creator does
+            // not need: it already holds the KeyPackages it claimed, and the
+            // next `list_conversations` fills this in.
+            member_devices: Vec::new(),
         }),
     ))
 }
@@ -528,7 +559,17 @@ async fn list_conversations(
                     JOIN users u ON u.id = cm.user_id
                     WHERE cm.conversation_id = c.id
                     ORDER BY u.handle
-                ) AS \"members!: Vec<String>\"
+                ) AS \"members!: Vec<String>\",
+                COALESCE((
+                    SELECT json_agg(json_build_object(
+                               'handle', u.handle::TEXT,
+                               'device_id', d.id
+                           ) ORDER BY u.handle)
+                    FROM conversation_members cm
+                    JOIN users u ON u.id = cm.user_id
+                    JOIN devices d ON d.user_id = u.id AND d.retired_at IS NULL
+                    WHERE cm.conversation_id = c.id
+                ), '[]'::json) AS \"member_devices!: sqlx::types::Json<Vec<MemberDevice>>\"
          FROM conversations c
          JOIN conversation_members m ON m.conversation_id = c.id
          WHERE m.user_id = $1
@@ -546,6 +587,7 @@ async fn list_conversations(
                 epoch: r.epoch,
                 latest_envelope_id: r.latest_envelope_id,
                 members: r.members,
+                member_devices: r.member_devices.0,
             })
             .collect(),
     ))

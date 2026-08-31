@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM key_packages\n         WHERE consumed_at IS NULL\n           AND device_id IN (\n               SELECT id FROM devices WHERE user_id = $1 AND retired_at IS NOT NULL\n           )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b3803b70c841c93638486daa51752a21e000e0f7c717e6d42acb6e235567a3fa"
+}

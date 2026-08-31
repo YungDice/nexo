@@ -3,7 +3,12 @@ import { useApp } from "../../app/store";
 import { useConversations } from "../../app/useConversations";
 import { useLayout } from "../../app/useLayout";
 import type { Conversation, Message } from "../../lib/types";
-import { asConversationError, startConversation, startGroup } from "../../lib/conversations";
+import {
+  acknowledgeKeyChange,
+  asConversationError,
+  startConversation,
+  startGroup,
+} from "../../lib/conversations";
 import { Button } from "../../components/ui/Button";
 import { Field } from "../../components/ui/Controls";
 import { Callout, EmptyState } from "../../components/ui/Feedback";
@@ -26,6 +31,12 @@ export function MessagesPage({ now }: { now: Date }) {
   const contextOpen = useApp((s) => s.contextPanelOpen);
   const drawerOpen = useApp((s) => s.listDrawerOpen);
   const setDrawer = useApp((s) => s.setListDrawer);
+  const toggleContext = useApp((s) => s.toggleContextPanel);
+  // Open, not toggle: the banner's button means "show me the safety number",
+  // and toggling would hide it for anyone who already had the panel open.
+  const openContextPanel = () => {
+    if (!contextOpen) toggleContext();
+  };
   const open = useApp((s) => s.openConversation);
   const overrides = useApp((s) => s.conversationOverrides);
   const layout = useLayout();
@@ -97,6 +108,11 @@ export function MessagesPage({ now }: { now: Date }) {
           now={now}
           onSend={live.send}
           onSendFile={live.sendFile}
+          onCompare={openContextPanel}
+          onDismissKeyChange={async () => {
+            await acknowledgeKeyChange(conversation.id);
+            await live.refresh();
+          }}
         />
       ) : (
         <Panel tone="content" edge={false} className="flex flex-1 items-center justify-center">
@@ -113,7 +129,7 @@ export function MessagesPage({ now }: { now: Date }) {
       )}
 
       {showContext && conversation && !starting ? (
-        <ContextPanel conversation={conversation} now={now} />
+        <ContextPanel conversation={conversation} now={now} onRefresh={live.refresh} />
       ) : null}
     </div>
   );
@@ -269,6 +285,8 @@ function ChatPane({
   now,
   onSend,
   onSendFile,
+  onCompare,
+  onDismissKeyChange,
 }: {
   conversation: Conversation;
   messages: Message[];
@@ -276,9 +294,37 @@ function ChatPane({
   now: Date;
   onSend: (body: string) => Promise<void>;
   onSendFile: (path: string, body?: string) => Promise<void>;
+  /// Opens the details panel, where the safety number is.
+  onCompare: () => void;
+  /// Clears the warning without claiming anything was verified.
+  onDismissKeyChange: () => Promise<void>;
 }) {
   return (
     <Panel tone="content" edge={false} className="flex min-w-0 flex-1 flex-col">
+      {/* Not dismissable by ignoring it, and not by restarting: the flag lives
+          in the encrypted store, so closing the window does not clear it.
+          THREAT-MODEL 4 names a key-substituting server as the adversary safety
+          numbers exist to catch, and this is the only moment a user is told
+          there is something to compare. */}
+      {conversation.keyChanged ? (
+        <Callout tone="danger" icon="alert" className="mx-3 mt-3">
+          <p className="font-medium">The safety number here has changed.</p>
+          <p className="mt-1 leading-relaxed">
+            Somebody in this conversation is using a new key. That happens when
+            they reinstall Nexo or move to another machine — and it is also what
+            an attacker substituting a key would look like. Nexo cannot tell
+            those apart. Compare the safety number with them before sending
+            anything you would not want a stranger to read.
+          </p>
+          <div className="mt-2.5 flex gap-2">
+            <Button variant="primary" onClick={onCompare}>
+              Compare safety numbers
+            </Button>
+            <Button onClick={() => void onDismissKeyChange()}>Dismiss</Button>
+          </div>
+        </Callout>
+      ) : null}
+
       {problem ? (
         <Callout tone="warning" icon="alert" className="mx-3 mt-3">
           {problem}

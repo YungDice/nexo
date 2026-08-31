@@ -26,6 +26,16 @@ export interface Conversation {
   last_message_outgoing: boolean | null;
   /** Whether a picture has been set. */
   has_avatar: boolean;
+  /** Whether every current key here was confirmed out of band. */
+  verified: boolean;
+  /**
+   * Whether somebody's key changed under a device already known here.
+   *
+   * Survives a restart, deliberately: a warning that vanishes with the window
+   * can be dismissed by closing the window.
+   */
+  key_changed: boolean;
+  key_changed_at_ms: number | null;
 }
 
 export interface Message {
@@ -249,6 +259,26 @@ export interface AttachmentEntry {
  */
 export function conversationAttachments(conversationId: string): Promise<AttachmentEntry[]> {
   return invoke<AttachmentEntry[]>("conversation_attachments", { conversationId });
+}
+
+/**
+ * Records that the safety numbers here were compared out of band.
+ *
+ * Stores *which* keys were confirmed, so the mark cannot outlive one of them
+ * changing — which is exactly what the old `localStorage` boolean did.
+ */
+export function markVerified(conversationId: string): Promise<void> {
+  return invoke<void>("mark_verified", { conversationId });
+}
+
+/**
+ * Dismisses a key-change warning without claiming anything was verified.
+ *
+ * Kept separate from `markVerified` on purpose: being told a key changed and
+ * carrying on is not the same as having compared the new one.
+ */
+export function acknowledgeKeyChange(conversationId: string): Promise<void> {
+  return invoke<void>("acknowledge_key_change", { conversationId });
 }
 
 /** Adds someone to a conversation that already exists. */

@@ -35,7 +35,7 @@ pub type StoredIdentity = (Zeroizing<Vec<u8>>, Vec<u8>);
 /// The schema version this build writes and expects.
 ///
 /// One constant, so a migration and the test that checks it cannot disagree.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// The file name the store always uses, under the app data directory.
 pub const STORE_FILE_NAME: &str = "store.db";
@@ -348,6 +348,43 @@ impl EncryptedStore {
                      through_envelope_id INTEGER NOT NULL
                  );
                  PRAGMA user_version = 7;
+                 COMMIT;",
+            )?;
+        }
+
+        if version < 8 {
+            // Who is in each conversation, and what key they sign with.
+            //
+            // The table that makes a key change *noticeable*. Without it the
+            // safety number is computed on demand from the live group and
+            // compared against nothing, so the verification ceremony is
+            // one-shot: someone who compared digits in week one is never told
+            // when the answer changes in week two -- which is exactly the
+            // key-substituting server that THREAT-MODEL 4 is about.
+            //
+            // `verified_key` holds the key that was verified rather than a
+            // boolean. A flag cannot survive the thing it refers to changing;
+            // storing the key means "verified" always answers *which* key, and
+            // a later comparison is meaningful rather than a guess.
+            //
+            // Keyed by device, not by handle: MLS names devices, and a person
+            // who reinstalls is a new device with a new key. That is the case
+            // this table exists to notice.
+            self.connection.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS conversation_peers (
+                     conversation_id TEXT NOT NULL,
+                     device_id       TEXT NOT NULL,
+                     identity_key    BLOB NOT NULL,
+                     first_seen_ms   INTEGER NOT NULL,
+                     -- The key the user confirmed out of band, if they ever did.
+                     verified_key    BLOB,
+                     -- When the key last changed under a device we already knew.
+                     -- Cleared by acknowledging, not by the change going stale.
+                     changed_at_ms   INTEGER,
+                     PRIMARY KEY (conversation_id, device_id)
+                 );
+                 PRAGMA user_version = 8;
                  COMMIT;",
             )?;
         }
@@ -879,6 +916,110 @@ impl EncryptedStore {
         }
     }
 
+    /// Every peer this device has seen in a conversation.
+    pub fn peers(&self, conversation_id: &str) -> Result<Vec<StoredPeer>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT device_id, identity_key, first_seen_ms, verified_key, changed_at_ms
+             FROM conversation_peers WHERE conversation_id = ?1",
+        )?;
+        let rows = statement.query_map([conversation_id], |row| {
+            Ok(StoredPeer {
+                device_id: row.get(0)?,
+                identity_key: row.get(1)?,
+                first_seen_ms: row.get(2)?,
+                verified_key: row.get(3)?,
+                changed_at_ms: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Records the members of a conversation, noticing any key that changed.
+    ///
+    /// Returns the device ids whose key is not the one last seen. A changed key
+    /// clears `verified_key` in the same statement: whatever was confirmed out
+    /// of band was confirmed about the *old* key, and leaving the mark in place
+    /// would carry a human's assurance across to a key they never saw.
+    ///
+    /// One transaction, because a half-applied membership update would either
+    /// lose a change or report one twice.
+    pub fn record_peers(
+        &self,
+        conversation_id: &str,
+        peers: &[(String, Vec<u8>)],
+        now_ms: i64,
+    ) -> Result<Vec<String>, StoreError> {
+        let tx = self.connection.unchecked_transaction()?;
+        let mut changed = Vec::new();
+
+        for (device_id, identity_key) in peers {
+            let previous: Option<Vec<u8>> = tx
+                .query_row(
+                    "SELECT identity_key FROM conversation_peers
+                     WHERE conversation_id = ?1 AND device_id = ?2",
+                    rusqlite::params![conversation_id, device_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+
+            match previous {
+                // Known, and unchanged. Nothing to say.
+                Some(seen) if seen == *identity_key => {}
+                // Known, and different. This is the event.
+                Some(_) => {
+                    tx.execute(
+                        "UPDATE conversation_peers
+                         SET identity_key = ?3, changed_at_ms = ?4, verified_key = NULL
+                         WHERE conversation_id = ?1 AND device_id = ?2",
+                        rusqlite::params![conversation_id, device_id, identity_key, now_ms],
+                    )?;
+                    changed.push(device_id.clone());
+                }
+                // First sight. A baseline, not a change -- reporting it would
+                // fire on every new conversation and teach people to ignore it.
+                None => {
+                    tx.execute(
+                        "INSERT INTO conversation_peers
+                             (conversation_id, device_id, identity_key, first_seen_ms)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        rusqlite::params![conversation_id, device_id, identity_key, now_ms],
+                    )?;
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// Marks every current key in a conversation as verified.
+    ///
+    /// Records the key itself rather than a flag, so the mark cannot outlive
+    /// what it refers to.
+    pub fn mark_verified(&self, conversation_id: &str) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE conversation_peers
+             SET verified_key = identity_key, changed_at_ms = NULL
+             WHERE conversation_id = ?1",
+            rusqlite::params![conversation_id],
+        )?;
+        Ok(())
+    }
+
+    /// Dismisses a key-change warning without claiming the new key is verified.
+    ///
+    /// Deliberately separate from [`mark_verified`](Self::mark_verified). Being
+    /// told about a change and choosing to carry on is not the same as having
+    /// compared digits, and collapsing the two would let one click produce a
+    /// verification nobody performed.
+    pub fn acknowledge_key_change(&self, conversation_id: &str) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE conversation_peers SET changed_at_ms = NULL WHERE conversation_id = ?1",
+            rusqlite::params![conversation_id],
+        )?;
+        Ok(())
+    }
+
     /// Records what kind of conversation this is and who is in it.
     ///
     /// Creates the row if it does not exist, like the title and cursor setters,
@@ -914,6 +1055,24 @@ impl EncryptedStore {
         )?;
         Ok(())
     }
+}
+
+/// One peer in a conversation, as this device last saw them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPeer {
+    /// The device, which is what MLS names.
+    pub device_id: String,
+    /// The key currently signing for them.
+    pub identity_key: Vec<u8>,
+    /// When this device first saw them.
+    pub first_seen_ms: i64,
+    /// The key that was confirmed out of band, if one ever was. Compare it
+    /// with `identity_key`: equal means verified, different means the mark is
+    /// stale, absent means never verified.
+    pub verified_key: Option<Vec<u8>>,
+    /// When the key last changed under a device already known. `None` once
+    /// acknowledged.
+    pub changed_at_ms: Option<i64>,
 }
 
 /// A conversation as the local store knows it.
@@ -1325,6 +1484,144 @@ mod tests {
             store.mls_state().unwrap().is_none(),
             "and no ratchet state either"
         );
+    }
+
+    /// First sight is a baseline, not an event.
+    ///
+    /// Reporting it would fire on every new conversation, and a warning that
+    /// fires every time is one nobody reads.
+    #[test]
+    fn the_first_sight_of_a_peer_is_not_a_change() {
+        let dir = TempDir::new("peers-first");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+
+        let changed = store
+            .record_peers("c1", &[("dev-a".into(), vec![1, 2, 3])], 100)
+            .unwrap();
+        assert!(changed.is_empty(), "a baseline is not a change");
+        assert_eq!(store.peers("c1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn seeing_the_same_key_again_is_not_a_change() {
+        let dir = TempDir::new("peers-same");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        let peers = [("dev-a".to_string(), vec![1, 2, 3])];
+
+        store.record_peers("c1", &peers, 100).unwrap();
+        let changed = store.record_peers("c1", &peers, 200).unwrap();
+        assert!(changed.is_empty(), "recording is idempotent");
+    }
+
+    /// The event the whole table exists for.
+    #[test]
+    fn a_key_that_changes_under_a_known_device_is_reported() {
+        let dir = TempDir::new("peers-change");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+
+        store
+            .record_peers("c1", &[("dev-a".into(), vec![1, 2, 3])], 100)
+            .unwrap();
+        let changed = store
+            .record_peers("c1", &[("dev-a".into(), vec![9, 9, 9])], 200)
+            .unwrap();
+
+        assert_eq!(changed, vec!["dev-a".to_string()]);
+        let peer = &store.peers("c1").unwrap()[0];
+        assert_eq!(peer.identity_key, vec![9, 9, 9], "the new key is stored");
+        assert_eq!(peer.changed_at_ms, Some(200));
+    }
+
+    /// The reason the mark is a key and not a boolean.
+    ///
+    /// A flag would survive the key it was about. Verification is a statement
+    /// concerning one specific key, and it must not be carried across to a key
+    /// the person never saw.
+    #[test]
+    fn a_key_change_clears_a_verification_it_predates() {
+        let dir = TempDir::new("peers-verify");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+
+        store
+            .record_peers("c1", &[("dev-a".into(), vec![1, 2, 3])], 100)
+            .unwrap();
+        store.mark_verified("c1").unwrap();
+        assert_eq!(
+            store.peers("c1").unwrap()[0].verified_key.as_deref(),
+            Some(&[1u8, 2, 3][..]),
+            "verifying records which key was confirmed"
+        );
+
+        store
+            .record_peers("c1", &[("dev-a".into(), vec![9, 9, 9])], 200)
+            .unwrap();
+        assert_eq!(
+            store.peers("c1").unwrap()[0].verified_key,
+            None,
+            "the mark does not survive the key it was about"
+        );
+    }
+
+    /// Acknowledging is not verifying.
+    #[test]
+    fn acknowledging_clears_the_warning_without_claiming_verification() {
+        let dir = TempDir::new("peers-ack");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+
+        store
+            .record_peers("c1", &[("dev-a".into(), vec![1, 2, 3])], 100)
+            .unwrap();
+        store
+            .record_peers("c1", &[("dev-a".into(), vec![9, 9, 9])], 200)
+            .unwrap();
+
+        store.acknowledge_key_change("c1").unwrap();
+        let peer = &store.peers("c1").unwrap()[0];
+        assert_eq!(peer.changed_at_ms, None, "the warning is dismissed");
+        assert_eq!(
+            peer.verified_key, None,
+            "but nothing has been verified by dismissing it"
+        );
+    }
+
+    /// The warning has to outlive the window it was shown in.
+    #[test]
+    fn a_key_change_survives_a_reopen() {
+        let dir = TempDir::new("peers-reopen");
+        {
+            let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+            store
+                .record_peers("c1", &[("dev-a".into(), vec![1, 2, 3])], 100)
+                .unwrap();
+            store
+                .record_peers("c1", &[("dev-a".into(), vec![9, 9, 9])], 200)
+                .unwrap();
+        }
+
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        assert_eq!(
+            store.peers("c1").unwrap()[0].changed_at_ms,
+            Some(200),
+            "closing the app must not dismiss a key-change warning"
+        );
+    }
+
+    #[test]
+    fn peers_are_kept_per_conversation() {
+        let dir = TempDir::new("peers-scope");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+
+        store
+            .record_peers("c1", &[("dev-a".into(), vec![1])], 100)
+            .unwrap();
+        store
+            .record_peers("c2", &[("dev-a".into(), vec![2])], 100)
+            .unwrap();
+
+        // The same device with a different key in another conversation is not
+        // a change: they are separate groups and separate observations.
+        assert_eq!(store.peers("c1").unwrap()[0].identity_key, vec![1]);
+        assert_eq!(store.peers("c2").unwrap()[0].identity_key, vec![2]);
     }
 
     #[test]

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.epoch\n         FROM conversations c\n         JOIN conversation_members m ON m.conversation_id = c.id\n         WHERE c.id = $1 AND m.user_id = $2\n         FOR UPDATE OF c",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "epoch",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "30b4e0aba22df15bb506e4ccc8c1dfd4bed00227eb6e387e6592869a2aae45aa"
+}

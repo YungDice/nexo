@@ -1,0 +1,103 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.id, p.author_id, p.body, p.media_keys, p.title, p.kind, p.link_url,\n                    (EXTRACT(EPOCH FROM p.created_at) * 1000)::BIGINT AS \"created_at_ms!\",\n                    u.handle::TEXT AS \"handle!\", u.display_name, u.avatar_key,\n                    COALESCE(v.score, 0) AS \"score!\",\n                    COALESCE(mv.value, 0::SMALLINT) AS \"my_vote!\",\n                    COALESCE(c.total, 0) AS \"comment_count!\"\n             FROM posts p\n             JOIN users u ON u.id = p.author_id\n             LEFT JOIN (SELECT post_id, SUM(value)::BIGINT AS score\n                        FROM post_votes GROUP BY post_id) v ON v.post_id = p.id\n             LEFT JOIN post_votes mv ON mv.post_id = p.id AND mv.user_id = $3\n             LEFT JOIN (SELECT post_id, COUNT(*)::BIGINT AS total\n                        FROM post_comments WHERE deleted_at IS NULL\n                        GROUP BY post_id) c ON c.post_id = p.id\n             WHERE p.deleted_at IS NULL\n               AND NOT (p.author_id = ANY($4))\n             ORDER BY COALESCE(v.score, 0) DESC, p.id DESC\n             LIMIT $2 OFFSET $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "author_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "body",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "media_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "link_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at_ms!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "handle!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "avatar_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "score!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "my_vote!",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 13,
+        "name": "comment_count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      null,
+      null,
+      false,
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7387689a772ac82fef6c1b0616f7253a3a6d9e5e4888c785b43b4fb5887dbf08"
+}

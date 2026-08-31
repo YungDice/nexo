@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO devices (user_id, identity_pubkey, last_seen)\n         VALUES ($1, $2, now())\n         ON CONFLICT (identity_pubkey)\n           DO UPDATE SET last_seen = now()\n         RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c43bee58c0266e976b10037701127db380686f3650098de14eee5e7f7bb6f509"
+}

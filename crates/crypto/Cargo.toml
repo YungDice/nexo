@@ -1,0 +1,20 @@
+[package]
+name = "nexo-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "OpenMLS wrapper for Nexo. All key material lives here and in no other crate."
+
+[dependencies]
+rand.workspace = true
+sha2.workspace = true
+aes-gcm.workspace = true
+ed25519-dalek.workspace = true
+nexo-protocol.workspace = true
+openmls.workspace = true
+openmls_traits.workspace = true
+openmls_rust_crypto.workspace = true
+openmls_basic_credential.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true

@@ -1,0 +1,165 @@
+﻿[workspace]
+resolver = "3"
+members = [
+    "crates/protocol",
+    "crates/crypto",
+    "crates/platform",
+    "crates/store",
+    "crates/client",
+    "apps/server",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.6"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+repository = "https://github.com/dice-fit/nexo"
+
+# Rule 8: every direct dependency is pinned to an exact version.
+# Cargo.lock is committed, so transitive dependencies are pinned too.
+# cargo-deny and cargo-audit gate every bump in CI.
+[workspace.dependencies]
+# --- shared ---
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+thiserror = "=2.0.20"
+anyhow = "=1.0.104"
+uuid = { version = "=1.25.0", features = ["v4", "serde"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
+zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
+# Only for handing image bytes to the WebView as a data: URL. The CSP allows
+# `data:` and no remote host, so this is how a picture reaches the page at all.
+base64 = "=0.22.1"
+
+# --- async / server ---
+tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "signal"] }
+axum = { version = "=0.8.9", features = ["ws"] }
+tower-http = { version = "=0.7.0", features = ["trace"] }
+
+# --- database ---
+# 0.8.x, not the newer 0.9.0: this is the settled line, and rule 8 values
+# predictability over recency.
+sqlx = { version = "=0.8.6", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "macros",
+    "migrate",
+    # devices.id and refresh_tokens.id are UUID columns; without this the
+    # query! macros refuse to map them.
+    "uuid",
+] }
+# Development convenience: reads a .env at the repo root so `pnpm dev:server`
+# needs no exported variables. The server has no .env -- systemd's
+# EnvironmentFile supplies the real values -- so it is a no-op there.
+dotenvy = "=0.15.7"
+
+# --- client HTTP (behind nexo-client's `http` feature) ---
+# ureq, not reqwest: this client is deliberately blocking (Argon2id, SQLCipher
+# and DPAPI are all blocking anyway), so an async stack would add a runtime and
+# a function colour for nothing. Its rustls default rides on `ring`, which the
+# Tauri tree already carries, so the desktop gains no new crypto stack and no
+# cmake dependency.
+ureq = { version = "=3.4.0", features = ["json"] }
+
+# --- client local store (M2) ---
+# SQLCipher, whole-file encryption of messages, MLS state and cached profiles
+# (brief 4.3). `vendored-openssl` is why Strawberry Perl is a prerequisite:
+# OpenSSL's Configure is a Perl script, and the one inside Git for Windows is
+# too cut down to run it (PLAN.md risk 3).
+#
+# Pinned to 0.32.1, five releases back, and NOT by choice: rusqlite and
+# sqlx-sqlite both link the native `sqlite3` library, and cargo permits only
+# one package to do that. sqlx-sqlite 0.8.6 requires libsqlite3-sys ^0.30.1,
+# which is rusqlite 0.32.1 exactly. sqlx-sqlite is never compiled -- only the
+# "postgres" driver is enabled -- but an optional dependency still takes part
+# in resolution, so the conflict is real.
+#
+# The way out is sqlx 0.9, whose sqlite driver accepts libsqlite3-sys up to
+# 0.38 and would free rusqlite as far as 0.37. Worth taking at the next sqlx
+# bump; not worth destabilising a tested 0.8.6 for today.
+rusqlite = { version = "=0.32.1", features = [
+    "bundled-sqlcipher-vendored-openssl",
+] }
+
+# --- auth (M2) ---
+# Argon2id, per BRIEF 4.1. 0.5.3 rather than 0.6.0-rc: this repo does not put
+# release candidates in the crypto path -- the same rule that kept OpenMLS on
+# stable 0.8.1.
+argon2 = "=0.5.3"
+# rand 0.8 specifically, matching the rand_core 0.6 that argon2's SaltString
+# expects. A newer rand would be a second copy in the tree for no gain.
+rand = "=0.8.7"
+# EdDSA JWTs (BRIEF 5.2: deliberately not HS256, so this is a keypair rather
+# than a shared secret).
+#
+# `aws_lc_rs` rather than the `rust_crypto` backend, which bundles ed25519-dalek
+# and `rsa` into one inseparable feature -- and `rsa` carries RUSTSEC-2023-0071.
+# aws-lc-rs is already compiled here for the S3 SDK's TLS, so this adds a
+# backend we already trust instead of a second one. `use_pem` reads the
+# jwt-ed25519.pem that docs/TUTORIAL.md 5 tells you to generate.
+jsonwebtoken = { version = "=11.0.0", default-features = false, features = [
+    "aws_lc_rs",
+    "use_pem",
+] }
+# jsonwebtoken's DecodingKey wants a *public* key PEM, and `openssl genpkey`
+# emits only the private half. ed25519-dalek parses the PKCS#8 and derives the
+# public key, so one file stays one file. Already compiled here via
+# openmls_basic_credential; the `pkcs8` feature is the only addition.
+ed25519-dalek = { version = "=2.2.0", features = ["pkcs8", "pem"] }
+sha2 = "=0.10.9"
+
+# --- object storage (Hetzner S3, M6) ---
+# Only aws-sdk-s3, deliberately not aws-config: aws-config exists to *discover*
+# credentials from ambient environment, profile files and the EC2/IMDS metadata
+# endpoint. Nexo supplies both credential pairs explicitly, and a server that
+# never asks a metadata service who it is cannot be tricked by an SSRF into
+# using someone else's. Credentials, Region and BehaviorVersion are re-exported
+# from aws_sdk_s3::config, so the extra crate buys nothing.
+aws-sdk-s3 = { version = "=1.143.0", default-features = false, features = [
+    "rt-tokio",
+    "default-https-client",
+    "behavior-version-latest",
+] }
+
+# --- MLS (RFC 9420). Exact pins: this is the crypto core. ---
+# Attachment encryption (brief 5.3). Already in the tree via
+# openmls_rust_crypto, so this pins the same version rather than adding a
+# second AES-GCM implementation -- which is exactly the kind of thing deny.toml
+# exists to prevent.
+aes-gcm = "=0.10.3"
+
+openmls = "=0.8.1"
+openmls_rust_crypto = "=0.5.1"
+openmls_traits = "=0.5.0"
+openmls_basic_credential = "=0.5.0"
+
+# --- desktop shell ---
+# `tray-icon` is the one feature turned on: Â§8 wants a tray icon with an
+# unread badge and close-to-tray. Everything else stays off -- a Tauri feature
+# is a capability compiled into the binary, and the smallest set that does the
+# job is the one that ships.
+tauri = { version = "=2.11.5", features = ["tray-icon", "image-png"] }
+tauri-build = "=2.6.3"
+
+# --- workspace-internal ---
+# Versioned as well as pathed: a bare path dependency resolves to "*", which
+# cargo-deny correctly rejects as a wildcard.
+nexo-protocol = { path = "crates/protocol", version = "0.1.0" }
+nexo-crypto = { path = "crates/crypto", version = "0.1.0" }
+nexo-platform = { path = "crates/platform", version = "0.1.0" }
+nexo-store = { path = "crates/store", version = "0.1.0" }
+nexo-client = { path = "crates/client", version = "0.1.0" }
+
+[profile.release]
+# Rule 8 / Â§4.5: keep release builds lean and strip symbols that could
+# leak local paths. `debug_assertions = false` is what compiles out the
+# `debug!` logging that Â§4.5 forbids from shipping.
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

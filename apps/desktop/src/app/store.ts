@@ -1,0 +1,385 @@
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+
+import type { Account } from "../lib/auth";
+import type { BackdropReport } from "../lib/native";
+
+export type Route = "home" | "messages" | "profile" | "settings";
+
+/**
+ * What a person has decided about one conversation.
+ *
+ * `mutedUntil` is a timestamp rather than a flag, so "mute for an hour" is the
+ * same mechanism as "mute" and not a second one bolted beside it. `Infinity`
+ * is the honest way to say "until I say otherwise": it compares correctly
+ * against `Date.now()` without a special case, and `JSON.stringify` turns it
+ * into `null`, which is why the reader below treats a missing number as
+ * "muted, no end" rather than as "not muted".
+ */
+export interface ConversationOverride {
+  mutedUntil?: number | null;
+  verified?: boolean;
+  pinned?: boolean;
+}
+
+/**
+ * Whether a conversation is muted at this moment.
+ *
+ * Pure and exported, because the sync agent and the list have to agree about
+ * it: one decides whether to interrupt someone, the other draws the bell, and
+ * a disagreement between them is a person being interrupted by a conversation
+ * that says it is silent.
+ */
+export function isMuted(override: ConversationOverride | undefined, now: number): boolean {
+  if (!override || !("mutedUntil" in override)) return false;
+  const until = override.mutedUntil;
+  // `null` is what `Infinity` becomes on the way through JSON. Both mean the
+  // same thing here: muted with no end.
+  if (until === null || until === undefined) return true;
+  return until > now;
+}
+
+/**
+ * UI state.
+ *
+ * Deliberately only UI state. Zustand holds what the chrome needs to draw
+ * itself — which page is open, which conversation is selected, which panels
+ * are showing — and nothing that would be a secret. Message plaintext arrives
+ * from Rust over IPC and lives in component state for as long as it is on
+ * screen (rule 2). Feed and profile data become TanStack Query cache at M7.
+ *
+ * Only `preferences` persists (M8), through localStorage. Everything else is
+ * rebuilt on launch, which is the point: a route or a selected conversation
+ * is session state, and preferences are the settings a person chose and
+ * expects to find again. Nothing persisted here is a secret — the encrypted
+ * store on the Rust side holds those, and WebView storage never does.
+ */
+/**
+ * §6.4 asked for dark only in v0.1 with "a theme seam in place". The seam is
+ * now used: every surface, line and fill is a named token, so a theme is a
+ * different set of values under the same names and no component knows which
+ * one it is in. "System" follows the OS through prefers-color-scheme, which is
+ * the absence of an explicit choice rather than a third palette.
+ */
+export type Theme = "system" | "light" | "dark";
+
+/** §8: minutes of idleness before the app locks, or never. */
+export type LockTimeout = "never" | "5" | "15" | "60";
+
+export interface Preferences {
+  theme: Theme;
+  /**
+   * Plan risk 9: `backdrop-filter` is expensive on integrated GPUs and some
+   * people turn transparency off in Windows. The opaque fallback is a real
+   * setting, not just an @supports branch.
+   */
+  glass: boolean;
+  /**
+   * N14: the accent, as a hue in degrees.
+   *
+   * A hue rather than a colour: §7.4 asks for 4.5:1, and a freely chosen RGB
+   * value fails that as often as it passes. Fixing saturation and lightness
+   * and letting only the hue move keeps every accent as legible as the violet
+   * it replaces.
+   */
+  accentHue: number;
+  /**
+   * N15: how far the background goes toward black, 0 to 1.
+   *
+   * 0 is the palette as designed; 1 is pure black in dark mode and pure white
+   * in light. Every surface moves by the same proportion, so the steps between
+   * panels survive at the far end.
+   */
+  contrast: number;
+  /**
+   * N16: how strong the glass blur is, 0 to 1.
+   *
+   * Zero is a real off, not a blur of nothing: `backdrop-filter` costs the GPU
+   * whatever its radius, which is the entire reason `glass` was a switch
+   * (plan risk 9). At zero the property is dropped rather than set to 0px.
+   */
+  glassStrength: number;
+  /**
+   * Which desktop backdrop to ask Windows for.
+   *
+   * A choice rather than something the app works out, and that is deliberate.
+   * Whether a backdrop becomes visible depends on the Windows build, on the
+   * machine's graphics, and on how the window was created -- and from Windows
+   * 11 build 22523 on, the API that sets it does not report failure. So the app
+   * asks for what it is told to ask for and says so; the person in front of the
+   * window is the only one who can see the answer.
+   *
+   * `acrylic` blurs live content behind the window. `mica` tints from the
+   * wallpaper and does *not* change when something moves behind the app.
+   */
+  backdrop: "off" | "acrylic" | "mica" | "tabbed" | "blur";
+  readReceipts: boolean;
+  typingIndicators: boolean;
+  presence: boolean;
+  /** §4.5: previews are generated client-side and are off by default. */
+  linkPreviews: boolean;
+  /** §8: what a Windows toast is allowed to say. */
+  notificationDetail: "full" | "sender" | "none";
+  /**
+   * §8: auto-lock after this much idleness. The timer runs in the WebView —
+   * idleness is only observable where the input events are — but the locking
+   * itself happens in Rust (see `lock.rs` for what it does and does not
+   * guarantee).
+   */
+  lockTimeout: LockTimeout;
+  /**
+   * §8: closing the window hides to the tray instead of quitting. Off by
+   * default — an app that keeps running after being closed has surprised its
+   * user. The value is pushed to Rust, where the close handler lives.
+   */
+  closeToTray: boolean;
+  /**
+   * Whether Home keeps the most recent conversation beside the feed.
+   *
+   * On by default: the feed column is 660px wide, so on any window that fits
+   * the panel there was empty margin doing nothing. Off gives the feed the
+   * whole width, which is the right answer on a narrow window or for someone
+   * who wants to read without a conversation in the corner of their eye.
+   */
+  homeChat: boolean;
+  /**
+   * How wide that conversation panel is, in pixels.
+   *
+   * A preference rather than a fixed number because the right answer depends
+   * on the monitor and on what the person is doing: reading the feed with a
+   * conversation in the corner of the eye wants a narrow panel, answering
+   * someone while half-watching the feed wants a wide one. The splitter on
+   * Home writes this when the drag ends.
+   *
+   * Bounds are enforced where it is used, not here: the ceiling is whatever
+   * is left after the feed keeps its minimum, and that depends on the window.
+   */
+  homeChatWidth: number;
+}
+
+export const defaultPreferences: Preferences = {
+  theme: "system",
+  glass: true,
+  // The violet the app shipped with, as a hue.
+  accentHue: 255,
+  contrast: 0,
+  glassStrength: 1,
+  backdrop: "acrylic",
+  readReceipts: true,
+  typingIndicators: true,
+  presence: true,
+  linkPreviews: false,
+  notificationDetail: "sender",
+  lockTimeout: "15",
+  closeToTray: false,
+  homeChat: true,
+  homeChatWidth: 380,
+};
+
+interface AppState {
+  /**
+   * The signed-in account.
+   *
+   * Identity, not credentials: a handle, a display name, and two ids. No
+   * token, no key, nothing MLS knows about (rule 2) -- the same four fields
+   * the sign-in screen already put on the screen. It lives here because the
+   * feed, the profile, and the composer all need to know who "you" are, and
+   * threading it through four levels of props to get there is how a prop ends
+   * up being passed to somewhere it should not go.
+   *
+   * `null` before the session is restored, and again after signing out.
+   */
+  account: Account | null;
+  /**
+   * §8: whether the app is locked. Mirrors the Rust side, which holds the
+   * truth — locking drops the store connection and the MLS state over there,
+   * and this flag only decides that the lock screen is what gets drawn.
+   */
+  locked: boolean;
+  route: Route;
+  /**
+   * Whose profile the Profile tab is showing.
+   *
+   * `null` means your own. Set when a handle is clicked anywhere, and cleared
+   * by the rail — going to Profile from the rail means *your* profile, which
+   * is what that button has always meant.
+   */
+  viewingHandle: string | null;
+  activeConversationId: string;
+  /** User intent for the context panel, before the viewport gets a say. */
+  contextPanelOpen: boolean;
+  /** The conversation list as an overlay, below the 860px breakpoint. */
+  listDrawerOpen: boolean;
+  /** The feed's search box, opened from the Home title row. */
+  homeSearchQuery: string;
+  /**
+   * What Windows said when the desktop backdrop was last asked for.
+   *
+   * Session state, not a preference: it describes what happened, not what
+   * anyone chose. Settings prints it beside the chooser so the answer is a
+   * fact on the screen rather than something the app quietly assumed.
+   */
+  backdropReport: BackdropReport | null;
+  /**
+   * Per-conversation choices, kept apart from the conversation data itself so
+   * that flipping one never mutates what came from the store.
+   *
+   * **Persisted**, unlike almost everything else here. Muting a conversation
+   * and finding it loud again after a restart is not a setting, it is a
+   * suggestion — and pinning that forgets itself is worse than no pinning. The
+   * unread ledger next door is deliberately *not* persisted, and the
+   * difference is the point: this is what a person decided, that is what the
+   * server happened to deliver.
+   */
+  conversationOverrides: Record<string, ConversationOverride>;
+  /**
+   * Unread incoming messages per conversation (§8).
+   *
+   * Fed by the sync agent from each sync's arrivals, cleared when the
+   * conversation is actually on screen. Not persisted: on a restart the
+   * history is there to read, and a stale badge that survives it would claim
+   * unread messages nobody can find.
+   */
+  unread: Record<string, number>;
+  preferences: Preferences;
+  setAccount: (account: Account | null) => void;
+  setLocked: (locked: boolean) => void;
+  go: (route: Route) => void;
+  /** Opens somebody's profile. `null` opens your own. */
+  viewProfile: (handle: string | null) => void;
+  openConversation: (id: string) => void;
+  toggleContextPanel: () => void;
+  setListDrawer: (open: boolean) => void;
+  setHomeSearchQuery: (query: string) => void;
+  setBackdropReport: (report: BackdropReport) => void;
+  toggleConversationFlag: (id: string, flag: "verified" | "pinned") => void;
+  /** `until` is a timestamp, or `null` to unmute. `Infinity` never expires. */
+  muteConversation: (id: string, until: number | null) => void;
+  /** Drops every choice made about a conversation that no longer exists. */
+  forgetConversation: (id: string) => void;
+  addUnread: (id: string, count: number) => void;
+  clearUnread: (id: string) => void;
+  setPreference: <K extends keyof Preferences>(key: K, value: Preferences[K]) => void;
+}
+
+export const useApp = create<AppState>()(
+  persist(
+    (set) => ({
+      account: null,
+      locked: false,
+      route: "messages",
+      viewingHandle: null,
+      activeConversationId: "",
+      contextPanelOpen: true,
+      listDrawerOpen: false,
+      homeSearchQuery: "",
+      backdropReport: null,
+      conversationOverrides: {},
+      unread: {},
+      preferences: defaultPreferences,
+      setAccount: (account) => set({ account }),
+      setLocked: (locked) => set({ locked }),
+      go: (route) =>
+        // Clearing the handle is the point: the rail's Profile button means
+        // your own profile, and leaving somebody else's there would make it
+        // mean "whoever you last looked at".
+        set({ route, listDrawerOpen: false, viewingHandle: null }),
+      viewProfile: (handle) =>
+        set({ route: "profile", viewingHandle: handle, listDrawerOpen: false }),
+      openConversation: (id) => set({ activeConversationId: id, listDrawerOpen: false }),
+      toggleContextPanel: () => set((s) => ({ contextPanelOpen: !s.contextPanelOpen })),
+      setListDrawer: (open) => set({ listDrawerOpen: open }),
+      setHomeSearchQuery: (query) => set({ homeSearchQuery: query }),
+      toggleConversationFlag: (id, flag) =>
+        set((s) => {
+          const current = s.conversationOverrides[id] ?? {};
+          const next = current[flag] ?? false;
+          return {
+            conversationOverrides: {
+              ...s.conversationOverrides,
+              [id]: { ...current, [flag]: !next },
+            },
+          };
+        }),
+      muteConversation: (id, until) =>
+        set((s) => {
+          const { [id]: current, ...rest } = s.conversationOverrides;
+          if (until === null) {
+            // Unmuting drops the key rather than storing `undefined`, so an
+            // override that holds nothing else stops taking up space in the
+            // persisted blob.
+            const { mutedUntil: _drop, ...kept } = current ?? {};
+            return Object.keys(kept).length === 0
+              ? { conversationOverrides: rest }
+              : { conversationOverrides: { ...rest, [id]: kept } };
+          }
+          return {
+            conversationOverrides: {
+              ...s.conversationOverrides,
+              [id]: { ...(current ?? {}), mutedUntil: until },
+            },
+          };
+        }),
+      forgetConversation: (id) =>
+        set((s) => {
+          const { [id]: _override, ...overrides } = s.conversationOverrides;
+          const { [id]: _unread, ...unread } = s.unread;
+          return {
+            conversationOverrides: overrides,
+            unread,
+            // A conversation that is gone cannot stay open behind the list.
+            activeConversationId: s.activeConversationId === id ? "" : s.activeConversationId,
+          };
+        }),
+      addUnread: (id, count) =>
+        set((s) => ({
+          unread: { ...s.unread, [id]: (s.unread[id] ?? 0) + count },
+        })),
+      clearUnread: (id) =>
+        set((s) => {
+          if (!(id in s.unread)) return s;
+          const { [id]: _, ...rest } = s.unread;
+          return { unread: rest };
+        }),
+      setBackdropReport: (backdropReport) => set({ backdropReport }),
+      setPreference: (key, value) =>
+        set((s) => ({ preferences: { ...s.preferences, [key]: value } })),
+    }),
+    {
+      // Only the preferences survive a restart (M8). `merge` keeps defaults
+      // for keys a stored blob from an older build does not have, so adding a
+      // preference never resets the ones already chosen.
+      name: "nexo-preferences",
+      partialize: (state) => ({
+        preferences: state.preferences,
+        conversationOverrides: state.conversationOverrides,
+      }),
+      merge: (persisted, current) => {
+        const blob =
+          persisted && typeof persisted === "object"
+            ? (persisted as {
+                preferences?: Partial<Preferences>;
+                conversationOverrides?: Record<string, ConversationOverride>;
+              })
+            : {};
+        return {
+          ...current,
+          preferences: { ...current.preferences, ...blob.preferences },
+          // Merged by hand like the preferences, and for the same reason: a
+          // blob written by an older build has no key for whatever was added
+          // since, and spreading `current` first is what keeps the defaults
+          // instead of erasing them.
+          conversationOverrides: {
+            ...current.conversationOverrides,
+            ...blob.conversationOverrides,
+          },
+        };
+      },
+    },
+  ),
+);
+
+/** Every unread message across every conversation, for the rail and the tray. */
+export function totalUnread(unread: Record<string, number>): number {
+  return Object.values(unread).reduce((total, count) => total + count, 0);
+}

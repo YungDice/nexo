@@ -1,0 +1,249 @@
+import { useApp } from "../../app/store";
+import { fileSize, relativeTime, safetyNumber } from "../../lib/format";
+import { confirm, notify, pickSavePath } from "../../lib/native";
+import { asConversationError, saveAttachmentTo } from "../../lib/conversations";
+import { fieldFor, fileTone } from "../../lib/palette";
+import type { Attachment, Conversation } from "../../lib/types";
+import { IconButton } from "../../components/ui/Button";
+import { Icon } from "../../components/ui/Icon";
+import { Panel } from "../../components/ui/Surface";
+
+/**
+ * The 280px context panel (§6.1, §7.3).
+ *
+ * Everything in it comes from the local decrypted store — there is no
+ * server-side index of what was shared in a conversation, and there cannot be
+ * one: the server holds ciphertext (rule 4).
+ *
+ * The panel has no header of its own; its actions live in the top row, so the
+ * column reads as one continuous strip from the window edge down.
+ */
+export function ContextPanel({
+  conversation,
+  now,
+}: {
+  conversation: Conversation;
+  now: Date;
+}) {
+  // Attachments live inside the messages in the encrypted store and nothing
+  // indexes them per conversation yet, so there is nothing to list. Empty is
+  // the honest showing; the sections below already say so.
+  const shared: Array<{ attachment: Attachment; at: Date }> = [];
+  const images = shared.filter(({ attachment }) => attachment.kind === "image");
+  const files = shared.filter(({ attachment }) => attachment.kind === "file");
+
+  return (
+    <Panel
+      tone="list"
+      edge={false}
+      className="flex w-[280px] shrink-0 flex-col border-l border-[var(--hairline)]"
+    >
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-4 py-5">
+        <section className="space-y-3">
+          <SectionHead
+            label="Shared media"
+            onSeeAll={images.length > 5}
+            onClick={() =>
+              void notify(
+                "Shared media",
+                `${images.length} image${images.length === 1 ? "" : "s"} shared in this conversation. A dedicated gallery view arrives with the media milestone.`,
+              )
+            }
+          />
+          {images.length === 0 ? (
+            <p className="text-text-lo text-meta">Nothing shared yet.</p>
+          ) : (
+            <div className="flex gap-2">
+              {images.slice(0, 5).map(({ attachment }) => (
+                <button
+                  key={attachment.id}
+                  type="button"
+                  aria-label={attachment.name}
+                  title={attachment.name}
+                  onClick={() => void notify(attachment.name, "Full-size preview arrives with the media milestone.")}
+                  className="size-11 shrink-0 rounded-[10px] ring-1 ring-line-strong transition-transform duration-[var(--motion-fast)] ease-[var(--ease-state)] hover:-translate-y-0.5"
+                  style={{ background: fieldFor(attachment.id) }}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="space-y-2">
+          <SectionHead
+            label="Shared files"
+            onSeeAll={files.length > 3}
+            onClick={() =>
+              void notify(
+                "Shared files",
+                `${files.length} file${files.length === 1 ? "" : "s"} shared in this conversation.`,
+              )
+            }
+          />
+          <ul>
+            {files.slice(0, 3).map(({ attachment, at }) => {
+              const tone = fileTone(attachment.name);
+              return (
+                <li key={attachment.id} className="flex items-center gap-3 py-2">
+                  <span
+                    className="text-text-hi flex size-9 shrink-0 items-center justify-center rounded-[10px] font-mono text-[9px] font-semibold"
+                    style={{ background: tone.tint }}
+                    aria-hidden="true"
+                  >
+                    {tone.label}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="text-text-hi block truncate text-meta">
+                      {attachment.name}
+                    </span>
+                    <span className="text-text-lo block text-[11px]">
+                      {relativeTime(at, now)} · {fileSize(attachment.size)}
+                    </span>
+                  </span>
+                  <IconButton
+                    name="download"
+                    label={`Save ${attachment.name}`}
+                    size={15}
+                    onClick={() => void saveSharedFile(attachment)}
+                  />
+                </li>
+              );
+            })}
+            {files.length === 0 ? (
+              <li className="text-text-lo text-meta">Nothing shared yet.</li>
+            ) : null}
+          </ul>
+        </section>
+
+        <section className="space-y-2">
+          {/* Link collection has no source yet: previews are generated
+              client-side per message (§4.5) and nothing indexes them per
+              conversation. An empty section is the honest showing -- inventing
+              a list here would be the one thing rule 7 forbids. */}
+          <SectionHead label="Shared links" onSeeAll={false} />
+          <ul>
+            <li className="text-text-lo text-meta">Nothing shared yet.</li>
+          </ul>
+        </section>
+
+        <Encryption conversation={conversation} />
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * Sentence case, at reading size, with the overflow affordance on the right.
+ * Tracked-out uppercase micro-labels are a habit, not a decision, and they
+ * make every section shout the same volume as the content under it.
+ */
+function SectionHead({
+  label,
+  onSeeAll,
+  onClick,
+}: {
+  label: string;
+  onSeeAll: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <h2 className="text-text-hi text-body font-medium">{label}</h2>
+      {onSeeAll ? (
+        <button
+          type="button"
+          onClick={onClick}
+          className="text-accent-soft text-[11px] transition-opacity duration-[var(--motion-fast)] hover:opacity-80"
+        >
+          See all
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * §4.1: the safety number is SHA-256 over both identity public keys, rendered
+ * as 12 groups of 5 digits in the mono face so two people can read it aloud to
+ * each other without ambiguity. M1 shows a mock number; M4 shows the real one.
+ *
+ * It states the unverified case in a sentence rather than a bordered warning
+ * box. Unverified is the normal state of a new conversation — a standing alarm
+ * for the normal state is how people learn to ignore alarms. The loud,
+ * undismissable banner §4.1 asks for is for a key that *changes*, and that
+ * arrives with real keys in M4.
+ */
+function Encryption({ conversation }: { conversation: Conversation }) {
+  const groups = safetyNumber(conversation.safetyDigits);
+  const toggleFlag = useApp((s) => s.toggleConversationFlag);
+  return (
+    <section className="space-y-3">
+      <SectionHead label="Encryption" onSeeAll={false} />
+
+      <p className="text-text-mid text-meta leading-relaxed">
+        {conversation.verified ? (
+          <>
+            <Icon name="shield" size={13} className="text-success mr-1.5 inline align-[-2px]" />
+            You compared these digits with{" "}
+            {conversation.kind === "dm" ? conversation.title : "this group"} and they matched.
+          </>
+        ) : (
+          <>
+            <Icon name="shield" size={13} className="text-text-lo mr-1.5 inline align-[-2px]" />
+            Compare these digits over a channel you already trust. Until you do, nothing
+            proves the keys belong to who you think.
+          </>
+        )}
+      </p>
+
+      <div className="rounded-control border border-line bg-fill px-3 py-2.5">
+        <div className="text-text-mid grid grid-cols-4 gap-x-2 gap-y-1 text-center font-mono text-[11px] tracking-[0.02em]">
+          {groups.map((group, index) => (
+            <span key={`${group}-${index}`}>{group}</span>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={async () => {
+            if (conversation.verified) {
+              await notify("Compare again", "Read the digits above with the other side and confirm they match before marking it verified again.");
+              return;
+            }
+            const ok = await confirm(
+              "Mark as verified",
+              "Only confirm this if you've actually compared these digits with the other side and they matched.",
+            );
+            if (ok) toggleFlag(conversation.id, "verified");
+          }}
+          className="text-accent-soft text-meta transition-opacity duration-[var(--motion-fast)] hover:opacity-80"
+        >
+          {conversation.verified ? "Compare again" : "Mark as verified"}
+        </button>
+        <span className="text-text-lo font-mono text-[11px]">
+          epoch {conversation.epoch}
+        </span>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Saves a file listed in the Shared panel.
+ *
+ * Same path as the bubble's download button, and the same rule 7 behaviour: a
+ * failure is shown, never swallowed. Kept as a plain function rather than a
+ * hook because this list has no per-row busy state to track -- the dialog is
+ * the interaction, and it is modal.
+ */
+async function saveSharedFile(attachment: { id: string; name: string }): Promise<void> {
+  const path = await pickSavePath(attachment.name);
+  if (!path) return;
+  try {
+    await saveAttachmentTo(Number(attachment.id), path);
+  } catch (error) {
+    await notify("Couldn't save that file", asConversationError(error).message);
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE posts SET pinned_at = now() WHERE id = $1 AND author_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "40d2ac4333eceac5f53219121284fa09b87631284d3e2f9484a5fdef5bb809c4"
+}

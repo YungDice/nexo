@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.id, c.kind, c.epoch,\n                (SELECT max(e.id) FROM envelopes e WHERE e.conversation_id = c.id)\n                    AS latest_envelope_id,\n                ARRAY(\n                    SELECT u.handle::TEXT\n                    FROM conversation_members cm\n                    JOIN users u ON u.id = cm.user_id\n                    WHERE cm.conversation_id = c.id\n                    ORDER BY u.handle\n                ) AS \"members!: Vec<String>\"\n         FROM conversations c\n         JOIN conversation_members m ON m.conversation_id = c.id\n         WHERE m.user_id = $1\n         ORDER BY c.created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "epoch",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "latest_envelope_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "members!: Vec<String>",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "661d5d1e00cdfac7980b23cc23bf7311ba92966fbe8bd6d54c02360ce2f50215"
+}

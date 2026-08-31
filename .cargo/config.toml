@@ -1,0 +1,12 @@
+# Every cargo invocation in this repo defaults to sqlx's offline mode, so the
+# `sqlx::query!` macros check themselves against the committed `.sqlx/` cache
+# instead of connecting to a live database. That is what lets `cargo build` and
+# `cargo test --workspace` -- including the Windows CI job, which has no
+# Postgres -- compile the server with no database anywhere.
+#
+# There is no `force = true` here on purpose: cargo's `[env]` table yields to a
+# variable already set in the invoking shell, so `$env:SQLX_OFFLINE = "false"`
+# before `cargo sqlx prepare` still reaches a real database to regenerate the
+# cache.
+[env]
+SQLX_OFFLINE = "true"

@@ -1,0 +1,617 @@
+@import "tailwindcss";
+
+/* Self-hosted, bundled at build time. Rule 3 forbids anything fetched at
+   runtime, so no CDN and no Google Fonts link: these come from node_modules
+   and Vite emits them into dist/assets.
+
+   §7.2 also names General Sans for display type. It is licensed through
+   Fontshare and is not distributable from a package registry, so the display
+   role falls back to Inter with tighter tracking until the licence is bought.
+   The seam is --font-display: change it in one place and every wordmark,
+   empty state and section header follows. */
+@import "@fontsource-variable/inter/index.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+/* ---------------------------------------------------------------------------
+   Tokens
+
+   One accent, everything else neutral. §7.1's surfaces carried a violet cast
+   and the field behind the window was a full-colour gradient; both are gone.
+   Colour now means something — it is the accent, or it is a status — and a
+   screen with nothing happening on it has no colour in it at all.
+
+   Dark is the default. Light is the same token names with different values,
+   which is the whole point of naming them by role: no component knows which
+   theme it is in.
+--------------------------------------------------------------------------- */
+@theme {
+  /* Nothing in here may be *referenced* by a value this app composes at
+     runtime.
+
+     Tailwind drops any `@theme` variable that no used utility class needs, and
+     it does so silently. The `-base` twins these surfaces are rebuilt from
+     lived here once: nobody writes `bg-surface-2-base`, so four of the five
+     never reached the stylesheet, and the moment the depth slider moved off
+     zero every `color-mix` that read one became invalid — taking the menus,
+     the modal dialog and every glass pane's background with it. They are in
+     the plain `:root` below now, where Tailwind does not touch them. */
+
+  /* Surfaces, darkest to lightest. --void is the field the window card sits
+     on; the rest stack from the rail outwards. */
+  --color-void: #08080a;
+  --color-surface-0: #0e0e10;
+  --color-surface-1: #131315;
+  --color-surface-2: #171719;
+  --color-surface-3: #212124;
+
+  /* The one accent. §7.1's violet, unchanged: outgoing bubble, active
+     destination, primary action, focus ring, links. */
+  /* N14: the hue is a variable so it can be chosen; the saturation and
+     lightness are not, because they are what keep the contrast at 4.5:1
+     whatever hue is picked (§7.4). The default is the violet as designed. */
+  --accent-hue: 255;
+  --color-accent: hsl(var(--accent-hue) 93% 67%);
+  --color-accent-soft: hsl(var(--accent-hue) 100% 78%);
+
+  /* Status. Used where a state is being reported, never for decoration. */
+  --color-success: #3dd68c;
+  --color-warning: #f5a524;
+  --color-danger: #f0426b;
+
+  --color-text-hi: #f2f2f4;
+  --color-text-mid: #a1a1a8;
+  --color-text-lo: #7d7d86;
+
+  /* Lines and fills, so no component writes a raw white/black alpha and
+     breaks the moment the theme flips. */
+  --color-line: rgba(255, 255, 255, 0.07);
+  --color-line-strong: rgba(255, 255, 255, 0.13);
+  --color-fill: rgba(255, 255, 255, 0.04);
+  --color-fill-hover: rgba(255, 255, 255, 0.07);
+  --color-fill-active: rgba(255, 255, 255, 0.11);
+  --color-scrim: rgba(0, 0, 0, 0.55);
+
+  --radius-window: 12px;
+  --radius-panel: 14px;
+  --radius-bubble: 18px;
+  --radius-control: 10px;
+
+  --font-ui: "Inter Variable", Inter, system-ui, "Segoe UI", sans-serif;
+  --font-display: "Inter Variable", Inter, system-ui, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, "Cascadia Mono", monospace;
+
+  /* §7.2 sizes. Named by role so components never reach for a raw number. */
+  --text-meta: 13px;
+  --text-body: 14px;
+  --text-message: 15px;
+  --text-title: 16px;
+}
+
+:root {
+  /* The palette's own surface values, kept beside the live ones.
+     `useChrome`'s depth slider rewrites `--color-surface-N` as a mix of this
+     twin and black (or white), which a variable cannot do by reading itself.
+     They are declared here rather than in `@theme` because Tailwind prunes
+     `@theme` variables that no utility uses, and these have no utility — see
+     the note at the top of that block. */
+  --color-void-base: #08080a;
+  --color-surface-0-base: #0e0e10;
+  --color-surface-1-base: #131315;
+  --color-surface-2-base: #171719;
+  --color-surface-3-base: #212124;
+
+  --hairline: var(--color-line);
+  --glass-edge: rgba(255, 255, 255, 0.12);
+  --glass-blur: 24px;
+
+  /* The luminance of the field behind the window card.
+
+     One tone and one shade, and deliberately nothing else. This used to be
+     four radial gradients -- two white lifts at 30% and 15%, and a violet
+     reflection -- placed off-centre so the light "varied". Over a wallpaper
+     they did not read as light; they read as three bright smudges parked on
+     the desktop, which is what they were. What is left is a vignette: the
+     field is evenly lit and falls off toward the bottom and the corners. No
+     white, no hue, nothing for the eye to catch on. */
+  --field-base: #0d0d11;
+  --field-shade: rgba(0, 0, 0, 0.55);
+  /* How much of the field survives once the OS is compositing the desktop
+     behind the window. 100% is the opaque app; anything less lets the blurred
+     wallpaper through. Only in force under [data-backdrop="on"] -- see the
+     window-backdrop block below -- and moved by the Transparency slider. */
+  --field-veil: 62%;
+  --grain: 0.05;
+
+
+  /* §7.4: one orchestrated moment for arriving messages, and a single short
+     duration for everything else. Defined here so no component invents its
+     own timing.
+
+     150ms rather than 120ms for state changes. At 120ms paired with the
+     entrance curve below, a hover finished before the eye registered it had
+     started -- which reads as a jump, not as motion. */
+  --motion-fast: 150ms;
+  --motion-message: 180ms;
+  /* Lists and cards arriving outside the chat. Was a hardcoded 420ms, which
+     broke the tokens-only rule and, on the entrance curve, spent most of its
+     length almost stationary. */
+  --motion-rise: 320ms;
+  /* Something opening in place and pushing what follows down. Longer than a
+     message because the page moves with it, and a shove reads as a glitch. */
+  --motion-panel: 240ms;
+
+  /* Two curves, because entrances and state changes are not the same job.
+
+     `--ease-out` is near-exponential: almost all of the distance is covered
+     immediately, then it settles. That is right for something *arriving* --
+     it lands and comes to rest. It is wrong for a hover, where the same
+     curve over a short duration collapses into a step.
+
+     `--ease-state` is the symmetric one, for anything switching between two
+     states: hover, focus, selection, a colour changing. It has a visible
+     beginning, which is what makes a 150ms transition read as smooth rather
+     than as a flicker. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-state: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* §7.3 z-index contract. */
+  --z-base: 0;
+  --z-sticky: 100;
+  --z-overlay: 200;
+  --z-modal: 300;
+  --z-toast: 500;
+
+  color-scheme: dark;
+}
+
+/* ---------------------------------------------------------------------------
+   Light
+
+   Written once and applied two ways: `data-theme="light"` for an explicit
+   choice, and the media query for "follow the system" — which is the absence
+   of an explicit choice, so it is guarded against the dark one.
+--------------------------------------------------------------------------- */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --color-void: #dcdce0;
+    --color-surface-0: #f2f2f4;
+    --color-surface-1: #ffffff;
+    --color-surface-2: #fbfbfc;
+    --color-surface-3: #f0f0f3;
+
+    /* All five, not just surface-0. Only that one was redeclared here,
+       so a light theme with the depth slider up would have mixed the
+       other four from the *dark* palette toward white. */
+    --color-void-base: #dcdce0;
+    --color-surface-0-base: #f2f2f4;
+    --color-surface-1-base: #ffffff;
+    --color-surface-2-base: #fbfbfc;
+    --color-surface-3-base: #f0f0f3;
+
+    --color-accent: hsl(var(--accent-hue) 78% 60%);
+    --color-accent-soft: hsl(var(--accent-hue) 65% 53%);
+
+    --color-success: #14915a;
+    --color-warning: #a06a05;
+    --color-danger: #cf1a45;
+
+    --color-text-hi: #16161a;
+    --color-text-mid: #55555e;
+    --color-text-lo: #6e6e78;
+
+    --color-line: rgba(18, 18, 24, 0.1);
+    --color-line-strong: rgba(18, 18, 24, 0.16);
+    --color-fill: rgba(18, 18, 24, 0.035);
+    --color-fill-hover: rgba(18, 18, 24, 0.06);
+    --color-fill-active: rgba(18, 18, 24, 0.1);
+    --color-scrim: rgba(18, 18, 24, 0.35);
+
+    --glass-edge: rgba(255, 255, 255, 0.75);
+    --field-base: #cfcfd6;
+    --field-shade: rgba(18, 18, 30, 0.18);
+    /* Higher than dark: dark text over a bright wallpaper loses contrast
+       faster than light text over a dark one. */
+    --field-veil: 74%;
+    --grain: 0.025;
+
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="light"] {
+  --color-void: #dcdce0;
+  --color-surface-0: #f2f2f4;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #fbfbfc;
+  --color-surface-3: #f0f0f3;
+
+  /* All five, not just surface-0. Only that one was redeclared here, so a
+     light theme with the depth slider up would have mixed the other four from
+     the *dark* palette toward white. */
+  --color-void-base: #dcdce0;
+  --color-surface-0-base: #f2f2f4;
+  --color-surface-1-base: #ffffff;
+  --color-surface-2-base: #fbfbfc;
+  --color-surface-3-base: #f0f0f3;
+
+  --color-accent: hsl(var(--accent-hue) 78% 60%);
+  --color-accent-soft: hsl(var(--accent-hue) 65% 53%);
+
+  --color-success: #14915a;
+  --color-warning: #a06a05;
+  --color-danger: #cf1a45;
+
+  --color-text-hi: #16161a;
+  --color-text-mid: #55555e;
+  --color-text-lo: #6e6e78;
+
+  --color-line: rgba(18, 18, 24, 0.1);
+  --color-line-strong: rgba(18, 18, 24, 0.16);
+  --color-fill: rgba(18, 18, 24, 0.035);
+  --color-fill-hover: rgba(18, 18, 24, 0.06);
+  --color-fill-active: rgba(18, 18, 24, 0.1);
+  --color-scrim: rgba(18, 18, 24, 0.35);
+
+  --glass-edge: rgba(255, 255, 255, 0.75);
+  --field-base: #cfcfd6;
+  --field-shade: rgba(18, 18, 30, 0.18);
+  --field-veil: 74%;
+  --grain: 0.025;
+
+  color-scheme: light;
+}
+
+/* §7.4 quality floor: reduced motion is respected product-wide, not per
+   component. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-message: 0ms;
+    --motion-rise: 0ms;
+    --motion-panel: 0ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-void);
+  color: var(--color-text-hi);
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  font-optical-sizing: auto;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* §7.4: a visible focus ring on every interactive element is non-negotiable,
+   so it is a global default rather than something each component opts into. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* WebView2 draws a wide, pale scrollbar by default; it reads as a Windows
+   control sitting on top of the app rather than part of it. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+
+/* ---------------------------------------------------------------------------
+   Glass
+
+   §7.1: panels are the surface colour mixed with transparency over a blur,
+   with a 1px hairline for the edge. Three things have to be true at once:
+
+   1. It degrades. `backdrop-filter` is expensive on integrated GPUs and some
+      users turn transparency off in Windows, so every glass class carries an
+      opaque fallback under @supports.
+   2. It is switchable. Risk 9 in the plan makes the fallback a real setting,
+      not just a feature query: [data-glass="off"] on <html> forces opaque.
+   3. It is one decision. Components say `glass-1`, never `backdrop-filter`.
+
+   With the field behind the window neutral, the blur is a luminance effect
+   rather than a colour one — frosted grey glass, which is what it is. The
+   panes are genuinely translucent (62–72%), so the field's light and shade
+   move across them; that only works because nothing opaque is parked between
+   the panes and the field.
+--------------------------------------------------------------------------- */
+/* The field the window card floats on.
+
+   Without this the glass did nothing. `backdrop-filter` blurs whatever is
+   behind an element, and what was behind every pane was one flat fill --
+   blurring a single colour returns that colour, so the panes read as slightly
+   different greys and the effect was invisible. The tokens for this existed
+   from M1; the surface that spends them did not.
+
+   Soft and large on purpose: a 24px blur flattens fine detail, so the light
+   has to vary over hundreds of pixels to still be there once blurred. Neutral
+   on purpose too (PLAN.md, M1) -- luminance, not hue, except for the single
+   accent reflection low on the right, which is the one colour the chrome
+   spends.
+
+   Nothing opaque may sit between this and the panes, or the glass goes flat
+   again. That is the rule this file's §7.1 note warns about, and it is worth
+   re-reading before adding a background to any wrapper. */
+@utility app-field {
+  background-color: var(--field-base);
+  /* A vignette, not a set of highlights. It still gives `backdrop-filter`
+     something to blur -- luminance that varies over hundreds of pixels, which
+     is what survives a 24px blur -- but every stop is neutral and the ramp is
+     centred, so there is no blob anywhere for the eye to find. */
+  background-image: radial-gradient(
+    140% 105% at 50% -15%,
+    transparent 35%,
+    var(--field-shade) 100%
+  );
+  background-attachment: fixed;
+}
+
+@utility glass-0 {
+  background: color-mix(in srgb, var(--color-surface-0) 68%, transparent);
+  backdrop-filter: blur(var(--glass-blur));
+}
+
+@utility glass-1 {
+  background: color-mix(in srgb, var(--color-surface-1) 66%, transparent);
+  backdrop-filter: blur(var(--glass-blur));
+}
+
+@utility glass-2 {
+  background: color-mix(in srgb, var(--color-surface-2) 58%, transparent);
+  backdrop-filter: blur(var(--glass-blur));
+}
+
+@utility glass-3 {
+  background: color-mix(in srgb, var(--color-surface-3) 62%, transparent);
+  backdrop-filter: blur(calc(var(--glass-blur) / 2));
+}
+
+/* Opaque fallback, in both directions: browsers that cannot blur, and users
+   who asked us not to. */
+@supports not (backdrop-filter: blur(1px)) {
+  .glass-0 {
+    background: var(--color-surface-0);
+  }
+  .glass-1 {
+    background: var(--color-surface-1);
+  }
+  .glass-2 {
+    background: var(--color-surface-2);
+  }
+  .glass-3 {
+    background: var(--color-surface-3);
+  }
+}
+
+[data-glass="off"] {
+  .glass-0 {
+    background: var(--color-surface-0);
+    backdrop-filter: none;
+  }
+  .glass-1 {
+    background: var(--color-surface-1);
+    backdrop-filter: none;
+  }
+  .glass-2 {
+    background: var(--color-surface-2);
+    backdrop-filter: none;
+  }
+  .glass-3 {
+    background: var(--color-surface-3);
+    backdrop-filter: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The window backdrop
+
+   The part the glass could never do on its own. `backdrop-filter` blurs what
+   is painted behind an element *in the same document*; the desktop is not in
+   the document, so no CSS makes the wallpaper or the window underneath show
+   through. What does is the desktop window manager: the window is created
+   transparent, Rust asks DWM for acrylic (`windows::set_backdrop`), and DWM
+   composites a blurred copy of whatever is behind the window.
+
+   Which leaves this file one job: stop painting over it. Two things were
+   opaque and had to stop being so — `body`, which fills the window with
+   `--void`, and `app-field`, whose base colour is the field the panes float
+   on. The field does not disappear; it becomes a veil. Its gradients are
+   already rgba and carry over unchanged, so the app keeps its own light and
+   its one accent reflection, now over the desktop instead of over a flat
+   colour.
+
+   Guarded by an attribute rather than a media query because the answer is not
+   the browser's to give: `set_backdrop` returns whether the effect actually
+   applied, and only then does the WebView set [data-backdrop="on"]. A
+   transparent window without it is not a subtle effect — it is a hole
+   through to the desktop, unblurred — so the default here is the opaque app
+   and the translucent one is what has to be earned.
+--------------------------------------------------------------------------- */
+[data-backdrop="on"] {
+  /* The vignette is painted on top of the veiled base, so it survives the
+     backdrop unchanged — and at 55% black it was quietly undoing half of what
+     the veil gave up. Under the desktop it drops to a hint of a fall-off. */
+  --field-shade: rgba(0, 0, 0, 0.22);
+
+  body {
+    background: transparent;
+  }
+
+  .app-field {
+    background-color: color-mix(in srgb, var(--field-base) var(--field-veil), transparent);
+  }
+
+  /* Panes give up a good deal of their own opacity as well. Without this the
+     desktop only showed in the gutters between panels, which reads as a bug
+     rather than as glass — the panels cover almost the whole window.
+     These were 56/54/46/52 and the whole effect was reported as too weak: at
+     that strength a pane over a veiled field left about a quarter of the
+     wallpaper visible. What keeps text readable at these numbers is the 24px
+     `backdrop-filter` each pane carries, which flattens the detail underneath
+     before a glyph is ever drawn over it. */
+  .glass-0 {
+    background: color-mix(in srgb, var(--color-surface-0) 46%, transparent);
+  }
+  .glass-1 {
+    background: color-mix(in srgb, var(--color-surface-1) 44%, transparent);
+  }
+  .glass-2 {
+    background: color-mix(in srgb, var(--color-surface-2) 36%, transparent);
+  }
+  .glass-3 {
+    background: color-mix(in srgb, var(--color-surface-3) 42%, transparent);
+  }
+}
+
+/* While a splitter is being dragged.
+
+   The cursor has to survive leaving the 9px handle — a pointer capture keeps
+   the events, but not the cursor — and the selection has to be suppressed, or
+   dragging left across the feed selects every post on the way. Both end the
+   moment the attribute comes off. */
+[data-resizing="col"],
+[data-resizing="col"] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* The lit top edge of a pane. Applied as a border so it survives the opaque
+   fallback unchanged. */
+@utility edge-top {
+  border-top: 1px solid var(--glass-edge);
+}
+
+/* ---------------------------------------------------------------------------
+   Motion
+
+   §7.4: exactly one orchestrated moment. Messages rise 8px and fade in over
+   180ms, staggered 30ms when several land together. Everything else is a
+   120ms ease-out on hover, focus and collapse, expressed inline by the
+   components that need it.
+--------------------------------------------------------------------------- */
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.message-in {
+  animation: message-in var(--motion-message) var(--ease-out) both;
+  animation-delay: var(--stagger, 0ms);
+}
+
+/* Entry for lists and cards outside the chat: same physics, longer throw.
+   Only opacity and transform are animated — nothing here triggers layout. */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rise-in {
+  animation: rise-in var(--motion-rise) var(--ease-out) both;
+  animation-delay: var(--stagger, 0ms);
+}
+
+/* Opening in place: a comment thread under a post, and anything else that
+   appears between two things rather than over them.
+
+   The height animates as grid rows rather than max-height, so the target is
+   the content's real height. A max-height guess is either too small, which
+   clips a long thread, or too large, which makes a short one crawl. */
+@keyframes expand-in {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+}
+
+.expand-in {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: expand-in var(--motion-panel) var(--ease-out) both;
+}
+
+/* Grid children refuse to shrink below their content unless told to, which is
+   what makes the 0fr end of the animation actually collapse. */
+.expand-in > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Skeletons shimmer at the size of the thing that is coming. No spinners.
+
+   The sweep is a transform on a pseudo-element rather than a moving
+   background-position. Both look identical; only one of them runs on the
+   compositor. `background-position` repaints the whole element every frame,
+   for the entire time a skeleton is on screen -- which is exactly while the
+   app is also busy fetching and decrypting whatever the skeleton stands in
+   for, and precisely when dropped frames are most visible. */
+@keyframes shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.shimmer {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--color-surface-2);
+}
+
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--color-surface-3) 50%,
+    transparent 100%
+  );
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* Tauri's drag region. Anything interactive inside the titlebar has to opt
+   back out, or dragging swallows the click. */
+.drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}

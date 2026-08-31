@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT post_id, emoji,\n                COUNT(*) AS \"count!\",\n                BOOL_OR(user_id = $2) AS \"mine!\"\n         FROM post_reactions\n         WHERE post_id = ANY($1)\n         GROUP BY post_id, emoji\n         ORDER BY \"count!\" DESC, emoji",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "post_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "emoji",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "mine!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "e770111527f4742994a915105c673c9de00c1469516e342c55c0cd703ccb9c41"
+}

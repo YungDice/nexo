@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE posts SET deleted_at = now(), body = '', media_keys = '{}'\n         WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "690da9dd4494b08fc1555f40fd0823656a799b65a2c564e1046acda5ee1efee2"
+}

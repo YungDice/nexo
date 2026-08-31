@@ -1,0 +1,18 @@
+[package]
+name = "nexo-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Wire types shared by the Nexo client and server. No I/O, no crypto, no platform calls — this crate must compile unchanged for aarch64-linux-android (see docs/BRIEF.md §12)."
+
+[dependencies]
+serde.workspace = true
+# Payload is JSON inside the MLS ciphertext: readable in a debugger without a
+# decoder, which is worth real money when something is wrong.
+serde_json.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

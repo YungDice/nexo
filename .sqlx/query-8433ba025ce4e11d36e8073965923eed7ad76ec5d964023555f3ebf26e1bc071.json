@@ -1,0 +1,69 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, handle::TEXT AS \"handle!\", display_name, bio, location,\n                avatar_key, banner_key,\n                (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS \"created_at_ms!\"\n         FROM users WHERE handle = $1::CITEXT",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "handle!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "bio",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "avatar_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "banner_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at_ms!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      true,
+      true,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "8433ba025ce4e11d36e8073965923eed7ad76ec5d964023555f3ebf26e1bc071"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT blocked_id AS id FROM blocks WHERE blocker_id = $1\n         UNION\n         SELECT blocker_id AS id FROM blocks WHERE blocked_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f4f401da47f46e3f11ba3d762b92326de93fb8f14211f04880f1ff461ece4bc0"
+}

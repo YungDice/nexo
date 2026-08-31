@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT avatar_key, banner_key FROM users WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "avatar_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "banner_key",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "8ec7e1c4f93e8ade5580148105a05efdabf301971922ba3be673259e5de706f5"
+}

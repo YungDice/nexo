@@ -1,0 +1,99 @@
+import type { ReactNode } from "react";
+import { windowAction } from "../../app/useWindow";
+import { cn } from "../../lib/cn";
+import { Icon, type IconName } from "../ui/Icon";
+
+/**
+ * One top row across the whole app (§7.3).
+ *
+ * The references put the wordmark, the account, the conversation header and
+ * the panel actions on a single line, with the column hairlines running
+ * straight through it. That is what makes the window read as one surface
+ * rather than as three stacked panels, so the titlebar is not a separate strip
+ * above the app — it *is* this row, with the Windows caption buttons at its
+ * right end.
+ *
+ * Everything but the caption buttons is drag region.
+ */
+// `children` is optional: before there is an account there is no page header
+// to put in the bar, but the bar itself still has to exist, because a
+// frameless window with no titlebar cannot be moved or closed.
+export function TopBar({
+  children,
+  maximized,
+}: {
+  children?: ReactNode;
+  maximized: boolean;
+}) {
+  return (
+    <header className="drag-region glass-1 flex h-[60px] shrink-0 items-stretch border-b border-[var(--hairline)]">
+      <div className="flex w-16 shrink-0 items-center justify-center border-r border-[var(--hairline)]">
+        {/* The wordmark is a mark, not a logo lockup: one letter and a full
+            stop, in the display face. */}
+        <span className="font-display text-text-hi text-[19px] leading-none font-bold tracking-[-0.04em]">
+          N<span className="text-accent">.</span>
+        </span>
+      </div>
+
+      <div className="flex min-w-0 flex-1 items-stretch">{children}</div>
+
+      <div className="no-drag flex shrink-0 items-stretch">
+        <CaptionButton
+          name="minus"
+          label="Minimise"
+          onClick={() => void windowAction("minimize")}
+        />
+        <CaptionButton
+          name={maximized ? "restore" : "maximize"}
+          label={maximized ? "Restore down" : "Maximise"}
+          onClick={() => void windowAction("toggleMaximize")}
+        />
+        <CaptionButton
+          name="close"
+          label="Close"
+          danger
+          onClick={() => void windowAction("close")}
+        />
+      </div>
+    </header>
+  );
+}
+
+function CaptionButton({
+  name,
+  label,
+  onClick,
+  danger = false,
+}: {
+  name: IconName;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={cn(
+        "text-text-mid flex w-[46px] items-center justify-center transition-colors duration-[var(--motion-fast)] ease-[var(--ease-state)]",
+        danger ? "hover:bg-danger hover:text-white" : "hover:bg-fill-active hover:text-text-hi",
+      )}
+    >
+      <Icon name={name} size={name === "close" ? 15 : 13} />
+    </button>
+  );
+}
+
+/** The plain header a page without its own chrome gets: just a title. */
+export function PageTitleCell({ title, actions }: { title: string; actions?: ReactNode }) {
+  return (
+    <div className="flex min-w-0 flex-1 items-center justify-between px-6">
+      <h1 className="font-display text-text-hi text-title font-semibold tracking-[-0.01em]">
+        {title}
+      </h1>
+      {actions ? <div className="no-drag flex items-center gap-0.5">{actions}</div> : null}
+    </div>
+  );
+}

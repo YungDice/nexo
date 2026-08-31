@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO post_votes (post_id, user_id, value) VALUES ($1, $2, $3)\n             ON CONFLICT (post_id, user_id) DO UPDATE SET value = excluded.value",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1f059892d7a5f81807595412ff8373818c5100ddf5afd50649648e7ced197c32"
+}

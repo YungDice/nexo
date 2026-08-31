@@ -1,0 +1,1032 @@
+//! Conversation commands.
+//!
+//! Rule 2 again: what crosses this boundary is already-decrypted text and
+//! identifiers. No ciphertext, no MLS state, no keys. The WebView never learns
+//! that MLS exists.
+
+use nexo_client::conversations;
+use nexo_protocol::{ConversationId, Payload};
+use serde::Serialize;
+use tauri::State;
+
+use crate::client::ClientState;
+
+/// A conversation as the UI draws it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationView {
+    pub conversation_id: String,
+    pub kind: String,
+    /// What to call it. `None` for a conversation joined from a Welcome, which
+    /// this device has no name for until M7's profile fetch — the UI says so
+    /// rather than inventing one.
+    pub title: Option<String>,
+    /// Whoever else is in it, by handle. Empty until the profile fetch of M7.
+    pub members: Vec<String>,
+    /// The most recent message body, for the list preview.
+    ///
+    /// Decrypted locally — the server has no preview column and never will
+    /// (brief 4.2).
+    pub last_message: Option<String>,
+    pub last_message_at_ms: Option<i64>,
+    /// Whether this device sent the most recent message.
+    ///
+    /// The UI needs this to decide what deserves a toast and an unread mark: a
+    /// conversation whose newest message is our own is by definition read.
+    pub last_message_outgoing: Option<bool>,
+    /// Whether a picture has been set, so the UI asks for one only when there
+    /// is one to fetch and decrypt.
+    pub has_avatar: bool,
+}
+
+/// One message, decrypted.
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageView {
+    pub envelope_id: i64,
+    /// `None` for our own messages: MLS does not let a sender decrypt its own
+    /// ciphertext, so ours are written locally with no sender attached, and
+    /// that absence is how the UI knows which side to draw them on.
+    pub sender_device_id: Option<String>,
+    pub body: String,
+    pub sent_at_ms: i64,
+    /// True when this device sent it.
+    pub outgoing: bool,
+    /// Whether the server has it yet.
+    ///
+    /// A queued message is drawn differently and must be: telling someone
+    /// their message is sent when it is sitting in an outbox is the one lie
+    /// a messenger cannot afford (rule 7).
+    pub pending: bool,
+    /// Set when the message carries a file.
+    ///
+    /// Only what a bubble needs to draw: name, type, size. The S3 key, the AES
+    /// key, and the nonce stay in Rust (rule 2) -- the WebView asks to save an
+    /// attachment by envelope id and never sees what opens it.
+    pub attachment: Option<AttachmentView>,
+}
+
+/// The visible facts about an attached file.
+#[derive(Debug, Clone, Serialize)]
+pub struct AttachmentView {
+    /// Already run through `safe_file_name`: the sender chose this string, and
+    /// it reaches a UI that will put it in a save dialog.
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+}
+
+/// What the *bubble* shows, which is not what a conversation-list row shows.
+///
+/// `Payload::preview` falls back to the file name when an attachment carries no
+/// message, and that is right in a list where there is no picture. In the
+/// thread the picture is right there, so repeating its name beside it is noise
+/// -- the stored body is the preview, so it is unwrapped back to the real one
+/// here rather than changing what is stored and breaking the list.
+fn bubble_body(stored: &str, payload: Option<&str>) -> String {
+    let Some(encoded) = payload else {
+        return stored.to_string();
+    };
+    match Payload::decode(encoded.as_bytes()) {
+        // The sender's own words, or nothing. A file with no message says
+        // everything it has to say through the file row beneath it.
+        Payload::Attachment { body, .. } => body.unwrap_or_default(),
+        _ => stored.to_string(),
+    }
+}
+
+impl AttachmentView {
+    /// Reads the visible parts out of a stored payload.
+    ///
+    /// Returns `None` for a text message or an unparseable payload -- a message
+    /// that cannot be described as an attachment is simply not shown as one.
+    fn from_payload(encoded: Option<&str>) -> Option<Self> {
+        let Payload::Attachment {
+            name, mime, size, ..
+        } = Payload::decode(encoded?.as_bytes())
+        else {
+            return None;
+        };
+        Some(AttachmentView {
+            name: nexo_protocol::safe_file_name(&name),
+            mime,
+            size,
+        })
+    }
+}
+
+/// What a sync did, for the UI to report honestly.
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncView {
+    pub messages: usize,
+    pub commits: usize,
+    /// Envelopes that could not be read. Rule 7: surfaced, never hidden.
+    pub failed: usize,
+    /// Which conversations received messages, and how many each.
+    ///
+    /// This is what drives the unread counts and the toast: the totals above
+    /// say *whether* anything happened, these say *where*. Only conversations
+    /// with at least one new message appear.
+    pub arrivals: Vec<ArrivalView>,
+}
+
+/// New messages in one conversation, from one sync pass.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArrivalView {
+    pub conversation_id: String,
+    /// Newly decrypted incoming messages. Our own sends never count — they
+    /// are written locally at send time and are not an "arrival".
+    pub messages: usize,
+}
+
+/// An error the UI can act on.
+#[derive(Debug, Serialize)]
+pub struct ConversationErrorView {
+    pub kind: &'static str,
+    pub message: String,
+}
+
+fn failure(kind: &'static str, message: impl Into<String>) -> ConversationErrorView {
+    ConversationErrorView {
+        kind,
+        message: message.into(),
+    }
+}
+
+impl From<conversations::ConversationError> for ConversationErrorView {
+    fn from(error: conversations::ConversationError) -> Self {
+        use nexo_client::transport::TransportError;
+        // The detail goes to the log; the user gets the summary. These errors
+        // can carry query text and file paths.
+        tracing::warn!(%error, "conversation call failed");
+        match &error {
+            conversations::ConversationError::Transport(TransportError::Unreachable(_)) => failure(
+                "unreachable",
+                "Can't reach the server. Your message will send when you're back online.",
+            ),
+            conversations::ConversationError::Transport(TransportError::InvalidCredentials) => {
+                failure("signed_out", "Your session expired. Sign in again.")
+            }
+            conversations::ConversationError::Transport(TransportError::StaleEpoch { .. }) => {
+                failure(
+                    "stale_epoch",
+                    "This conversation moved on. Syncing and trying again.",
+                )
+            }
+            conversations::ConversationError::Transport(TransportError::Rejected(detail)) => {
+                failure("rejected", detail.clone())
+            }
+            conversations::ConversationError::NotAMember => {
+                failure("not_a_member", "You are not in that conversation.")
+            }
+            _ => failure("internal", "Something went wrong. Try again."),
+        }
+    }
+}
+
+/// Runs a blocking closure against the signed-in client.
+///
+/// One helper, so no command can forget the lock or the `spawn_blocking`.
+async fn with_client<T, F>(state: &ClientState, work: F) -> Result<T, ConversationErrorView>
+where
+    T: Send + 'static,
+    F: FnOnce(&crate::client::LoggedIn) -> Result<T, ConversationErrorView> + Send + 'static,
+{
+    let handle = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = handle.lock().map_err(|_| {
+            failure(
+                "internal",
+                "The client state was poisoned by an earlier failure. Restart the app.",
+            )
+        })?;
+        let client = guard
+            .as_ref()
+            .ok_or_else(|| failure("signed_out", "You are not signed in."))?;
+        let outcome = work(client);
+
+        // An access token ages on the clock, so the transport may have traded
+        // the refresh token for a new pair mid-call. Writing the new one down
+        // is not optional: the next launch replays whatever is stored, and a
+        // spent refresh token is what the server reads as theft -- it revokes
+        // every session for the account.
+        if let Some(rotated) = client.transport.take_rotated_refresh_token()
+            && let Err(error) = client.store.set_refresh_token(&rotated)
+        {
+            tracing::error!(%error, "could not persist a rotated refresh token");
+        }
+
+        outcome
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!(%e, "a conversation task panicked");
+        failure("internal", "Something went wrong. Try again.")
+    })?
+}
+
+fn parse_id(id: &str) -> Result<ConversationId, ConversationErrorView> {
+    id.parse()
+        .map_err(|_| failure("invalid_request", "That is not a conversation id."))
+}
+
+/// Every conversation this device knows about, newest activity first.
+#[tauri::command]
+pub async fn list_conversations(
+    state: State<'_, ClientState>,
+) -> Result<Vec<ConversationView>, ConversationErrorView> {
+    with_client(&state, |client| {
+        let stored = client
+            .store
+            .conversations()
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
+
+        let mut out = Vec::with_capacity(stored.len());
+        for conversation in stored {
+            let messages = client.store.messages(&conversation.id).map_err(|e| {
+                ConversationErrorView::from(conversations::ConversationError::Store(e))
+            })?;
+            let last = messages.last();
+            out.push(ConversationView {
+                conversation_id: conversation.id,
+                // What the server said, once `discover` has asked. Everything
+                // was reported as a DM before that, which made the UI look up
+                // a group's title as if it were somebody's handle.
+                kind: conversation.kind.unwrap_or_else(|| "dm".to_string()),
+                title: conversation.title,
+                members: conversation.members,
+                last_message: last.map(|m| m.body.clone()),
+                last_message_at_ms: last.map(|m| m.sent_at_ms),
+                last_message_outgoing: last.map(|m| m.sender_device_id.is_none()),
+                has_avatar: conversation.has_avatar,
+            });
+        }
+
+        // Most recent first, and conversations with nothing in them last —
+        // a new conversation should not sit above an active one.
+        out.sort_by_key(|c| std::cmp::Reverse(c.last_message_at_ms));
+        Ok(out)
+    })
+    .await
+}
+
+/// Removes a conversation from **this device**.
+///
+/// The name is the whole design. Nothing is deleted for anyone else and
+/// nothing can be: the other members hold their own copies, and the server
+/// holds ciphertext it drops on acknowledgement rather than on request. A
+/// command called `delete_conversation` that quietly meant "hide it here"
+/// would be the kind of promise rule 7 exists to forbid, so the button says
+/// "Remove from this device" and this is what it does.
+///
+/// The MLS group state stays. Server-side we are still a member, so the next
+/// message from that conversation arrives, is decrypted, and the conversation
+/// comes back with the new message in it -- which is the honest outcome and
+/// the one the confirmation warns about. Dropping the group state instead
+/// would leave a member who can no longer read anything sent to them.
+#[tauri::command]
+pub async fn delete_conversation(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        client
+            .store
+            .delete_conversation(&conversation_id)
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))
+    })
+    .await
+}
+
+/// Starts a 1:1 conversation with a handle.
+#[tauri::command]
+pub async fn start_conversation(
+    state: State<'_, ClientState>,
+    handle: String,
+) -> Result<String, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = conversations::open_with(&client.context(), &handle)?;
+        tracing::info!(%id, "opened a conversation");
+        Ok(id.to_string())
+    })
+    .await
+}
+
+/// Starts a group conversation with several handles.
+#[tauri::command]
+pub async fn start_group(
+    state: State<'_, ClientState>,
+    handles: Vec<String>,
+    title: String,
+) -> Result<String, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let title = if title.trim().is_empty() {
+            "New group".to_string()
+        } else {
+            title.trim().to_string()
+        };
+        let id = conversations::start_group_with(&client.context(), &handles, &title)?;
+        tracing::info!(%id, members = handles.len(), "started a group");
+        Ok(id.to_string())
+    })
+    .await
+}
+
+/// Adds someone to a conversation that already exists.
+#[tauri::command]
+pub async fn add_to_conversation(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    handle: String,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        conversations::add_to(&client.context(), id, &handle)?;
+        tracing::info!(%id, "added a member");
+        Ok(())
+    })
+    .await
+}
+
+/// Renames a conversation for everyone in it.
+#[tauri::command]
+pub async fn rename_conversation(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    title: String,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        if title.trim().is_empty() {
+            return Err(failure("invalid_request", "Give it a name first."));
+        }
+        if title.trim().chars().count() > 80 {
+            return Err(failure("invalid_request", "A name is up to 80 characters."));
+        }
+        conversations::rename(&client.context(), id, &title)?;
+        tracing::info!(%id, "renamed a conversation");
+        Ok(())
+    })
+    .await
+}
+
+/// Sets the conversation's picture from a file the user picked.
+///
+/// The bytes are read here and encrypted before they leave: the WebView passes
+/// a path and never sees the image, the bucket never sees the plaintext, and
+/// the key that opens it travels inside an MLS message.
+#[tauri::command]
+pub async fn set_conversation_avatar(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    path: String,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        let contents = std::fs::read(&path).map_err(|e| {
+            failure(
+                "unreadable_file",
+                format!("That file could not be read: {e}"),
+            )
+        })?;
+
+        if contents.len() as u64 > MAX_ATTACHMENT_BYTES {
+            return Err(failure("too_large", "That image is too large."));
+        }
+        // Sniffed, never taken from the name: this is what every member's
+        // browser will be told the bytes are.
+        let mime = crate::feed::sniff_mime(&contents);
+        if mime == "application/octet-stream" {
+            return Err(failure("not_an_image", "That file is not an image."));
+        }
+
+        conversations::set_group_avatar(&client.context(), id, &contents, mime)?;
+        tracing::info!(%id, "set a conversation picture");
+        Ok(())
+    })
+    .await
+}
+
+/// The conversation's picture, decrypted, as a `data:` URL.
+///
+/// `None` when it has none — which is most conversations, so this is an
+/// ordinary answer rather than an error.
+#[tauri::command]
+pub async fn conversation_avatar(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+) -> Result<Option<String>, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        let Some((contents, _)) = conversations::group_avatar(&client.context(), id)? else {
+            return Ok(None);
+        };
+        // The sender's declared type is not evidence. Sniffing again here is
+        // what stops a member handing everyone else an HTML "image".
+        let mime = crate::feed::sniff_mime(&contents);
+        if mime == "application/octet-stream" {
+            return Ok(None);
+        }
+        Ok(Some(crate::feed::data_url(mime, &contents)))
+    })
+    .await
+}
+
+/// Every image and file in a conversation, oldest first.
+///
+/// N2's media strip needs the whole conversation's attachments, not one
+/// message's. Nothing new is fetched: `sync` already wrote each payload beside
+/// its message when it arrived, so this reads what is on disk and filters --
+/// which is also why it works offline and why it costs nothing to open.
+///
+/// Payloads are **not** returned. They hold decryption keys; only the envelope
+/// id crosses, and the bytes come back one at a time through
+/// `attachment_data_url` or `save_attachment`.
+#[tauri::command]
+pub async fn conversation_attachments(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+) -> Result<Vec<AttachmentEntry>, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        let messages = client
+            .store
+            .messages(&id.to_string())
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
+
+        Ok(messages
+            .into_iter()
+            .filter_map(|m| {
+                let view = AttachmentView::from_payload(m.payload.as_deref())?;
+                Some(AttachmentEntry {
+                    envelope_id: m.envelope_id,
+                    kind: if view.mime.starts_with("image/") {
+                        "image"
+                    } else if view.mime.starts_with("video/") {
+                        "video"
+                    } else {
+                        "file"
+                    }
+                    .to_string(),
+                    name: view.name,
+                    mime: view.mime,
+                    size: view.size,
+                    sent_at_ms: m.sent_at_ms,
+                    outgoing: m.sender_device_id.is_none(),
+                })
+            })
+            .collect())
+    })
+    .await
+}
+
+/// One attachment in the conversation-wide list.
+#[derive(Debug, Clone, Serialize)]
+pub struct AttachmentEntry {
+    /// All the WebView needs to ask for the bytes.
+    pub envelope_id: i64,
+    /// `image`, `video` or `file`, from the type inside the ciphertext.
+    pub kind: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    pub sent_at_ms: i64,
+    pub outgoing: bool,
+}
+
+/// Sends a message.
+#[tauri::command]
+pub async fn send_message(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    body: String,
+) -> Result<MessageView, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        let trimmed = body.trim();
+        if trimmed.is_empty() {
+            return Err(failure("invalid_request", "Nothing to send."));
+        }
+        let sent = conversations::send_message(&client.context(), id, trimmed)?;
+        Ok(MessageView {
+            // A queued message has no envelope id -- the server assigns it, and
+            // the server has not seen this yet. Negative ids are used as the
+            // local key so they cannot collide with a real one, and so a UI
+            // sorting by id keeps them at the end where they belong.
+            envelope_id: sent.envelope_id().unwrap_or(-now_ms()),
+            sender_device_id: None,
+            body: trimmed.to_string(),
+            sent_at_ms: now_ms(),
+            outgoing: true,
+            pending: sent.envelope_id().is_none(),
+            attachment: None,
+        })
+    })
+    .await
+}
+
+/// Pulls anything new for one conversation.
+#[tauri::command]
+pub async fn sync_conversation(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+) -> Result<SyncView, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        let outcome = conversations::sync(&client.context(), id)?;
+        let arrivals = if outcome.messages > 0 {
+            vec![ArrivalView {
+                conversation_id: id.to_string(),
+                messages: outcome.messages,
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok(SyncView {
+            messages: outcome.messages,
+            commits: outcome.commits,
+            failed: outcome.failed,
+            arrivals,
+        })
+    })
+    .await
+}
+
+/// Pulls anything new for every conversation.
+///
+/// What the app calls on a timer and after reconnecting. Returns the totals so
+/// the UI can decide whether anything changed without re-reading every
+/// conversation.
+#[tauri::command]
+pub async fn sync_all(state: State<'_, ClientState>) -> Result<SyncView, ConversationErrorView> {
+    with_client(&state, |client| {
+        // Before syncing what we know about, find out what we have been invited
+        // to. An invitation lands as a server-side membership row and nothing
+        // else; without this the Welcome sits unread in a conversation this
+        // device never thinks to ask about.
+        //
+        // Offline is not fatal here: the conversations already known still sync
+        // from the local list below.
+        if let Err(error) = conversations::discover(&client.context()) {
+            tracing::warn!(%error, "could not list conversations from the server");
+        }
+
+        let ids = client
+            .store
+            .conversation_ids()
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
+
+        let mut total = SyncView {
+            messages: 0,
+            commits: 0,
+            failed: 0,
+            arrivals: Vec::new(),
+        };
+        for id in ids {
+            let Ok(parsed) = id.parse::<ConversationId>() else {
+                continue;
+            };
+            // One conversation failing must not stop the others: an unreachable
+            // server would otherwise mean no conversation ever syncs.
+            match conversations::sync(&client.context(), parsed) {
+                Ok(outcome) => {
+                    total.messages += outcome.messages;
+                    total.commits += outcome.commits;
+                    total.failed += outcome.failed;
+                    if outcome.messages > 0 {
+                        total.arrivals.push(ArrivalView {
+                            conversation_id: id,
+                            messages: outcome.messages,
+                        });
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, %id, "syncing one conversation failed");
+                }
+            }
+        }
+        Ok(total)
+    })
+    .await
+}
+
+/// The decrypted history of one conversation, oldest first.
+#[tauri::command]
+pub async fn conversation_messages(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+) -> Result<Vec<MessageView>, ConversationErrorView> {
+    with_client(&state, move |client| {
+        parse_id(&conversation_id)?;
+        let stored = client
+            .store
+            .messages(&conversation_id)
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
+
+        // Queued messages, appended after the delivered ones. They belong in
+        // the conversation -- someone wrote them and expects to see them --
+        // and they are marked so the UI can draw them as not-yet-sent.
+        let queued: Vec<MessageView> = client
+            .store
+            .outbox()
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?
+            .into_iter()
+            .filter(|item| item.conversation_id == conversation_id && !item.is_commit)
+            .map(|item| MessageView {
+                envelope_id: -item.queued_at_ms,
+                sender_device_id: None,
+                body: bubble_body(&item.body, item.payload.as_deref()),
+                sent_at_ms: item.queued_at_ms,
+                outgoing: true,
+                pending: true,
+                attachment: AttachmentView::from_payload(item.payload.as_deref()),
+            })
+            .collect();
+
+        Ok(stored
+            .into_iter()
+            .map(|m| MessageView {
+                envelope_id: m.envelope_id,
+                outgoing: m.sender_device_id.is_none(),
+                sender_device_id: m.sender_device_id,
+                attachment: AttachmentView::from_payload(m.payload.as_deref()),
+                body: bubble_body(&m.body, m.payload.as_deref()),
+                sent_at_ms: m.sent_at_ms,
+                // Everything in `messages` was accepted by the server before
+                // it was written there. What is still waiting lives in the
+                // outbox, and is appended below.
+                pending: false,
+            })
+            .chain(queued)
+            .collect())
+    })
+    .await
+}
+
+/// Sends everything waiting in the outbox.
+///
+/// Called on a timer and after the network returns. Being offline is not an
+/// error: it is the state the queue exists for, and it leaves everything
+/// exactly where it was.
+#[tauri::command]
+pub async fn flush_outbox(
+    state: State<'_, ClientState>,
+) -> Result<FlushView, ConversationErrorView> {
+    with_client(&state, |client| {
+        let outcome = nexo_client::outbox::flush(&client.context())?;
+        Ok(FlushView {
+            sent: outcome.sent,
+            already_sent: outcome.already_sent,
+            still_queued: outcome.still_queued,
+            failed: outcome.failed,
+        })
+    })
+    .await
+}
+
+/// How many messages are waiting to be sent.
+#[tauri::command]
+pub async fn outbox_count(state: State<'_, ClientState>) -> Result<i64, ConversationErrorView> {
+    with_client(&state, |client| {
+        client
+            .store
+            .outbox_len()
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))
+    })
+    .await
+}
+
+/// What a flush did.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct FlushView {
+    pub sent: usize,
+    /// Messages the server already had, matched by their client id.
+    ///
+    /// Reported separately from `sent` because they are the duplicates that
+    /// idempotency prevented, and calling them "sent" would overstate what
+    /// just happened.
+    pub already_sent: usize,
+    pub still_queued: usize,
+    pub failed: usize,
+}
+
+/// Sends a file, given a path the user picked.
+///
+/// The **path** crosses the bridge, not the bytes. A 20 MB file base64-encoded
+/// through IPC would be slow and pointless, and it would put the whole
+/// plaintext in the WebView's heap for no reason (rule 2). Rust reads it,
+/// encrypts it, and uploads it; the WebView learns only that it worked.
+#[tauri::command]
+pub async fn send_attachment(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    path: String,
+    body: Option<String>,
+) -> Result<MessageView, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        let path = std::path::PathBuf::from(&path);
+
+        // A directory, a missing file, or something unreadable: say which,
+        // because "sending failed" is useless when the fix is picking a
+        // different file.
+        let contents = std::fs::read(&path).map_err(|e| {
+            failure(
+                "unreadable_file",
+                format!("That file could not be read: {e}"),
+            )
+        })?;
+        if contents.is_empty() {
+            return Err(failure("invalid_request", "That file is empty."));
+        }
+        if contents.len() as u64 > MAX_ATTACHMENT_BYTES {
+            return Err(failure(
+                "too_large",
+                format!(
+                    "Attachments are limited to {} MB.",
+                    MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                ),
+            ));
+        }
+
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "attachment".to_string());
+        let mime = mime_for(&path);
+        let body = body.as_deref().map(str::trim).filter(|b| !b.is_empty());
+        let size = contents.len() as u64;
+
+        let envelope_id =
+            conversations::send_attachment(&client.context(), id, &name, mime, &contents, body)?;
+
+        Ok(MessageView {
+            envelope_id,
+            sender_device_id: None,
+            body: body.unwrap_or(&name).to_string(),
+            sent_at_ms: now_ms(),
+            outgoing: true,
+            pending: false,
+            attachment: Some(AttachmentView {
+                name: nexo_protocol::safe_file_name(&name),
+                mime: mime.to_string(),
+                size,
+            }),
+        })
+    })
+    .await
+}
+
+/// Downloads, decrypts, and writes an attachment to a path the user picked.
+///
+/// The destination comes from the native Save dialog, so the user chose it --
+/// the sender's file name is only ever a suggestion, and a sanitised one.
+#[tauri::command]
+pub async fn save_attachment(
+    state: State<'_, ClientState>,
+    envelope_id: i64,
+    path: String,
+) -> Result<u64, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let attachment = conversations::fetch_attachment_by_id(&client.context(), envelope_id)?;
+        // Only reached if both the GCM tag and the SHA-256 matched, so nothing
+        // partial or unverified is ever written to disk (rule 7).
+        let size = attachment.contents.len() as u64;
+        std::fs::write(&path, &attachment.contents).map_err(|e| {
+            failure(
+                "unwritable_file",
+                format!("That file could not be saved: {e}"),
+            )
+        })?;
+        Ok(size)
+    })
+    .await
+}
+
+/// An attached image, decrypted, as a `data:` URL the page can render.
+///
+/// The bytes never touch disk and the S3 key never leaves Rust. Only reached
+/// when the GCM tag and the SHA-256 both matched, so nothing unverified is
+/// ever rendered.
+///
+/// Refuses anything that is not actually an image, whatever the sender called
+/// it: this value goes straight into the page, and a sender-supplied MIME type
+/// is not evidence of anything.
+#[tauri::command]
+pub async fn attachment_data_url(
+    state: State<'_, ClientState>,
+    envelope_id: i64,
+) -> Result<String, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let attachment = conversations::fetch_attachment_by_id(&client.context(), envelope_id)?;
+
+        if attachment.contents.len() > crate::feed::MAX_INLINE_IMAGE_BYTES {
+            return Err(failure(
+                "too_large",
+                "That image is too large to display. Save it instead.",
+            ));
+        }
+        let mime = crate::feed::sniff_mime(&attachment.contents);
+        if !crate::feed::is_renderable(mime) {
+            return Err(failure(
+                "not_renderable",
+                "That attachment is not a picture or a video.",
+            ));
+        }
+        Ok(crate::feed::data_url(mime, &attachment.contents))
+    })
+    .await
+}
+
+/// The largest file this app will send.
+///
+/// The server enforces its own ceiling; this one exists so the user is told
+/// before a 40 MB read and encryption, not after.
+const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+
+/// A content type guessed from the extension.
+///
+/// Only a hint for the recipient's UI. Nothing is executed or rendered based on
+/// it, and the recipient re-derives its own from the name it saves under, so a
+/// wrong guess is cosmetic.
+fn mime_for(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
+        Some("txt" | "md" | "log") => "text/plain",
+        Some("zip") => "application/zip",
+        Some("mp4") => "video/mp4",
+        Some("mp3") => "audio/mpeg",
+        _ => "application/octet-stream",
+    }
+}
+
+/// The safety number for a 1:1 conversation, for the Verify screen (brief 4.1).
+///
+/// `None` for a group: a safety number is a fingerprint over *both* parties and
+/// there is no meaningful one to show for five.
+#[tauri::command]
+pub async fn safety_number(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+) -> Result<Option<String>, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        Ok(conversations::safety_number(&client.provider, id)?)
+    })
+    .await
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_message_view_carries_no_ciphertext_or_keys() {
+        let view = MessageView {
+            envelope_id: 1,
+            sender_device_id: Some("device".into()),
+            body: "hello".into(),
+            sent_at_ms: 0,
+            outgoing: false,
+            pending: false,
+            attachment: None,
+        };
+        let json = serde_json::to_string(&view).unwrap();
+        for forbidden in ["ciphertext", "epoch", "key", "secret", "token"] {
+            assert!(
+                !json.contains(forbidden),
+                "`{forbidden}` must not cross the IPC boundary: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_attachment_view_carries_no_key_and_no_object_key() {
+        // The whole reason `AttachmentView` exists rather than passing the
+        // payload through: the payload holds the AES key that opens the file.
+        // If it ever crossed this boundary, the file would be as good as
+        // plaintext to anything running in the WebView (rule 2).
+        let payload = Payload::Attachment {
+            s3_key: "enc/11111111-1111-1111-1111-111111111111/deadbeef".into(),
+            key: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".into(),
+            nonce: "000102030405060708090a0b".into(),
+            sha256: "ff".repeat(32),
+            name: "report.pdf".into(),
+            mime: "application/pdf".into(),
+            size: 1234,
+            body: Some("here".into()),
+        };
+        let view = AttachmentView::from_payload(Some(&payload.encode_string()))
+            .expect("an attachment payload should produce a view");
+
+        let json = serde_json::to_string(&view).unwrap();
+        for forbidden in [
+            "00112233445566778899aabbccddeeff",
+            "000102030405060708090a0b",
+            "enc/",
+            "deadbeef",
+        ] {
+            assert!(
+                !json.contains(forbidden),
+                "`{forbidden}` must not cross the IPC boundary: {json}"
+            );
+        }
+        assert_eq!(view.name, "report.pdf");
+        assert_eq!(view.size, 1234);
+    }
+
+    #[test]
+    fn an_attachment_name_is_sanitised_before_the_webview_sees_it() {
+        // The sender chose this string and the UI puts it in a save dialog.
+        let payload = Payload::Attachment {
+            s3_key: "enc/x/y".into(),
+            key: "aa".repeat(32),
+            nonce: "bb".repeat(12),
+            sha256: "cc".repeat(32),
+            name: r"..\..\Startup\evil.exe".into(),
+            mime: "application/octet-stream".into(),
+            size: 1,
+            body: None,
+        };
+        let view = AttachmentView::from_payload(Some(&payload.encode_string())).unwrap();
+        assert_eq!(view.name, "evil.exe");
+    }
+
+    #[test]
+    fn a_text_message_has_no_attachment_view() {
+        assert!(AttachmentView::from_payload(None).is_none());
+        assert!(AttachmentView::from_payload(Some(&Payload::text("hi").encode_string())).is_none());
+        // And nonsense in the column is treated as "no attachment", not as a
+        // reason to fail the whole message list.
+        assert!(AttachmentView::from_payload(Some("not json at all")).is_none());
+    }
+
+    #[test]
+    fn a_guessed_mime_is_only_ever_a_hint() {
+        use std::path::Path;
+        assert_eq!(mime_for(Path::new("a/b/photo.PNG")), "image/png");
+        assert_eq!(mime_for(Path::new("notes.md")), "text/plain");
+        // Unknown and extensionless both fall back rather than guessing.
+        assert_eq!(
+            mime_for(Path::new("archive.xyz")),
+            "application/octet-stream"
+        );
+        assert_eq!(mime_for(Path::new("Makefile")), "application/octet-stream");
+    }
+
+    #[test]
+    fn our_own_messages_are_marked_outgoing_by_the_absent_sender() {
+        // MLS does not let a sender decrypt its own ciphertext, so ours are
+        // stored with no sender. That absence is the signal, and it needs to
+        // stay one.
+        let mine = MessageView {
+            envelope_id: 1,
+            sender_device_id: None,
+            body: "mine".into(),
+            sent_at_ms: 0,
+            outgoing: true,
+            pending: false,
+            attachment: None,
+        };
+        assert!(mine.outgoing);
+        assert!(mine.sender_device_id.is_none());
+    }
+
+    #[test]
+    fn an_unreachable_server_is_not_reported_as_being_signed_out() {
+        use nexo_client::transport::TransportError;
+        let view = ConversationErrorView::from(conversations::ConversationError::Transport(
+            TransportError::Unreachable("connection refused".into()),
+        ));
+        assert_eq!(view.kind, "unreachable");
+        assert_ne!(view.kind, "signed_out");
+        // And the network detail is not repeated at the user.
+        assert!(!view.message.contains("connection refused"));
+    }
+
+    #[test]
+    fn a_stale_epoch_is_its_own_kind() {
+        // The UI resyncs on this rather than showing an error, so it must be
+        // distinguishable from a generic refusal.
+        use nexo_client::transport::TransportError;
+        let view = ConversationErrorView::from(conversations::ConversationError::Transport(
+            TransportError::StaleEpoch { current: 4 },
+        ));
+        assert_eq!(view.kind, "stale_epoch");
+    }
+}

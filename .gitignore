@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/target/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Tauri
+apps/desktop/src-tauri/gen/
+
+# Local secrets and state — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+keyring.bin
+store.db
+store.db-*
+
+# OS
+Thumbs.db
+.DS_Store

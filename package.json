@@ -1,0 +1,15 @@
+{
+  "name": "nexo",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.20.0",
+  "scripts": {
+    "build": "pnpm --filter nexo-desktop build",
+    "dev": "pnpm --filter nexo-desktop dev",
+    "dev:server": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/cargo.ps1 run -p nexo-server",
+    "typecheck": "pnpm --filter nexo-desktop typecheck",
+    "test": "pnpm -r test",
+    "build:tokens": "pnpm --filter @nexo/design-tokens build:tokens",
+    "tauri": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/tauri.ps1"
+  }
+}

@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nexo
+      POSTGRES_PASSWORD: nexo_dev
+      POSTGRES_DB: nexo
+    ports:
+      # Host 5433, not 5432. A native Windows PostgreSQL install holds
+      # 127.0.0.1:5432 and ::1:5432, and Docker publishing the same port binds
+      # only the IPv6 wildcard -- so `localhost` still reaches the native
+      # server, and you get an authentication failure against a database you
+      # did not mean to contact. The container is unchanged internally, and CI
+      # (no conflict there) still uses 5432.
+      - "5433:5432"
+    volumes:
+      - nexo-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexo -d nexo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  nexo-postgres-data:

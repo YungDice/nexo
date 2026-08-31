@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET\n             display_name = COALESCE($2, display_name),\n             bio          = COALESCE($3, bio),\n             location     = COALESCE($4, location),\n             avatar_key   = COALESCE($5, avatar_key),\n             banner_key   = COALESCE($6, banner_key)\n         WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ebf27a0e31c3e72c320c06d822df644440366eed215c7ef129a7810ad02ae864"
+}

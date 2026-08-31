@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO envelopes\n             (conversation_id, sender_device_id, epoch, ciphertext, is_commit, client_msg_id)\n         VALUES ($1, $2, $3, $4, $5, $6)\n         ON CONFLICT (conversation_id, client_msg_id)\n             WHERE client_msg_id IS NOT NULL\n             DO UPDATE SET client_msg_id = EXCLUDED.client_msg_id\n         RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Bytea",
+        "Bool",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "28a64677c47b0f940f1a16117dc10621ba0210d96c07119cdc38d3a9abb57e7e"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT field, visibility FROM profile_visibility WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "field",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "visibility",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9ca24ce8c15348c462224a3361e2cddec07687c12be1014f778f5c81f141c4c1"
+}

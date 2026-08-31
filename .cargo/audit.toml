@@ -1,0 +1,88 @@
+# cargo-audit policy.
+#
+# cargo-audit scans Cargo.lock directly, with no target or feature resolution.
+# Cargo.lock records the union of every platform and every optional feature, so
+# cargo-audit reports crates that are never actually compiled into anything we
+# ship. cargo-deny (see deny.toml) resolves per target and is the stricter gate;
+# both run in CI, and this file records why each entry here is not a finding.
+#
+# Verified with `cargo tree -i <crate> --target all` on 2026-08-24.
+
+[advisories]
+ignore = [
+    # --- NOT IN THE DEPENDENCY GRAPH AT ALL ---------------------------------
+    # `cargo tree -i --target all` prints "nothing to print" for these: they are
+    # optional features of hpke-rs (hpke-rs-libcrux) that Nexo never enables.
+    # Nexo's AES-GCM is RustCrypto aes-gcm 0.10.3 via openmls_rust_crypto, which
+    # none of these advisories touch. This matters because AES-128-GCM is our
+    # ciphersuite, so a real libcrux AES-GCM finding on our path would be
+    # serious -- it is worth re-verifying rather than assuming.
+    "RUSTSEC-2026-0209", # libcrux-aesgcm: AAD length limits not enforced
+    "RUSTSEC-2026-0210", # libcrux-aesgcm renamed to libcrux-aes
+    "RUSTSEC-2026-0211", # libcrux-aesgcm: non-constant-time auth tag check
+    "RUSTSEC-2026-0124", # libcrux-chacha20poly1305: panic on overlong ciphertext
+
+    # `cargo tree -i rsa --target all` also prints "nothing to print". `rsa` is
+    # a dependency of sqlx-mysql, which is in Cargo.lock only because the
+    # lockfile records sqlx's optional drivers. nexo-server enables "postgres"
+    # and nothing else, so sqlx-mysql is never compiled and `rsa` never reaches
+    # a binary. cargo-deny, which does resolve features, passes both targets.
+    "RUSTSEC-2023-0071", # rsa: Marvin timing sidechannel; sqlx-mysql only, never built
+
+    # --- IN THE GRAPH, UNREACHABLE FOR WHAT v0.1 SHIPS ----------------------
+    # Reached via openmls_rust_crypto -> hpke-rs. Fixed upstream in libcrux
+    # 0.0.10, which needs openmls_rust_crypto 0.6 -- release-candidate only.
+    # Full reasoning in deny.toml.
+    "RUSTSEC-2026-0207", # libcrux-sha3: incremental SHAKE squeeze; we use no SHAKE
+    "RUSTSEC-2026-0208", # libcrux-sha3: AVX2 SHAKE-256 for ML-KEM/ML-DSA; PQ is off
+    "RUSTSEC-2026-0212", # libcrux-secrets: aarch64 ct-swap; v0.1 is x86_64 only.
+                         # MUST be resolved before Android (brief section 12).
+
+    # --- LINUX-ONLY, NEVER IN THE WINDOWS CLIENT ----------------------------
+    # Tauri's Linux WebView backend (gtk/wry). Nexo ships Windows only in v0.1;
+    # macOS and Linux builds are out of scope (brief section 11). The Linux
+    # cargo-deny pass excludes nexo-desktop for exactly this reason.
+    "RUSTSEC-2024-0411",
+    "RUSTSEC-2024-0412",
+    "RUSTSEC-2024-0413",
+    "RUSTSEC-2024-0414",
+    "RUSTSEC-2024-0415",
+    "RUSTSEC-2024-0416",
+    "RUSTSEC-2024-0417",
+    "RUSTSEC-2024-0418",
+    "RUSTSEC-2024-0419",
+    "RUSTSEC-2024-0420",
+    "RUSTSEC-2024-0429", # glib unsoundness, same Linux-only path
+
+    # --- UNMAINTAINED, TRANSITIVE, NO UPGRADE AVAILABLE ---------------------
+    # unic-* arrive through urlpattern -> tauri-utils. Unmaintained, not
+    # vulnerable, and the fix belongs upstream in Tauri.
+    "RUSTSEC-2025-0075",
+    "RUSTSEC-2025-0080",
+    "RUSTSEC-2025-0081",
+    "RUSTSEC-2025-0098",
+    "RUSTSEC-2025-0100",
+
+# --- KNOWN, DELIBERATELY *NOT* IGNORED ------------------------------------
+#
+# RUSTSEC-2026-0253 -- lru 0.16.4, "potential use-after-free due to lack of
+# panic safety in LruCache::pop()". Reached through aws-sdk-s3, and unlike the
+# entries below it IS compiled into the server.
+#
+# It is not in the ignore list, on purpose. RustSec classes it `unsound`, not a
+# vulnerability, so cargo-audit reports it and still exits 0, and cargo-deny
+# reports advisories ok. Listing it would silence a warning doing its job.
+#
+# Why it is not reachable for us: the unsoundness needs a user-supplied Drop or
+# Hash implementation to panic during `pop()`. The cache belongs to the SDK and
+# is keyed by SDK-internal types, so Nexo supplies neither.
+#
+# No fix is available to take: RustSec records no patched version, and
+# aws-sdk-s3 requires `lru ^0.16.3`, so 0.17.0 cannot be resolved without a
+# change upstream. Revisit on the next aws-sdk-s3 bump; if it ever becomes a
+# vulnerability rather than an unsoundness, it must be fixed, not ignored.
+
+    # --- BUILD-TIME ONLY, NOT IN THE SHIPPED BINARY -------------------------
+    "RUSTSEC-2024-0370", # proc-macro-error
+    "RUSTSEC-2026-0173", # proc-macro-error2
+]

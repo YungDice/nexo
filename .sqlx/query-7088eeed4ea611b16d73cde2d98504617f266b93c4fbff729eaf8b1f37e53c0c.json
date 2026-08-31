@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT e.id, e.epoch\n             FROM envelopes e\n             JOIN conversation_members m\n               ON m.conversation_id = e.conversation_id AND m.user_id = $3\n             WHERE e.conversation_id = $1\n               AND e.client_msg_id = $2\n               AND e.sender_device_id = $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "epoch",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7088eeed4ea611b16d73cde2d98504617f266b93c4fbff729eaf8b1f37e53c0c"
+}

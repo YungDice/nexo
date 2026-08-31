@@ -1,0 +1,184 @@
+# Release (M9): tag -> signed NSIS installer + updater artifacts.
+#
+# Triggered by a version tag. Produces the per-user NSIS installer, the
+# minisign-signed updater artifact, and `latest.json` -- the manifest the
+# running app fetches -- then attaches all three to the GitHub release for
+# that tag.
+#
+# Secrets required:
+#   TAURI_SIGNING_PRIVATE_KEY           the updater minisign private key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password
+# The private key exists only as this secret and in the password manager --
+# never in the repo, never echoed in logs (brief section 8).
+#
+# Authenticode signing of the installer itself is configured through
+# bundle.windows.signCommand once the certificate exists (plan risk 1); this
+# workflow does not fake it in the meantime.
+#
+# # Two things this file got wrong before, both silent
+#
+# 1. It guarded the missing-secret case with `if: ${{ secrets.X == '' }}`. The
+#    `secrets` context is not available in a step `if`, so the whole workflow
+#    failed validation -- which GitHub reports as a failed *run* on every push,
+#    tag filter or not, with zero jobs in it. Thirty-seven red runs and not one
+#    step ever executed. The check is a `run:` step now, reading the secret
+#    through `env`, where it is allowed.
+# 2. It wrote `manifest-windows-x86_64.json` pointing at updates.dice.fit. The
+#    app fetches `latest.json` from the GitHub release (see
+#    `plugins.updater.endpoints` in tauri.conf.json), so both the name and the
+#    URL were wrong and an update check would have 404'd.
+#
+# # Living beside scripts/release.ps1
+#
+# The script cuts releases from a Windows machine and pushes the tag, which
+# starts this. Rather than race it, this ensures the release exists and then
+# uploads with --clobber, and takes the release body as the notes when the
+# script already wrote them -- so whichever finishes second leaves a complete,
+# self-consistent set of three files rather than half of each.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  installer:
+    name: Installer (Windows x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # A `run:` step, not an `if:`. See the note at the top of this file --
+      # `secrets` in a step condition is what kept this workflow from ever
+      # starting.
+      - name: Refuse to build unsigned updater artifacts
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY is not set. An installer without a"
+            echo "signed updater artifact can never be updated; set the secret"
+            echo "(docs/RELEASING.md) instead of shipping a dead end."
+            exit 1
+          fi
+
+      # The tag is the version. A tag whose number disagrees with the version
+      # compiled into the binary produces a manifest every client installs,
+      # still reads as the old version, and installs again forever.
+      - name: Check the tag against the version in the tree
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $conf = Get-Content "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          $cargo = (Select-String -Path "Cargo.toml" -Pattern '^version = "([^"]+)"' |
+                    Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($conf.version -ne $version -or $cargo -ne $version) {
+            Write-Host "::error::tag $version, tauri.conf.json $($conf.version), Cargo.toml $cargo -- all three must agree"
+            exit 1
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.20.0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the installer and updater artifacts
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm --filter nexo-desktop tauri build
+
+      - name: Locate what was built
+        shell: pwsh
+        run: |
+          $bundle = "target/release/bundle/nsis"
+          if (-not (Test-Path $bundle)) { $bundle = "apps/desktop/src-tauri/target/release/bundle/nsis" }
+          if (-not (Test-Path $bundle)) { Write-Host "::error::no NSIS bundle directory"; exit 1 }
+          $installer = Get-ChildItem "$bundle/*-setup.exe" | Select-Object -First 1
+          if (-not $installer) { Write-Host "::error::no installer in $bundle"; exit 1 }
+          if (-not (Test-Path "$($installer.FullName).sig")) {
+            Write-Host "::error::no .sig beside the installer -- the build did not sign it"
+            exit 1
+          }
+          "BUNDLE_DIR=$bundle" >> $env:GITHUB_ENV
+          "INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
+          "INSTALLER_NAME=$($installer.Name)" >> $env:GITHUB_ENV
+
+      # Written after the release exists, because the notes come from it when
+      # scripts/release.ps1 got there first.
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Native commands report through $LASTEXITCODE here, not exceptions:
+          # `gh release view` on a tag with no release yet is an expected
+          # failure, and it must not abort the step.
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $tag = "${{ github.ref_name }}"
+
+          # Joined: gh hands back an array of lines for a multi-line body, and
+          # an array in `notes` would serialise as a JSON list where the
+          # updater expects a string.
+          $notes = (gh release view $tag --json body --jq .body 2>$null) -join "`n"
+          if ($LASTEXITCODE -ne 0) {
+            # No PowerShell here-string: its terminator has to sit at column
+            # zero, which ends the YAML block this script lives in.
+            $draft = "Draft. Smoke-test in a clean Windows 11 VM before publishing " +
+                     "(docs/RELEASING.md): install the previous version, open it, and " +
+                     "confirm it updates itself to $tag."
+            gh release create $tag --draft --title "Nexo $tag" --notes $draft
+            if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+            $notes = "Nexo $tag"
+          }
+          if ([string]::IsNullOrWhiteSpace($notes)) { $notes = "Nexo $tag" }
+
+          # The static manifest form: the client fetches one file and compares
+          # versions itself. The signature is what makes the host untrusted,
+          # which is why serving this from GitHub Releases is fine.
+          $manifest = [ordered]@{
+            version   = $env:VERSION
+            notes     = $notes
+            pub_date  = (Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = (Get-Content "$env:INSTALLER.sig" -Raw).Trim()
+                url       = "https://github.com/${{ github.repository }}/releases/download/$tag/$env:INSTALLER_NAME"
+              }
+            }
+          }
+          $out = "$env:BUNDLE_DIR/latest.json"
+          # A BOM makes this unparseable as JSON, and the updater reports it as
+          # "error decoding response body" -- which points at the network
+          # rather than at the file. WriteAllText with a BOM-less encoder, not
+          # Out-File.
+          [System.IO.File]::WriteAllText(
+            $out,
+            ($manifest | ConvertTo-Json -Depth 5),
+            (New-Object System.Text.UTF8Encoding $false)
+          )
+
+          # --clobber: all three replaced together or not at all, so the
+          # manifest can never describe an installer that is no longer there.
+          gh release upload $tag $env:INSTALLER "$env:INSTALLER.sig" $out --clobber
+          if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }

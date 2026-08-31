@@ -1,0 +1,261 @@
+import { useEffect, useState } from "react";
+
+import { useApp } from "../../app/store";
+import { relativeTime } from "../../lib/format";
+import { openUrl } from "../../lib/native";
+import { fieldFor } from "../../lib/palette";
+import { asFeedError, postsBy, profile as profileCall, type Post, type Profile } from "../../lib/feed";
+import { Avatar } from "../../components/ui/Avatar";
+import { Button } from "../../components/ui/Button";
+import { block, listBlocks, unblock } from "../../lib/blocks";
+import { confirm } from "../../lib/native";
+import { Callout, EmptyState, Skeleton } from "../../components/ui/Feedback";
+import { Icon } from "../../components/ui/Icon";
+import { Panel } from "../../components/ui/Surface";
+import { RemoteImage } from "../../components/ui/RemoteImage";
+import { startConversation } from "../../lib/conversations";
+
+/**
+ * Somebody else's profile.
+ *
+ * Read-only, and short by design: a public profile shows what its owner chose
+ * to make visible (G2), and the server has already applied that — a field that
+ * is not public simply is not in the response. Nothing here decides what to
+ * hide, which is the only way that promise stays true.
+ */
+export function PublicProfile({ handle, now }: { handle: string; now: Date }) {
+  const go = useApp((s) => s.go);
+  const openConversation = useApp((s) => s.openConversation);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [posts, setPosts] = useState<Post[] | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [blocked, setBlocked] = useState(false);
+  const [blocking, setBlocking] = useState(false);
+
+  // Read from the server rather than remembered locally: the block is the
+  // server's state, and a button that showed this machine's guess would be
+  // wrong on the second device.
+  useEffect(() => {
+    let cancelled = false;
+    void listBlocks()
+      .then((list) => {
+        if (!cancelled) setBlocked(list.some((b) => b.handle === handle));
+      })
+      .catch(() => {
+        // Not knowing is not worth an error banner over somebody's profile.
+        // The button then offers Block, and blocking twice is a no-op.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [handle]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setProfile(null);
+    setPosts(null);
+    setProblem(null);
+
+    void profileCall(handle)
+      .then((p) => {
+        if (!cancelled) setProfile(p);
+      })
+      .catch((error) => {
+        if (!cancelled) setProblem(asFeedError(error).message);
+      });
+
+    void postsBy(handle)
+      .then((page) => {
+        if (!cancelled) setPosts(page.posts);
+      })
+      .catch(() => {
+        // The profile is the point; its posts failing to load is not worth a
+        // second error message on the same screen.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [handle]);
+
+  async function toggleBlock() {
+    if (!profile || blocking) return;
+    if (!blocked) {
+      const ok = await confirm(
+        `Block ${profile.display_name}?`,
+        "Their posts leave your feed, yours leave theirs, and neither of you can start a " +
+          "conversation with the other. Messages already delivered stay where they are — they " +
+          "are on each other's machines and the server never had the keys. Blocking also " +
+          "cannot stop somebody making a second account.",
+      );
+      if (!ok) return;
+    }
+    setBlocking(true);
+    try {
+      if (blocked) await unblock(profile.handle);
+      else await block(profile.handle);
+      setBlocked(!blocked);
+    } catch (error) {
+      setProblem(asFeedError(error).message);
+    } finally {
+      setBlocking(false);
+    }
+  }
+
+  async function message() {
+    if (!profile || starting) return;
+    setStarting(true);
+    try {
+      openConversation(await startConversation(profile.handle));
+      go("messages");
+    } catch (error) {
+      setProblem(asFeedError(error).message);
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  if (problem) {
+    return (
+      <Panel tone="content" edge={false} className="flex flex-1 items-center justify-center p-8">
+        <EmptyState icon="user" title="No such profile" body={problem} />
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel tone="content" edge={false} className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-[840px] px-6 pb-12">
+        <div className="relative pt-4">
+          {profile?.banner_key ? (
+            <RemoteImage
+              imageKey={profile.banner_key}
+              alt={`${profile.display_name}'s banner`}
+              className="rounded-panel aspect-[3/1] max-h-[240px] w-full"
+            />
+          ) : (
+            <div
+              className="rounded-panel aspect-[3/1] max-h-[240px] w-full"
+              style={{ background: fieldFor(handle + "-banner") }}
+              role="img"
+              aria-label={`${handle}'s banner`}
+            />
+          )}
+
+          <span className="ring-surface-2 absolute -bottom-10 left-5 rounded-full ring-4">
+            {profile?.avatar_key ? (
+              <RemoteImage
+                imageKey={profile.avatar_key}
+                alt={profile.display_name}
+                className="rounded-full"
+                style={{ width: 88, height: 88 }}
+              />
+            ) : (
+              <Avatar seed={handle} name={profile?.display_name ?? handle} size={88} />
+            )}
+          </span>
+        </div>
+
+        <div className="flex items-start justify-end gap-2 pt-3">
+          <Button icon="messages" disabled={!profile || starting} onClick={() => void message()}>
+            {starting ? "Opening…" : "Message"}
+          </Button>
+          <Button
+            variant={blocked ? "secondary" : "danger"}
+            disabled={!profile || blocking}
+            onClick={() => void toggleBlock()}
+          >
+            {blocked ? "Unblock" : "Block"}
+          </Button>
+        </div>
+
+        <div className="mt-6">
+          {profile ? (
+            <>
+              <h1 className="text-text-hi font-display text-[26px] leading-tight font-semibold">
+                {profile.display_name}
+              </h1>
+              <p className="text-text-lo mt-0.5 text-body">@{profile.handle}</p>
+            </>
+          ) : (
+            <>
+              <Skeleton className="h-6 w-48" />
+              <Skeleton className="mt-2 h-3 w-24" />
+            </>
+          )}
+
+          {profile?.bio ? (
+            <p className="text-text-mid mt-3 max-w-[70ch] text-body leading-relaxed whitespace-pre-wrap">
+              {profile.bio}
+            </p>
+          ) : null}
+
+          <div className="text-text-lo mt-3 flex flex-wrap items-center gap-4 text-meta">
+            {profile?.location ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Icon name="pin" size={13} />
+                {profile.location}
+              </span>
+            ) : null}
+            {profile?.join_date_ms ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Icon name="calendar" size={13} />
+                Joined {relativeTime(new Date(profile.join_date_ms), now)}
+              </span>
+            ) : null}
+          </div>
+
+          {profile?.links?.length ? (
+            <ul className="mt-3 flex flex-wrap gap-2">
+              {profile.links.map((link) => (
+                <li key={link.url}>
+                  <button
+                    type="button"
+                    onClick={() => void openUrl(link.url)}
+                    className="rounded-control text-accent-soft bg-fill hover:bg-fill-hover inline-flex items-center gap-1.5 border border-line px-2.5 py-1.5 text-meta"
+                  >
+                    <Icon name="external" size={13} />
+                    {link.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+
+        <h2 className="text-text-hi mt-8 font-display text-[17px] font-medium">Posts</h2>
+        {posts === null ? (
+          <div className="mt-3 flex flex-col gap-2">
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-16 w-full" />
+          </div>
+        ) : posts.length === 0 ? (
+          <p className="text-text-lo mt-3 text-meta">Nothing posted yet.</p>
+        ) : (
+          <ul className="mt-3 flex flex-col gap-2">
+            {posts.map((post) => (
+              <li key={post.id} className="rounded-panel border border-line bg-fill p-3">
+                {post.title ? (
+                  <p className="text-text-hi text-body font-medium">{post.title}</p>
+                ) : null}
+                {post.body ? (
+                  <p className="text-text-mid mt-0.5 text-meta whitespace-pre-wrap">{post.body}</p>
+                ) : null}
+                <p className="text-text-lo mt-1 text-[11px]">
+                  {relativeTime(new Date(post.created_at_ms), now)}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {problem ? (
+          <Callout tone="warning" icon="alert" className="mt-4">
+            {problem}
+          </Callout>
+        ) : null}
+      </div>
+    </Panel>
+  );
+}

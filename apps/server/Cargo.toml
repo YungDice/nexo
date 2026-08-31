@@ -1,0 +1,53 @@
+[package]
+name = "nexo-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Nexo API and MLS Delivery Service. Handles ciphertext it cannot read."
+
+# A library plus a thin binary. Two reasons, both hard requirements rather
+# than taste: `pub` items in a *bin* crate that nothing calls are dead code and
+# fail `clippy -D warnings`, and an integration test cannot reach a bin target
+# at all -- tests/s3_smoke.rs needs both.
+[lib]
+name = "nexo_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nexo-server"
+path = "src/main.rs"
+
+[dependencies]
+nexo-protocol.workspace = true
+# For KEY_PACKAGE_REFILL_THRESHOLD: the refill rule is one number, and it
+# should not exist twice.
+nexo-crypto.workspace = true
+axum.workspace = true
+tokio.workspace = true
+# Splitting a WebSocket into a sink and a stream.
+futures-util = { version = "=0.3.34", default-features = false, features = ["sink"] }
+sqlx.workspace = true
+dotenvy.workspace = true
+aws-sdk-s3.workspace = true
+uuid.workspace = true
+argon2.workspace = true
+rand.workspace = true
+jsonwebtoken.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+tower-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+openmls_traits.workspace = true
+openmls_rust_crypto.workspace = true
+openmls_basic_credential.workspace = true
+openmls.workspace = true
+tower = { version = "=0.5.3", features = ["util"] }
+# tests/s3_smoke.rs reads .env the same way the binary does.
+dotenvy.workspace = true

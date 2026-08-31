@@ -1,0 +1,115 @@
+import { useState } from "react";
+
+import { asAuthError, setPin as setPinCall, type Account } from "../../lib/auth";
+import { Button } from "../../components/ui/Button";
+import { Field } from "../../components/ui/Controls";
+import { Callout } from "../../components/ui/Feedback";
+import { Panel } from "../../components/ui/Surface";
+
+/**
+ * The step that stands between signing in and the app, until a PIN exists.
+ *
+ * # Why a PIN is required rather than offered
+ *
+ * Auto-lock is what protects an unattended machine, and it only protects
+ * anything if getting back in is quick. Without a PIN, every lock costs a full
+ * password — so people lengthen the timer, or turn it off, and the protection
+ * that was optional in theory becomes absent in practice. Requiring the cheap
+ * way back in is what makes the expensive protection survivable.
+ *
+ * # What it is not
+ *
+ * Not a second factor, and not a secret the server has heard of. It only ever
+ * *re*-opens a store this machine already holds, under this Windows account.
+ * Somebody with the disk and not the account has nothing to try it against;
+ * somebody with both has the store anyway. `docs/THREAT-MODEL.md` says the
+ * same, and this component deliberately does not imply more.
+ *
+ * # Why it replaces the shell rather than covering it
+ *
+ * The same rule as `LockScreen`: nothing readable may sit in the DOM behind a
+ * gate. It is drawn *instead of* the app, so there is no conversation
+ * underneath to reach with a screen reader or a stray tab press.
+ */
+export function RequirePin({ account, onSet }: { account: Account; onSet: () => void }) {
+  const [pin, setPin] = useState("");
+  const [again, setAgain] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const short = pin.length < 4;
+  const mismatch = again.length > 0 && pin !== again;
+
+  async function save() {
+    if (short || pin !== again || busy) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      await setPinCall(pin);
+      onSet();
+    } catch (raw) {
+      setProblem(asAuthError(raw).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex h-full items-center justify-center p-8">
+      <Panel tone="raised" className="w-full max-w-[420px] rounded-panel border border-line p-6">
+        <h1 className="text-text-hi font-display text-[22px] leading-tight font-semibold">
+          Choose an unlock PIN
+        </h1>
+        <p className="text-text-mid mt-2 text-body leading-relaxed">
+          Nexo locks itself when you leave it. The PIN is how you get back in without
+          typing your whole password, {account.display_name}.
+        </p>
+
+        <Callout tone="neutral" icon="shield">
+          It never leaves this machine and the server never sees it, so it only unlocks —
+          it cannot sign you in anywhere else. Four digits or more, and five wrong
+          guesses fall back to your password.
+        </Callout>
+
+        <div className="mt-4 flex flex-wrap gap-3">
+          <Field
+            label="PIN"
+            type="password"
+            inputMode="numeric"
+            autoFocus
+            className="w-[160px]"
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 12))}
+          />
+          <Field
+            label="Again"
+            type="password"
+            inputMode="numeric"
+            className="w-[160px]"
+            value={again}
+            onChange={(e) => setAgain(e.target.value.replace(/\D/g, "").slice(0, 12))}
+            {...(mismatch ? { error: "Those two are not the same." } : {})}
+          />
+        </div>
+
+        <div className="mt-4">
+          <Button
+            variant="primary"
+            disabled={short || pin !== again || busy}
+            onClick={() => void save()}
+          >
+            {busy ? "Setting…" : "Set PIN and continue"}
+          </Button>
+        </div>
+
+        {problem ? (
+          <div className="mt-3">
+            <Callout tone="danger" icon="alert">
+              {problem}
+            </Callout>
+          </div>
+        ) : null}
+      </Panel>
+    </div>
+  );
+}

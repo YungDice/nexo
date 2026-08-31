@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.id, c.post_id, c.parent_id, c.author_id, c.body,\n                c.deleted_at IS NOT NULL AS \"deleted!\",\n                (EXTRACT(EPOCH FROM c.created_at) * 1000)::BIGINT AS \"created_at_ms!\",\n                u.handle::TEXT AS \"handle!\", u.display_name, u.avatar_key\n         FROM post_comments c\n         JOIN users u ON u.id = c.author_id\n         WHERE c.post_id = $1\n         ORDER BY c.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "post_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "parent_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "author_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "body",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "deleted!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at_ms!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "handle!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "avatar_key",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      null,
+      null,
+      null,
+      false,
+      true
+    ]
+  },
+  "hash": "082bb8c4e6014a2a06a18fb7fc81a2573aec292ca2c871194ff6013c25bc55bd"
+}

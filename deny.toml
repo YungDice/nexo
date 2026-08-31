@@ -1,0 +1,92 @@
+# Supply-chain policy (brief rule 8). CI runs `cargo deny check` on every push.
+
+[graph]
+# Left empty on purpose. The client ships only for Windows and the server runs
+# only on Linux, so a single union graph would judge each against the other's
+# dependencies -- it would drag Tauri's GTK stack into the server's audit and
+# vice versa. scripts/check.ps1 and CI therefore run two passes:
+#
+#   cargo deny --target x86_64-pc-windows-msvc  --exclude nexo-server  check
+#   cargo deny --target aarch64-unknown-linux-gnu --exclude nexo-desktop check
+targets = []
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+
+# Every entry below is a decision, not a mute. Each one states what it is, why
+# it cannot currently be fixed by upgrading, and what makes it non-exploitable
+# for what Nexo actually ships. Anything that stops being true here is a bug.
+ignore = [
+    # --- libcrux, reached via openmls_rust_crypto -> hpke-rs ------------------
+    # Fixed in libcrux-sha3 0.0.10 / libcrux-secrets 0.0.6. Those are NOT
+    # reachable by `cargo update`: under cargo's semver rules every 0.0.z is a
+    # breaking change, so the bump requires hpke-rs 0.7, which requires
+    # openmls_rust_crypto 0.6, which is only published as a release candidate.
+    # Putting a release candidate in the crypto core is the larger risk, so we
+    # stay on stable openmls 0.8.1 and carry these three with the reasoning
+    # below. Revisit the moment openmls 0.9 is stable -- and *before* any
+    # Android work, because that turns the aarch64 one live.
+    { id = "RUSTSEC-2026-0207", reason = "Incremental SHAKE squeeze. Nexo's ciphersuite is DHKEM-X25519 / HKDF-SHA256 / AES-128-GCM / Ed25519 and uses no SHAKE XOF at all." },
+    { id = "RUSTSEC-2026-0208", reason = "AVX2 SHAKE-256 for ML-KEM/ML-DSA. Post-quantum ciphersuites are explicitly out of scope for v0.1 (brief section 11) and the feature is off." },
+    { id = "RUSTSEC-2026-0212", reason = "Constant-time swap/select on aarch64. v0.1 ships x86_64 Windows only, and the aarch64 server does not link nexo-crypto. MUST be resolved before the Android port (brief section 12)." },
+
+    # --- unic-*, reached via urlpattern -> tauri-utils -----------------------
+    # Unmaintained, no vulnerability, no safe upgrade published. Nexo has no
+    # direct use of these; they sit inside Tauri's URL pattern matching. The
+    # fix belongs upstream in Tauri and is tracked there, not here.
+    { id = "RUSTSEC-2025-0075", reason = "unic-* unmaintained; transitive through tauri-utils, no upgrade available" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-* unmaintained; transitive through tauri-utils, no upgrade available" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-* unmaintained; transitive through tauri-utils, no upgrade available" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-* unmaintained; transitive through tauri-utils, no upgrade available" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-* unmaintained; transitive through tauri-utils, no upgrade available" },
+
+    # --- build-time only -----------------------------------------------------
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained and runs only at build time; no code from it is in the shipped binary" },
+]
+
+[licenses]
+version = 2
+# Permissive licences only.
+#
+# The reason this list matters is in §3 of the brief: `libsignal` is
+# AGPL-3.0-only, and linking it into a distributed desktop client would impose
+# copyleft on the whole application. OpenMLS is MIT. Denying copyleft here means
+# a dependency that would repeat that problem fails CI rather than shipping.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    # webpki-roots, reached through sqlx's tls-rustls feature. This is the
+    # licence Mozilla publishes its root CA bundle under -- a permissive *data*
+    # licence with no copyleft, so it raises none of the concern this list
+    # exists for. The crate carries certificate data, not code.
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+    "OpenSSL",
+]
+confidence-threshold = 0.9
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Nothing that would put a second, unaudited crypto stack in the binary, and
+# nothing AGPL. Additions here need a written reason.
+deny = [
+    { name = "libsignal-protocol", reason = "AGPL-3.0-only; see brief §3" },
+    { name = "openssl", reason = "the only OpenSSL in this tree is the one SQLCipher vendors" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

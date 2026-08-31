@@ -1,0 +1,24 @@
+{
+  "name": "@nexo/design-tokens",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The design tokens, shared between the Windows client and (later) Android.",
+  "exports": {
+    "./tokens.css": "./tokens.css",
+    "./tokens.json": "./tokens.json",
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build:tokens": "tsx src/generate.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource/jetbrains-mono": "5.3.0"
+  },
+  "devDependencies": {
+    "tsx": "4.20.6",
+    "vitest": "4.1.11"
+  }
+}

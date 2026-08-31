@@ -1,0 +1,61 @@
+#!/bin/sh
+# Strippt Attributions-Zeilen aus der Commit-Message.
+# Alles in diesem Repo laeuft unter bananaaboy — siehe CLAUDE.md.
+#
+# Aktiv nach: git config core.hooksPath .githooks
+
+set -e
+
+msg="$1"
+[ -f "$msg" ] || exit 0
+
+tmp="${msg}.bananaaboy.$$"
+
+awk '
+{
+  raw = $0
+  l = tolower(raw)
+  sub(/^[ \t]*/, "", l)
+  sub(/^[>#][ \t]*/, "", l)
+
+  # Trailer
+  if (l ~ /^co-authored-by[ \t]*:/)   next
+  if (l ~ /^co-committed-by[ \t]*:/)  next
+  if (l ~ /^claude-session[ \t]*:/)   next
+  if (l ~ /^assisted-by[ \t]*:/)      next
+  if (l ~ /^generated-by[ \t]*:/)     next
+  if (l ~ /^generated-with[ \t]*:/)   next
+
+  # Fusszeilen und Links, egal in welcher Formulierung
+  if (index(l, "claude code") > 0)          next
+  if (index(l, "claude.ai/code") > 0)       next
+  if (index(l, "claude.com/claude-code") > 0) next
+  if (l ~ /^https?:\/\/claude\.ai\//)       next
+  if (index(raw, "🤖") > 0)                 next
+
+  # Mehrere Leerzeilen hintereinander zu einer zusammenziehen, damit an der
+  # Stelle einer gestrippten Fusszeile kein Loch bleibt.
+  t = raw
+  gsub(/[ \t]/, "", t)
+  if (t == "") {
+    if (n == 0 || blank_prev) next
+    blank_prev = 1
+  } else {
+    blank_prev = 0
+  }
+
+  buf[n++] = raw
+}
+END {
+  # Uebrig gebliebene Trenner und Leerzeilen am Ende wegnehmen.
+  while (n > 0) {
+    t = buf[n-1]
+    gsub(/[ \t]/, "", t)
+    if (t == "" || t ~ /^-{3,}$/ || t ~ /^_{3,}$/ || t ~ /^\*{3,}$/) { n--; continue }
+    break
+  }
+  for (i = 0; i < n; i++) print buf[i]
+}
+' "$msg" > "$tmp"
+
+mv "$tmp" "$msg"

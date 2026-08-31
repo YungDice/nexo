@@ -1,6 +1,6 @@
 # BUILD PROMPT — Nexo, Secure Messenger, Windows Desktop (MVP v0.1)
 
-> Paste this whole document into your coding agent (Claude Code / Cursor / Codex) as the project brief.
+> Paste this whole document into your coding agent as the project brief.
 
 **Product:** Nexo
 **Domain:** `dice.fit`

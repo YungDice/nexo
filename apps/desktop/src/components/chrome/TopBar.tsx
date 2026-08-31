@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { windowAction } from "../../app/useWindow";
 import { cn } from "../../lib/cn";
+import { BrandMark } from "../ui/BrandMark";
 import { Icon, type IconName } from "../ui/Icon";
 
 /**
@@ -28,11 +29,11 @@ export function TopBar({
   return (
     <header className="drag-region glass-1 flex h-[60px] shrink-0 items-stretch border-b border-[var(--hairline)]">
       <div className="flex w-16 shrink-0 items-center justify-center border-r border-[var(--hairline)]">
-        {/* The wordmark is a mark, not a logo lockup: one letter and a full
-            stop, in the display face. */}
-        <span className="font-display text-text-hi text-[19px] leading-none font-bold tracking-[-0.04em]">
-          N<span className="text-accent">.</span>
-        </span>
+        {/* The mark, not a logo lockup: one letter and a full stop. Drawn as
+            paths rather than typeset, because no font is bundled and the
+            display face fell through to whatever the OS had — see
+            `BrandMark`. */}
+        <BrandMark className="text-text-hi" />
       </div>
 
       <div className="flex min-w-0 flex-1 items-stretch">{children}</div>

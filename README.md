@@ -234,4 +234,14 @@ their media are server-readable by design, and so is conversation metadata.
 
 ## Licence
 
-MIT.
+MIT — the text in [`LICENSE`](LICENSE), unedited on purpose so that licence
+scanners recognise it. Copyright is held jointly; see
+[`docs/LICENSING.md`](docs/LICENSING.md).
+
+That document is the precise version: what MIT obliges us to ship alongside the
+installer, which parts of its warranty disclaimer Swiss law does not enforce
+(Art. 100 OR, Art. 8 PrHG), what each dependency licence asks of us, the two
+vendored native libraries `cargo deny` cannot see, and the export-control
+position. It also names the three exposures a licence file cannot fix: the
+trademark on the name, BÜPF/VÜPF duties for a Swiss communications service, and
+revDSG/GDPR obligations once real users exist.

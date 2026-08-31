@@ -27,6 +27,11 @@
 .PARAMETER NoPublish
   Do everything but the GitHub release. For checking the artifacts first.
 
+.PARAMETER ViaCI
+  Bump, commit, tag and push, and let .github/workflows/release.yml build and
+  publish. Needs no signing key on this machine -- the workflow holds it as a
+  repository secret. This is the path to use when the secrets live on GitHub.
+
 .PARAMETER SkipBuild
   Reuse the artifacts already in target\release\bundle\nsis. Only correct when
   they were built from the current version.
@@ -36,13 +41,17 @@
 
 .EXAMPLE
   .\scripts\release.ps1 -Version 0.2.0 -Notes "Feed rewrite."
+
+.EXAMPLE
+  .\scripts\release.ps1 -ViaCI -Notes "Media viewer and PIN unlock."
 #>
 [CmdletBinding()]
 param(
     [string]$Notes = "Bug fixes and improvements.",
     [string]$Version,
     [switch]$NoPublish,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$ViaCI
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,7 +68,13 @@ $tauriConf = Join-Path $root "apps\desktop\src-tauri\tauri.conf.json"
 # and every retry moved it further, so the number climbed without any release
 # ever being cut.
 
-if (-not $SkipBuild) {
+# -ViaCI hands the build to .github/workflows/release.yml, which holds the
+# signing key as a repository secret. GitHub Secrets are injected into Actions
+# runners and nowhere else -- they are not visible to a shell on this machine,
+# which is why setting them there does nothing for a local build. So this path
+# asks for no key and no password: it bumps, tags and pushes, and the workflow
+# does the rest.
+if (-not $SkipBuild -and -not $ViaCI) {
     if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
         $keyFile = Join-Path $env:USERPROFILE ".tauri\nexo-updater.key"
         if (-not (Test-Path $keyFile)) {
@@ -91,7 +106,7 @@ if (-not $NoPublish -and -not (Get-Command gh -ErrorAction SilentlyContinue)) {
 # and forgetting to re-pin the public half is the way this happens, and it is
 # silent every step until then.
 $pubFile = Join-Path $env:USERPROFILE ".tauri\nexo-updater.key.pub"
-if (-not $SkipBuild -and (Test-Path $pubFile)) {
+if (-not $SkipBuild -and -not $ViaCI -and (Test-Path $pubFile)) {
     $keyPub = (Get-Content $pubFile | Select-Object -First 1).Trim()
     $pinned = (Get-Content $tauriConf -Raw | ConvertFrom-Json).plugins.updater.pubkey
     if ($keyPub -and $pinned -and $keyPub -ne $pinned) {
@@ -199,6 +214,49 @@ $confRaw = $confRaw -replace '"version": "[^"]+"', "`"version`": `"$next`""
 if ((Read-Version) -ne $next) { throw "the version bump did not take" }
 if (-not $resuming) {
     Write-Host "Bumped Cargo.toml and tauri.conf.json." -ForegroundColor Green
+}
+
+# ----------------------------------------------------------------- via CI ---
+
+if ($ViaCI) {
+    Push-Location $root
+    try {
+        # Nothing to commit when the version was already this one -- releasing
+        # a commit that is finished rather than bumping past it.
+        $dirty = (git -C $root status --porcelain -- Cargo.toml apps/desktop/src-tauri/tauri.conf.json)
+        if ($dirty) {
+            git add Cargo.toml Cargo.lock apps/desktop/src-tauri/tauri.conf.json
+            git commit -m "release v$next" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "git commit failed" }
+        } else {
+            Write-Host "Version is already $next; tagging the commit as it stands." -ForegroundColor Yellow
+        }
+
+        # The tag is what starts the workflow, so it goes last and only once
+        # the commit it names is on the remote. A tag pushed ahead of its
+        # commit starts a build of code GitHub does not have yet.
+        git push
+        if ($LASTEXITCODE -ne 0) { throw "git push failed" }
+
+        if (-not (git -C $root tag --list "v$next")) {
+            git tag "v$next"
+            if ($LASTEXITCODE -ne 0) { throw "git tag failed" }
+        }
+        git push origin "v$next"
+        if ($LASTEXITCODE -ne 0) { throw "pushing the tag failed" }
+    } finally {
+        Pop-Location
+    }
+
+    Write-Host ""
+    Write-Host "Pushed v$next. GitHub Actions is building it." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  gh run watch      follow the build"
+    Write-Host "  gh release view v$next    the release, once it is done"
+    Write-Host ""
+    Write-Host "The workflow opens the release as a draft. Publish it after a smoke test;"
+    Write-Host "the updater only follows the newest *published* release."
+    exit 0
 }
 
 # ------------------------------------------------------------------ build ---

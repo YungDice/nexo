@@ -23,6 +23,7 @@ pub mod blocks;
 pub mod db;
 pub mod delivery;
 pub mod health;
+pub mod limits;
 pub mod media;
 pub mod posts;
 pub mod profiles;
@@ -38,7 +39,14 @@ pub use storage::Storage;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/health", get(health::health))
-        .merge(auth::router())
+        // The auth router carries its own limit, keyed by client address
+        // rather than by account: `/v1/auth/salt` and `/v1/auth/login` are both
+        // reached before there is an account to key on. Applied here because
+        // `auth::router()` is built before the state exists.
+        .merge(auth::router().layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            limits::limit_auth,
+        )))
         .merge(blocks::router())
         .merge(delivery::router())
         .merge(media::router())

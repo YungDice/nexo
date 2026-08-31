@@ -14,12 +14,6 @@
     "dialog:allow-save",
     "dialog:allow-message",
     "dialog:allow-ask",
-    "fs:allow-write-text-file",
-    "fs:allow-write",
-    {
-      "identifier": "fs:scope",
-      "allow": ["$DOWNLOAD/**", "$DOCUMENT/**", "$DESKTOP/**", "$HOME/**"]
-    },
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text",
     {

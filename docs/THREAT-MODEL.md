@@ -177,6 +177,20 @@ forge them without a private identity key.
 `nexo-media`, and all metadata in §2.2. Cannot read message bodies or
 attachments, and cannot derive the group secrets to try.
 
+**Anyone who can send the server requests.** **Open — no rate limiting exists.**
+`apps/server/src/lib.rs` composes the router with a trace layer and nothing
+else, so none of BRIEF §4.5's three limits is in force. Two consequences worth
+naming rather than leaving implied:
+
+- `/v1/auth/login` runs Argon2id at 19 MiB per attempt on the server. Unlimited,
+  it is both a password-guessing oracle and a memory-exhaustion lever against a
+  single small machine. `/v1/auth/salt` is unauthenticated by construction.
+- `/v1/keypackages/{handle}` **consumes** a KeyPackage per call. A loop can
+  exhaust an account's supply, after which nobody can start a conversation with
+  that person — a denial of service the victim is never shown an error for.
+
+Tracked as B2 in `docs/RESEARCH-COMPARISON.md`.
+
 **Someone holding the disk from a decommissioned server.** **Open — no disk
 encryption is configured, and the decision is deliberately deferred**
 (`OPS.md` Phase 0.2, which now lists what is actually on that disk). Until it
@@ -223,9 +237,28 @@ No messenger defends against this; claiming otherwise would be dishonest.
 
 **A compromised server that swaps public keys.** The server distributes identity
 keys, so a malicious one can hand you an attacker's key for a contact. The only
-defence is users actually comparing **safety numbers** out of band. Nexo shows
-them, warns loudly and non-dismissably when a key changes, and cannot do more
-than that. A user who never checks is vulnerable to this.
+defence is users actually comparing **safety numbers** out of band.
+
+> **Not yet true, and this is the gap that matters most.** This section used to
+> claim Nexo "warns loudly and non-dismissably when a key changes". It does not.
+> Nothing stores a peer's identity key, so nothing can notice that it changed:
+> the safety number is computed on demand from the live group, and the
+> "verified" mark is a boolean in WebView `localStorage` that is not bound to
+> any key. The ceremony is therefore **one-shot** — someone who compared digits
+> in week one is never told when the answer changes in week two, which is
+> exactly the attack this section is about.
+>
+> Worse in combination: signing in on a machine with no local store generates a
+> **fresh identity keypair** (`crates/client/src/session.rs:199`), and the
+> server accepts it as an additional device. A reinstall therefore rotates the
+> account's cryptographic identity silently, and looks — correctly — like the
+> attack above to anyone who was checking.
+>
+> Tracked as B1 and S1 in `docs/RESEARCH-COMPARISON.md`. Until they land, treat
+> a key-substituting server as **in scope and undefended**, not as mitigated by
+> a ceremony the app does not support.
+
+A user who never checks is vulnerable to this regardless.
 
 **Traffic analysis.** See §2.2.
 

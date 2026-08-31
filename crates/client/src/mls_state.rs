@@ -77,6 +77,30 @@ pub fn save(provider: &OpenMlsRustCrypto, store: &EncryptedStore) -> Result<(), 
     Ok(())
 }
 
+/// The same blob, handed back instead of written.
+///
+/// For the one caller that has to persist the ratchet in the same transaction
+/// as something else -- `send_message`, where the queued ciphertext and the
+/// state that produced it must land together or not at all.
+pub fn encode(provider: &OpenMlsRustCrypto) -> Result<Vec<u8>, MlsStateError> {
+    let values = provider
+        .storage()
+        .values
+        .read()
+        .map_err(|_| MlsStateError::Poisoned)?;
+
+    let mut blob = Vec::with_capacity(1 + 8 + values.len() * 32);
+    blob.push(FORMAT_V1);
+    blob.extend_from_slice(&(values.len() as u64).to_be_bytes());
+    for (key, value) in values.iter() {
+        blob.extend_from_slice(&(key.len() as u64).to_be_bytes());
+        blob.extend_from_slice(&(value.len() as u64).to_be_bytes());
+        blob.extend_from_slice(key);
+        blob.extend_from_slice(value);
+    }
+    Ok(blob)
+}
+
 /// Builds a provider from whatever the store holds.
 ///
 /// An empty store yields an empty provider, which is exactly right on a first

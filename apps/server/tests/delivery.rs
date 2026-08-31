@@ -38,6 +38,7 @@ async fn app() -> Option<axum::Router> {
         auth: Arc::new(TokenKeys::from_pem_bytes(TEST_KEY_PEM.as_bytes()).unwrap()),
         storage: None,
         fanout: Arc::new(nexo_server::stream::hub::LocalHub::new()),
+        limits: Arc::new(nexo_server::limits::Limits::permissive()),
     }))
 }
 

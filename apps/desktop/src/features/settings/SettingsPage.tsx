@@ -509,24 +509,38 @@ function Privacy({ now }: { now: Date }) {
         <BlockedList now={now} />
       </Group>
 
+      {/* These three send nothing today.
+          Saying so is the only honest option: a Privacy panel is the worst
+          possible place for a control that does not control anything, and a
+          switch that looks like it stops a signal leaving the machine -- when
+          no signal ever leaves -- is a promise in the wrong direction. The
+          setting is kept rather than removed because the choice is still
+          recorded, and it takes effect the moment the transport lands. */}
       <Group title="Signals you send">
+        <Callout icon="info">
+          None of these leave your machine yet. Nexo has no live connection to
+          send them over, so nothing is shared either way — the switches record
+          what you want to happen once it does.
+        </Callout>
         <Toggle
           checked={prefs.readReceipts}
           onChange={(next) => set("readReceipts", next)}
           label="Read receipts"
-          description="Let people see when you have read their message. Turning this off also hides theirs from you."
+          description="Not active yet. When it is: let people see when you have read their message, and see theirs. Turning it off will hide both."
         />
         <Divider />
         <Toggle
           checked={prefs.typingIndicators}
           onChange={(next) => set("typingIndicators", next)}
           label="Typing indicators"
+          description="Not active yet."
         />
         <Divider />
         <Toggle
           checked={prefs.presence}
           onChange={(next) => set("presence", next)}
           label="Online and last seen"
+          description="Not active yet."
         />
         <Divider />
         <Toggle

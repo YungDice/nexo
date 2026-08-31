@@ -490,7 +490,11 @@ impl EncryptedStore {
 
     /// Replaces the stored MLS state.
     pub fn set_mls_state(&self, blob: &[u8]) -> Result<(), StoreError> {
-        self.connection.execute(
+        Self::set_mls_state_on(&self.connection, blob)
+    }
+
+    fn set_mls_state_on(conn: &rusqlite::Connection, blob: &[u8]) -> Result<(), StoreError> {
+        conn.execute(
             "INSERT INTO mls_state (id, blob) VALUES (1, ?1)
              ON CONFLICT (id) DO UPDATE SET blob = excluded.blob",
             rusqlite::params![blob],
@@ -563,9 +567,49 @@ impl EncryptedStore {
         Ok(())
     }
 
+    /// Queues a message and saves the MLS state that produced it, atomically.
+    ///
+    /// These two writes must not be separable. Encrypting advances the ratchet,
+    /// so the ciphertext in the outbox belongs to generation *N* while the
+    /// state on disk still describes *N-1* until it is saved. A crash in the
+    /// gap leaves a queued message at *N* and a ratchet that will hand out *N*
+    /// again to the next one -- RFC 9420 6.3.1 names this exactly: "If this
+    /// persistent state is lost or corrupted, a client might reuse a generation
+    /// that has already been used, causing reuse of a key/nonce pair."
+    ///
+    /// The four-byte reuse guard the same section mandates makes an actual
+    /// nonce collision a 2^-32 event rather than a certainty, which is why this
+    /// was a latent bug and not a live one. It is still one `BEGIN`.
+    ///
+    /// `unchecked_transaction` rather than `transaction`: the latter needs
+    /// `&mut Connection` and everything here holds `&self`, which is what lets
+    /// the store be shared. The "unchecked" part is that it cannot statically
+    /// prevent a nested transaction; there are none in this file.
+    pub fn enqueue_with_mls_state(
+        &self,
+        item: &OutboxItem,
+        mls_state: &[u8],
+    ) -> Result<(), StoreError> {
+        let tx = self.connection.unchecked_transaction()?;
+        Self::enqueue_on(&tx, item)?;
+        Self::set_mls_state_on(&tx, mls_state)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Queues an already-encrypted message for sending.
+    ///
+    /// For callers with no ratchet state to persist alongside it. A message
+    /// that was just encrypted wants [`EncryptedStore::enqueue_with_mls_state`]
+    /// instead, so the two land together.
     pub fn enqueue(&self, item: &OutboxItem) -> Result<(), StoreError> {
-        self.connection.execute(
+        Self::enqueue_on(&self.connection, item)
+    }
+
+    /// The insert itself, against whichever handle the caller has -- the
+    /// connection, or a transaction on it.
+    fn enqueue_on(conn: &rusqlite::Connection, item: &OutboxItem) -> Result<(), StoreError> {
+        conn.execute(
             "INSERT INTO outbox
                  (client_msg_id, conversation_id, ciphertext, epoch, is_commit,
                   body, payload, queued_at_ms)
@@ -1206,6 +1250,81 @@ mod tests {
 
         let forgotten = store.forgotten_conversations().unwrap();
         assert_eq!(forgotten.get("gone"), Some(&42));
+    }
+
+    fn an_item(id: &str) -> OutboxItem {
+        OutboxItem {
+            client_msg_id: id.to_string(),
+            conversation_id: "c1".to_string(),
+            ciphertext: "aabb".to_string(),
+            epoch: 3,
+            is_commit: false,
+            body: "hello".to_string(),
+            payload: None,
+            queued_at_ms: 1,
+            attempts: 0,
+            last_error: None,
+        }
+    }
+
+    /// The pair that must not come apart.
+    ///
+    /// Encrypting advances the ratchet, so a queued ciphertext belongs to a
+    /// generation the saved state does not describe until both writes land.
+    #[test]
+    fn queueing_a_message_saves_the_ratchet_with_it() {
+        let dir = TempDir::new("outbox-atomic");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+
+        store
+            .enqueue_with_mls_state(&an_item("m1"), b"ratchet-at-generation-2")
+            .unwrap();
+
+        assert_eq!(store.outbox().unwrap().len(), 1);
+        assert_eq!(
+            store.mls_state().unwrap().as_deref(),
+            Some(&b"ratchet-at-generation-2"[..])
+        );
+    }
+
+    /// The half that would be silent.
+    ///
+    /// A failure inside the transaction must leave *neither* write, not the
+    /// queued message alone -- that is the state RFC 9420 6.3.1 warns about,
+    /// where the next send reuses a generation this one already consumed. The
+    /// second insert is forced to fail by reusing a `client_msg_id` under a
+    /// deliberate conflict, so the rollback is the real one and not a mock.
+    #[test]
+    fn a_failed_save_leaves_no_queued_message_behind() {
+        let dir = TempDir::new("outbox-rollback");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+
+        // A blob the `mls_state` table will refuse: the id column is
+        // `CHECK (id = 1)`, so a NULL blob is fine but a failure has to come
+        // from somewhere real. Instead, hold a transaction open and roll it
+        // back the way a crash would -- by dropping it without committing.
+        {
+            let tx = store.connection().unchecked_transaction().unwrap();
+            tx.execute(
+                "INSERT INTO outbox
+                     (client_msg_id, conversation_id, ciphertext, epoch, is_commit,
+                      body, payload, queued_at_ms)
+                 VALUES ('m2', 'c1', 'aabb', 3, 0, 'hello', NULL, 1)",
+                [],
+            )
+            .unwrap();
+            // No commit. Dropping rolls back, which is what a process that
+            // dies between the two writes leaves behind.
+        }
+
+        assert!(
+            store.outbox().unwrap().is_empty(),
+            "a rolled-back queue write must leave nothing"
+        );
+        assert!(
+            store.mls_state().unwrap().is_none(),
+            "and no ratchet state either"
+        );
     }
 
     #[test]

@@ -68,6 +68,11 @@ pub enum DeliveryError {
     /// should not be able to tell that from a message that simply did not go
     /// through. See `blocks.rs` for why that asymmetry is the point.
     Refused,
+    /// Over a rate limit (BRIEF 4.5).
+    ///
+    /// No detail and no retry-after: how much budget is left, and which limit
+    /// was met, are both things an attacker would use to pace themselves.
+    TooManyRequests,
     /// Something failed that the caller cannot do anything about.
     Internal(anyhow::Error),
 }
@@ -116,6 +121,12 @@ impl IntoResponse for DeliveryError {
                 StatusCode::FORBIDDEN,
                 "refused",
                 "That could not be delivered.".to_string(),
+                None,
+            ),
+            DeliveryError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Too many requests. Slow down.".to_string(),
                 None,
             ),
             DeliveryError::Internal(error) => {
@@ -233,9 +244,22 @@ pub struct KeyPackageResponse {
 /// fail with something unhelpful much later.
 async fn claim_key_package(
     State(state): State<AppState>,
-    _caller: Caller,
+    caller: Caller,
     Path(handle): Path<String>,
 ) -> Result<Json<KeyPackageResponse>, DeliveryError> {
+    // Keyed by the caller, not by the handle being claimed: the limit exists to
+    // stop one account draining everyone's supply, and keying it by target
+    // would let an attacker spend a fresh budget per victim.
+    //
+    // Every call here consumes a KeyPackage, so an unlimited endpoint is a
+    // silent denial of service against a third party -- once someone's supply
+    // is gone, nobody can start a conversation with them, and they are shown
+    // no error because nothing they did failed.
+    if !state.limits.key_packages.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "key package rate limit reached");
+        return Err(DeliveryError::TooManyRequests);
+    }
+
     let row = sqlx::query!(
         "UPDATE key_packages SET consumed_at = now()
          WHERE id = (
@@ -690,6 +714,13 @@ async fn send(
     Path(conversation_id): Path<Uuid>,
     Json(request): Json<SendRequest>,
 ) -> Result<Json<SendResponse>, DeliveryError> {
+    // Generous enough that a person typing never meets it, low enough that a
+    // loop does not fill the envelope table.
+    if !state.limits.send.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "send rate limit reached");
+        return Err(DeliveryError::TooManyRequests);
+    }
+
     // A block stops a two-person conversation and nothing else.
     //
     // Not groups, and that is a decision rather than an omission. A group is

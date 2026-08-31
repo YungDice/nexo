@@ -7,6 +7,7 @@ use sqlx::PgPool;
 use axum::extract::FromRef;
 
 use crate::auth::TokenKeys;
+use crate::limits::Limits;
 use crate::storage::Storage;
 use crate::stream::hub::SharedFanout;
 
@@ -21,6 +22,9 @@ pub struct AppState {
     /// Where an accepted envelope goes so connected clients see it now rather
     /// than on their next sync.
     pub fanout: SharedFanout,
+    /// BRIEF 4.5's three limits. `Arc` because the counters are shared state,
+    /// not per-request state -- a copy per handler would count nothing.
+    pub limits: Arc<Limits>,
 }
 
 #[cfg(test)]
@@ -36,6 +40,7 @@ pub(crate) fn test_state() -> AppState {
         auth: Arc::new(TokenKeys::from_pem_bytes(TEST_KEY_PEM.as_bytes()).expect("test key")),
         storage: None,
         fanout: Arc::new(crate::stream::hub::LocalHub::new()),
+        limits: Arc::new(Limits::default()),
     }
 }
 

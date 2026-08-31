@@ -594,11 +594,13 @@ pub fn send_message<T: Transport>(
         attempts: 0,
         last_error: None,
     };
-    ctx.store.enqueue(&item)?;
-    // The ratchet advanced, so the state has to be saved whether or not the
-    // network is up. Losing it would mean re-encrypting at a generation the
-    // group has already seen.
-    mls_state::save(ctx.provider, ctx.store)?;
+    // One transaction, not two statements. The ratchet advanced when the
+    // message was encrypted, so the queued ciphertext belongs to a generation
+    // the stored state does not yet know about; a crash between the two writes
+    // would hand that generation out twice. RFC 9420 6.3.1 is explicit about
+    // the consequence, and both writes already go to the same connection.
+    ctx.store
+        .enqueue_with_mls_state(&item, &mls_state::encode(ctx.provider)?)?;
 
     match outbox::send_now(ctx, &item) {
         Ok(accepted) => {

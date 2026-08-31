@@ -33,7 +33,65 @@ async fn app() -> Option<axum::Router> {
         auth: Arc::new(TokenKeys::from_pem_bytes(TEST_KEY_PEM.as_bytes()).unwrap()),
         storage: None,
         fanout: Arc::new(nexo_server::stream::hub::LocalHub::new()),
+        limits: Arc::new(nexo_server::limits::Limits::permissive()),
     }))
+}
+
+/// The same router, but with a *real* auth limit rather than the permissive one.
+///
+/// Deliberately its own state: the counters are per-`Limits`, so this test
+/// cannot spend the budget the other tests rely on, and they cannot spend its.
+async fn app_with_auth_limit(max: u32) -> Option<axum::Router> {
+    let _ = dotenvy::dotenv();
+    let url = std::env::var("DATABASE_URL").ok()?;
+    let db = db::create_pool(&url)
+        .await
+        .expect("connect to the test database");
+    let limits = nexo_server::limits::Limits {
+        auth: nexo_server::limits::RateLimit::new(max, std::time::Duration::from_secs(60)),
+        key_packages: nexo_server::limits::RateLimit::new(
+            u32::MAX,
+            std::time::Duration::from_secs(1),
+        ),
+        send: nexo_server::limits::RateLimit::new(u32::MAX, std::time::Duration::from_secs(1)),
+    };
+    Some(router(AppState {
+        db,
+        auth: Arc::new(TokenKeys::from_pem_bytes(TEST_KEY_PEM.as_bytes()).unwrap()),
+        storage: None,
+        fanout: Arc::new(nexo_server::stream::hub::LocalHub::new()),
+        limits: Arc::new(limits),
+    }))
+}
+
+/// BRIEF 4.5's first limit, proven to fire.
+///
+/// `/v1/auth/salt` is the cheapest route on the router and needs no account, so
+/// it exercises the layer without depending on anything else being set up. The
+/// limit is per-address and covers the whole auth router, which is the point:
+/// login is where the damage is, but an attacker who can only be slowed on
+/// login will simply enumerate on salt instead.
+#[tokio::test]
+async fn auth_requests_are_refused_past_the_limit() {
+    let Some(app) = app_with_auth_limit(3).await else {
+        eprintln!("skipping: DATABASE_URL not set");
+        return;
+    };
+
+    let handle = unique_handle();
+    let body = serde_json::json!({ "handle": handle });
+
+    for i in 1..=3 {
+        let (status, _) = post(&app, "/v1/auth/salt", body.clone()).await;
+        assert_eq!(status, StatusCode::OK, "request {i} should be allowed");
+    }
+
+    let (status, _) = post(&app, "/v1/auth/salt", body.clone()).await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the fourth request is over a limit of three"
+    );
 }
 
 /// A handle no other run will pick. Handles are `[a-z0-9_]{3,20}`, so a hex

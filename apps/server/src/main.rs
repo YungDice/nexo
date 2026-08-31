@@ -42,6 +42,11 @@ async fn main() -> anyhow::Result<()> {
         auth,
         storage,
         fanout,
+        // In-process counters, so they reset on restart and are per-instance.
+        // Both are fine at one process on one machine (PLAN.md G5); a second
+        // instance would need them in Redis beside the fan-out, for the same
+        // reason and at the same time.
+        limits: Arc::new(nexo_server::limits::Limits::default()),
     };
     match &state.storage {
         Some(storage) => tracing::info!(

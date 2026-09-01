@@ -223,9 +223,25 @@ pub fn start_with<T: Transport>(
 
     conversation.confirm_commit(ctx.provider, now_ms())?;
 
+    // Persisted here, not at the end.
+    //
+    // Everything below can fail, and until this line the group exists only in
+    // the provider's memory. A failure past `confirm_commit` used to return
+    // without ever reaching the save at the bottom, which lost the group while
+    // leaving the conversation, its membership rows and this commit on the
+    // server -- a conversation both people can see, neither can send to, and
+    // no retry can repair, because the way back in was a Welcome that was
+    // never sent. That is the "You are not in that conversation." that follows
+    // a chat around forever.
+    mls_state::save(ctx.provider, ctx.store)?;
+
     // The Welcome travels as an ordinary envelope. The invitee is already a
     // member server-side, so the conversation's own stream is the delivery
     // path and no separate endpoint is needed.
+    //
+    // A failure here is reported, but the group above survives it: the commit
+    // is on the server, so the conversation is real, and `repair` can send a
+    // fresh Welcome rather than the invitee waiting on one that never comes.
     if let Some(welcome) = commit.welcome {
         ctx.transport.send(
             &conversation_id.to_string(),
@@ -438,6 +454,11 @@ pub fn start_group_with<T: Transport>(
         }
         conversation.confirm_commit(ctx.provider, now_ms())?;
 
+        // Per member, for the reason given in `start_with`: past this point
+        // the group has advanced, and returning without saving would strand a
+        // conversation that exists on the server and nowhere else.
+        mls_state::save(ctx.provider, ctx.store)?;
+
         if let Some(welcome) = commit.welcome {
             ctx.transport.send(
                 &id,
@@ -511,6 +532,12 @@ pub fn add_to<T: Transport>(
 
     conversation.confirm_commit(ctx.provider, now_ms())?;
 
+    // Before the Welcome, as in `start_with`. The commit has already rekeyed
+    // the group around the new member; returning from a failed Welcome without
+    // saving would leave this device on the old epoch while the server holds
+    // the commit that moved everyone else off it.
+    mls_state::save(ctx.provider, ctx.store)?;
+
     if let Some(welcome) = commit.welcome {
         ctx.transport.send(
             &id,
@@ -577,8 +604,31 @@ pub fn send_message<T: Transport>(
     conversation_id: ConversationId,
     body: &str,
 ) -> Result<Sent, ConversationError> {
-    let mut conversation = Conversation::load(ctx.provider, conversation_id, now_ms())?
-        .ok_or(ConversationError::NotAMember)?;
+    // One retry through a sync, before giving up.
+    //
+    // The Welcome that admits this device is an ordinary envelope, so there is
+    // a window in which the conversation is listed, drawn, and typed into
+    // while the thing that makes it usable is still sitting on the server
+    // unfetched. Failing outright there reports "You are not in that
+    // conversation." about a conversation the person is looking at, and the
+    // only cure was to wait for the poll and try again.
+    //
+    // A sync is the cure, so do it rather than describe it. Nothing here
+    // repairs a conversation whose Welcome was never sent -- that is
+    // `repair_dm`'s job -- but it costs one round trip on a path that was
+    // otherwise about to fail.
+    let mut conversation = match Conversation::load(ctx.provider, conversation_id, now_ms())? {
+        Some(conversation) => conversation,
+        None => {
+            tracing::info!(
+                %conversation_id,
+                "no group for this conversation; syncing once before giving up"
+            );
+            sync(ctx, conversation_id)?;
+            Conversation::load(ctx.provider, conversation_id, now_ms())?
+                .ok_or(ConversationError::NotAMember)?
+        }
+    };
 
     // Encrypted before anything else, and exactly once. MLS ratchets forward
     // on every encryption, so these bytes are the message -- a retry sends
@@ -725,6 +775,63 @@ pub fn discover<T: Transport>(ctx: &Context<'_, T>) -> Result<usize, Conversatio
             }
             None => 0,
         };
+
+        // A conversation that holds nothing and that this device has no group
+        // for cannot be opened, sent to, or repaired by waiting.
+        //
+        // `open_with` already refuses to reuse this shape and calls it a
+        // half-created leftover; `discover` used to draw one anyway, because it
+        // builds rows from the server's membership list and membership is not
+        // the same fact as having been let in. The result was a chat in the
+        // sidebar that answered every message with "You are not in that
+        // conversation." -- and, being listed, it looked like the conversation
+        // rather than the wreck of one.
+        //
+        // Both conditions are required. A real invitation always arrives with
+        // a Welcome envelope behind it, so `latest_envelope_id` is `Some` and
+        // nothing legitimate is hidden here.
+        if summary.latest_envelope_id.is_none() {
+            let joined = summary
+                .conversation_id
+                .parse::<ConversationId>()
+                .ok()
+                .map(|id| Conversation::load(ctx.provider, id, now_ms()))
+                .transpose()?
+                .flatten()
+                .is_some();
+            if !joined {
+                // Already drawn on this device from an earlier sync, before
+                // this check existed. Skipping is not enough for those: the row
+                // is in the store and will keep being drawn, answering every
+                // message with "You are not in that conversation." until the
+                // person deletes it by hand. Clear it instead, here and on the
+                // server, exactly as `open_with` does when it meets one.
+                if !is_new {
+                    tracing::info!(
+                        id = %summary.conversation_id,
+                        "clearing a half-created conversation already on this device"
+                    );
+                    ctx.store.delete_conversation(&summary.conversation_id)?;
+                    if let Err(error) = ctx.transport.discard_conversation(&summary.conversation_id)
+                    {
+                        // Best effort, as in `open_with`: the server refuses to
+                        // discard anything holding an envelope, so this cannot
+                        // reach a real conversation.
+                        tracing::warn!(
+                            id = %summary.conversation_id,
+                            %error,
+                            "the server would not discard the leftover"
+                        );
+                    }
+                } else {
+                    tracing::warn!(
+                        id = %summary.conversation_id,
+                        "an empty conversation with no group here: a half-created leftover"
+                    );
+                }
+                continue;
+            }
+        }
 
         if is_new {
             ctx.store

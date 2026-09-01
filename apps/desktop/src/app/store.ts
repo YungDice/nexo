@@ -190,6 +190,19 @@ interface AppState {
    */
   account: Account | null;
   /**
+   * The signed-in person's avatar, as an object key.
+   *
+   * Kept beside the account rather than on it: `Account` is what the Rust side
+   * hands back when a session is restored, and it carries identity, not
+   * decoration. This changes whenever the picture does, which is why the post
+   * composer used to draw a generated identicon while every post underneath it
+   * showed the real face -- the composer had no way to know, and nothing was
+   * going to tell it.
+   *
+   * `null` means no avatar set, or not loaded yet. Both draw the fallback.
+   */
+  myAvatarKey: string | null;
+  /**
    * §8: whether the app is locked. Mirrors the Rust side, which holds the
    * truth — locking drops the store connection and the MLS state over there,
    * and this flag only decides that the lock screen is what gets drawn.
@@ -242,6 +255,7 @@ interface AppState {
   unread: Record<string, number>;
   preferences: Preferences;
   setAccount: (account: Account | null) => void;
+  setMyAvatarKey: (key: string | null) => void;
   setLocked: (locked: boolean) => void;
   go: (route: Route) => void;
   /** Opens somebody's profile. `null` opens your own. */
@@ -265,6 +279,7 @@ export const useApp = create<AppState>()(
   persist(
     (set) => ({
       account: null,
+      myAvatarKey: null,
       locked: false,
       route: "messages",
       viewingHandle: null,
@@ -276,7 +291,11 @@ export const useApp = create<AppState>()(
       conversationOverrides: {},
       unread: {},
       preferences: defaultPreferences,
-      setAccount: (account) => set({ account }),
+      // Signing out drops the picture along with the identity it belonged to;
+      // leaving it would show the last person's face to the next one.
+      setAccount: (account) =>
+        set(account ? { account } : { account: null, myAvatarKey: null }),
+      setMyAvatarKey: (myAvatarKey) => set({ myAvatarKey }),
       setLocked: (locked) => set({ locked }),
       go: (route) =>
         // Clearing the handle is the point: the rail's Profile button means

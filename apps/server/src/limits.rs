@@ -107,11 +107,37 @@ impl RateLimit {
     }
 }
 
-/// The three limits, held in `AppState`.
+/// The limits, held in `AppState`.
+///
+/// Grouped by what the work costs rather than by endpoint, so a new route
+/// joins an existing bucket instead of arriving unlimited. Writing a post and
+/// leaving a comment are the same kind of act at different rates; asking for an
+/// upload URL and asking for a download URL both end in somebody paying for
+/// object storage.
 pub struct Limits {
     pub auth: RateLimit,
     pub key_packages: RateLimit,
     pub send: RateLimit,
+    /// Creating a post.
+    pub posts: RateLimit,
+    /// Leaving a comment. Looser than posting: replies come in bursts.
+    pub comments: RateLimit,
+    /// Minting a presigned upload or download URL.
+    ///
+    /// The one limit here with a bill attached. Every grant is a write or a
+    /// read somebody pays Hetzner for, and unlike a post there is no row to
+    /// delete afterwards to undo the cost.
+    pub media: RateLimit,
+    /// Reacting, voting, pinning.
+    ///
+    /// Generous, because these are single clicks and a person changing their
+    /// mind three times is not abuse -- but bounded, because they are one
+    /// scripted loop away from being the cheapest way to fill a table.
+    pub reactions: RateLimit,
+    /// Editing a profile, changing visibility, blocking.
+    pub profile: RateLimit,
+    /// Adding or removing conversation members.
+    pub membership: RateLimit,
 }
 
 impl Default for Limits {
@@ -120,6 +146,12 @@ impl Default for Limits {
             auth: RateLimit::new(10, Duration::from_secs(60)),
             key_packages: RateLimit::new(60, Duration::from_secs(60)),
             send: RateLimit::new(30, Duration::from_secs(1)),
+            posts: RateLimit::new(20, Duration::from_secs(60)),
+            comments: RateLimit::new(40, Duration::from_secs(60)),
+            media: RateLimit::new(60, Duration::from_secs(60)),
+            reactions: RateLimit::new(120, Duration::from_secs(60)),
+            profile: RateLimit::new(30, Duration::from_secs(60)),
+            membership: RateLimit::new(30, Duration::from_secs(60)),
         }
     }
 }
@@ -137,6 +169,12 @@ impl Limits {
             auth: RateLimit::new(u32::MAX, forever),
             key_packages: RateLimit::new(u32::MAX, forever),
             send: RateLimit::new(u32::MAX, forever),
+            posts: RateLimit::new(u32::MAX, forever),
+            comments: RateLimit::new(u32::MAX, forever),
+            media: RateLimit::new(u32::MAX, forever),
+            reactions: RateLimit::new(u32::MAX, forever),
+            profile: RateLimit::new(u32::MAX, forever),
+            membership: RateLimit::new(u32::MAX, forever),
         }
     }
 }
@@ -197,6 +235,41 @@ pub async fn limit_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every bucket must actually bound something.
+    ///
+    /// The failure this catches is not a wrong number, it is a forgotten one:
+    /// a bucket added to `Limits` and wired to a handler, but left effectively
+    /// infinite, reads as rate limited everywhere except where it counts. The
+    /// endpoint looks protected in the router, in the handler, and in review.
+    #[test]
+    fn every_default_limit_is_finite_and_refuses_eventually() {
+        let limits = Limits::default();
+        for (name, limit) in [
+            ("auth", &limits.auth),
+            ("key_packages", &limits.key_packages),
+            ("send", &limits.send),
+            ("posts", &limits.posts),
+            ("comments", &limits.comments),
+            ("media", &limits.media),
+            ("reactions", &limits.reactions),
+            ("profile", &limits.profile),
+            ("membership", &limits.membership),
+        ] {
+            assert!(
+                limit.max < u32::MAX,
+                "{name} is unbounded, so nothing it guards is limited"
+            );
+            assert!(limit.max > 0, "{name} refuses everything, including the first");
+
+            // And it does refuse, rather than merely holding a number.
+            let key = format!("{name}-probe");
+            for _ in 0..limit.max {
+                assert!(limit.check(&key), "{name} refused inside its own budget");
+            }
+            assert!(!limit.check(&key), "{name} never refuses");
+        }
+    }
 
     #[test]
     fn the_first_requests_up_to_the_limit_are_allowed() {

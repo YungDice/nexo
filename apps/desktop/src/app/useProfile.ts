@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useApp } from "./store";
+
 import {
   asFeedError,
   myProfile as myProfileCall,
@@ -51,6 +53,9 @@ export function useProfile(): LiveProfile {
     try {
       const me = await myProfileCall();
       setProfile(me);
+      // Published so anything drawing "you" can use the real picture. The post
+      // composer is the one that needs it and is nowhere near this hook.
+      useApp.getState().setMyAvatarKey(me.avatar_key);
       setProblem(null);
       // The posts tab, fetched here rather than in the tab: switching tabs
       // should not cost a round trip, and the count is wanted before anyone
@@ -113,11 +118,14 @@ export function useProfile(): LiveProfile {
         // The bytes come from the cropper rather than from disk: what gets
         // stored is the region the person chose, already capped at 1920px.
         const key = await uploadImageBytes(dataUrl);
-        setProfile(
-          await updateProfileCall(
-            which === "avatar" ? { avatar_key: key } : { banner_key: key },
-          ),
+        const updated = await updateProfileCall(
+          which === "avatar" ? { avatar_key: key } : { banner_key: key },
         );
+        setProfile(updated);
+        // Not via `refresh`: this path does not call it, and without this line
+        // a new picture would show everywhere except the composer until the
+        // next time the profile happened to be fetched.
+        useApp.getState().setMyAvatarKey(updated.avatar_key);
         setProblem(null);
       } catch (error) {
         setProblem(asFeedError(error).message);

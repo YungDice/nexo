@@ -57,6 +57,8 @@ pub enum MediaError {
     NotConfigured,
     /// The request was malformed.
     Invalid(String),
+    /// Too many of these, too quickly.
+    TooManyRequests,
     /// Something the caller cannot act on.
     Internal(anyhow::Error),
 }
@@ -78,6 +80,11 @@ impl IntoResponse for MediaError {
                     .to_string(),
             ),
             MediaError::Invalid(message) => (StatusCode::BAD_REQUEST, "invalid_request", message),
+            MediaError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Too many requests. Slow down.".to_string(),
+            ),
             MediaError::Internal(error) => {
                 tracing::error!(%error, "media request failed");
                 (
@@ -137,6 +144,14 @@ async fn upload_url(
     caller: Caller,
     Json(request): Json<UploadRequest>,
 ) -> Result<Json<UploadResponse>, MediaError> {
+    // The only limit here with a bill behind it: every grant becomes an
+    // object somebody pays to store, and unlike a post there is no row to
+    // delete afterwards that takes the cost back.
+    if !state.limits.media.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "media rate limit reached");
+        return Err(MediaError::TooManyRequests);
+    }
+
     let storage = state.storage.as_ref().ok_or(MediaError::NotConfigured)?;
 
     if request.size == 0 {
@@ -224,6 +239,11 @@ async fn download_url(
     caller: Caller,
     Json(request): Json<DownloadRequest>,
 ) -> Result<Json<DownloadResponse>, MediaError> {
+    if !state.limits.media.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "media rate limit reached");
+        return Err(MediaError::TooManyRequests);
+    }
+
     let storage = state.storage.as_ref().ok_or(MediaError::NotConfigured)?;
 
     let bucket_name = match request.bucket {

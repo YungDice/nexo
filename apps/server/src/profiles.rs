@@ -35,6 +35,8 @@ pub enum ProfileError {
     NotFound,
     /// The request was malformed.
     Invalid(String),
+    /// Too many of these, too quickly.
+    TooManyRequests,
     /// Something the caller cannot act on.
     Internal(anyhow::Error),
 }
@@ -54,6 +56,11 @@ impl IntoResponse for ProfileError {
                 "No account with that handle.".to_string(),
             ),
             ProfileError::Invalid(message) => (StatusCode::BAD_REQUEST, "invalid_request", message),
+            ProfileError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Too many requests. Slow down.".to_string(),
+            ),
             ProfileError::Internal(error) => {
                 tracing::error!(%error, "profile request failed");
                 (
@@ -373,6 +380,11 @@ async fn update_me(
     caller: Caller,
     Json(request): Json<UpdateMeRequest>,
 ) -> Result<Json<MyProfileView>, ProfileError> {
+    if !state.limits.profile.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "profile rate limit reached");
+        return Err(ProfileError::TooManyRequests);
+    }
+
     // Validated before anything is written, so a bad link cannot leave a
     // half-applied profile behind.
     let display_name = match &request.display_name {
@@ -524,6 +536,11 @@ async fn update_visibility(
     caller: Caller,
     Json(request): Json<UpdateVisibilityRequest>,
 ) -> Result<Json<MyProfileView>, ProfileError> {
+    if !state.limits.profile.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "profile rate limit reached");
+        return Err(ProfileError::TooManyRequests);
+    }
+
     let mut transaction = state.db.begin().await?;
     for (name, visibility) in &request.visibility {
         let field = Field::parse(name)

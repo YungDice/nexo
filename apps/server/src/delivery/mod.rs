@@ -616,6 +616,11 @@ async fn add_member(
     Path(conversation_id): Path<Uuid>,
     Json(request): Json<MemberRequest>,
 ) -> Result<StatusCode, DeliveryError> {
+    if !state.limits.membership.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "membership rate limit reached");
+        return Err(DeliveryError::TooManyRequests);
+    }
+
     let mut tx = state.db.begin().await?;
 
     // Only a member may add a member.
@@ -675,6 +680,11 @@ async fn remove_member(
     Path(conversation_id): Path<Uuid>,
     Json(request): Json<MemberRequest>,
 ) -> Result<StatusCode, DeliveryError> {
+    if !state.limits.membership.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "membership rate limit reached");
+        return Err(DeliveryError::TooManyRequests);
+    }
+
     let mut tx = state.db.begin().await?;
 
     let member = sqlx::query!(

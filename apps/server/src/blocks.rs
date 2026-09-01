@@ -52,6 +52,8 @@ pub enum BlockError {
     NotFound,
     /// The request does not describe a state that can exist.
     Invalid(String),
+    /// Too many of these, too quickly.
+    TooManyRequests,
     /// Something the caller cannot act on.
     Internal(anyhow::Error),
 }
@@ -71,6 +73,11 @@ impl IntoResponse for BlockError {
                 "No account with that handle.".to_string(),
             ),
             BlockError::Invalid(message) => (StatusCode::BAD_REQUEST, "invalid_request", message),
+            BlockError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Too many requests. Slow down.".to_string(),
+            ),
             BlockError::Internal(error) => {
                 tracing::error!(%error, "block request failed");
                 (
@@ -143,6 +150,11 @@ async fn block(
     caller: Caller,
     Path(handle): Path<String>,
 ) -> Result<StatusCode, BlockError> {
+    if !state.limits.profile.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "profile rate limit reached");
+        return Err(BlockError::TooManyRequests);
+    }
+
     let target = user_id(&state, &handle).await?;
     if target == caller.user_id {
         return Err(BlockError::Invalid(
@@ -168,6 +180,11 @@ async fn unblock(
     caller: Caller,
     Path(handle): Path<String>,
 ) -> Result<StatusCode, BlockError> {
+    if !state.limits.profile.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "profile rate limit reached");
+        return Err(BlockError::TooManyRequests);
+    }
+
     let target = user_id(&state, &handle).await?;
     sqlx::query!(
         "DELETE FROM blocks WHERE blocker_id = $1 AND blocked_id = $2",

@@ -248,6 +248,7 @@ const POST_KINDS: { kind: PostKind; label: string; icon: "messages" | "link" | "
 
 function PostComposer({ onPost }: { onPost: (input: NewPostInput) => Promise<void> }) {
   const me = useApp((s) => s.account);
+  const myAvatarKey = useApp((s) => s.myAvatarKey);
   const [kind, setKind] = useState<PostKind>("text");
   const [title, setTitle] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
@@ -349,11 +350,20 @@ function PostComposer({ onPost }: { onPost: (input: NewPostInput) => Promise<voi
       ) : null}
 
       <div className="flex gap-3">
-        <Avatar
-          seed={me?.handle ?? "you"}
-          name={me?.display_name ?? "You"}
-          size={38}
-        />
+        {myAvatarKey ? (
+          <RemoteImage
+            imageKey={myAvatarKey}
+            alt=""
+            className="h-[38px] w-[38px] shrink-0 rounded-full object-cover"
+            fit="cover"
+          />
+        ) : (
+          <Avatar
+            seed={me?.handle ?? "you"}
+            name={me?.display_name ?? "You"}
+            size={38}
+          />
+        )}
         <textarea
           rows={3}
           value={body}

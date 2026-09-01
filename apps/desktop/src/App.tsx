@@ -17,6 +17,7 @@ import { LockScreen } from "./features/auth/LockScreen";
 import { RequirePin } from "./features/auth/RequirePin";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import { pinStatus, restoreSession, type Account } from "./lib/auth";
+import { myProfile } from "./lib/feed";
 import { notify, setCloseToTray } from "./lib/native";
 import { DialogHost } from "./components/ui/DialogHost";
 import { useAutoUpdate } from "./app/useAutoUpdate";
@@ -163,6 +164,8 @@ export function App() {
   // and doing that mid-sign-in would throw away a half-typed password.
   useAutoUpdate(checked);
   const locked = useApp((s) => s.locked);
+  const storeAccount = useApp((s) => s.account);
+  const setMyAvatarKey = useApp((s) => s.setMyAvatarKey);
   const setLocked = useApp((s) => s.setLocked);
   const maximized = useMaximized();
 
@@ -185,6 +188,28 @@ export function App() {
   }, [setAccount]);
 
   const onSignedIn = useCallback((next: Account) => setAccount(next), [setAccount]);
+
+  // The signed-in person's own picture, fetched once per session.
+  //
+  // It lives on the profile, and until now only `useProfile` ever asked for it
+  // -- a hook that only the profile page mounts. So anything else drawing
+  // "you", the post composer above all, had nothing to draw and fell back to
+  // the generated identicon, beside posts that showed the real face.
+  //
+  // Failure is silent on purpose: not knowing your avatar means the fallback,
+  // which is what was drawn before anyway. It is not worth a banner.
+  useEffect(() => {
+    if (!storeAccount) return;
+    let cancelled = false;
+    void myProfile()
+      .then((me) => {
+        if (!cancelled) setMyAvatarKey(me.avatar_key);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [storeAccount, setMyAvatarKey]);
 
   // Whether this machine has an unlock PIN. `null` while the question is out.
   //

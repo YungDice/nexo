@@ -54,6 +54,8 @@ pub enum PostError {
     NotFound,
     /// The request was malformed.
     Invalid(String),
+    /// Too many of these, too quickly.
+    TooManyRequests,
     /// Something the caller cannot act on.
     Internal(anyhow::Error),
 }
@@ -73,6 +75,11 @@ impl IntoResponse for PostError {
                 "That post is gone.".to_string(),
             ),
             PostError::Invalid(message) => (StatusCode::BAD_REQUEST, "invalid_request", message),
+            PostError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Too many requests. Slow down.".to_string(),
+            ),
             PostError::Internal(error) => {
                 tracing::error!(%error, "feed request failed");
                 (
@@ -519,6 +526,14 @@ async fn create_post(
     caller: Caller,
     Json(request): Json<CreatePostRequest>,
 ) -> Result<Json<PostView>, PostError> {
+    // A person writes at human speed; a loop does not. Bounded here rather
+    // than by the feed query, because a post that exists has already cost
+    // a row and a fan-out to everyone reading.
+    if !state.limits.posts.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "posts rate limit reached");
+        return Err(PostError::TooManyRequests);
+    }
+
     let body = request.body.trim();
     let kind = request.kind.as_deref().unwrap_or("text");
     if !POST_KINDS.contains(&kind) {
@@ -664,6 +679,11 @@ async fn pin(
     caller: Caller,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, PostError> {
+    if !state.limits.reactions.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "reactions rate limit reached");
+        return Err(PostError::TooManyRequests);
+    }
+
     // Counted before the write, in the same transaction, so two pins racing
     // cannot both see two and both become the fourth.
     let mut tx = state.db.begin().await?;
@@ -712,6 +732,11 @@ async fn unpin(
     caller: Caller,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, PostError> {
+    if !state.limits.reactions.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "reactions rate limit reached");
+        return Err(PostError::TooManyRequests);
+    }
+
     sqlx::query!(
         "UPDATE posts SET pinned_at = NULL WHERE id = $1 AND author_id = $2",
         id,
@@ -727,6 +752,11 @@ async fn delete_post(
     caller: Caller,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, PostError> {
+    if !state.limits.posts.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "posts rate limit reached");
+        return Err(PostError::TooManyRequests);
+    }
+
     // The author check is in the WHERE clause, so there is no window between
     // deciding and doing, and no way to reach the UPDATE without it.
     //
@@ -768,6 +798,11 @@ async fn react(
     Path(id): Path<i64>,
     Json(request): Json<ReactRequest>,
 ) -> Result<Json<Vec<ReactionCount>>, PostError> {
+    if !state.limits.reactions.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "reactions rate limit reached");
+        return Err(PostError::TooManyRequests);
+    }
+
     let emoji = request.emoji.trim();
     // A length in characters, and a refusal of anything with whitespace or
     // control characters in it: this string is rendered as-is in a reaction
@@ -892,6 +927,11 @@ async fn vote(
     Path(id): Path<i64>,
     Json(request): Json<VoteRequest>,
 ) -> Result<Json<VoteView>, PostError> {
+    if !state.limits.reactions.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "reactions rate limit reached");
+        return Err(PostError::TooManyRequests);
+    }
+
     if !matches!(request.value, -1..=1) {
         return Err(PostError::Invalid("A vote is up, down, or none.".into()));
     }
@@ -1020,6 +1060,11 @@ async fn create_comment(
     Path(id): Path<i64>,
     Json(request): Json<CreateCommentRequest>,
 ) -> Result<(StatusCode, Json<CommentView>), PostError> {
+    if !state.limits.comments.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "comments rate limit reached");
+        return Err(PostError::TooManyRequests);
+    }
+
     let body = request.body.trim();
     if body.is_empty() {
         return Err(PostError::Invalid("Write something first.".into()));
@@ -1101,6 +1146,11 @@ async fn delete_comment(
     caller: Caller,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, PostError> {
+    if !state.limits.comments.check(&caller.user_id.to_string()) {
+        tracing::warn!(user_id = caller.user_id, "comments rate limit reached");
+        return Err(PostError::TooManyRequests);
+    }
+
     let done = sqlx::query!(
         "UPDATE post_comments SET deleted_at = now(), body = ''
          WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL",

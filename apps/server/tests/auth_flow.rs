@@ -47,13 +47,11 @@ async fn app_with_auth_limit(max: u32) -> Option<axum::Router> {
     let db = db::create_pool(&url)
         .await
         .expect("connect to the test database");
+    // Only `auth` is real; the rest stay out of the way. Spread rather than
+    // listed, so a bucket added later does not break a test about signing in.
     let limits = nexo_server::limits::Limits {
         auth: nexo_server::limits::RateLimit::new(max, std::time::Duration::from_secs(60)),
-        key_packages: nexo_server::limits::RateLimit::new(
-            u32::MAX,
-            std::time::Duration::from_secs(1),
-        ),
-        send: nexo_server::limits::RateLimit::new(u32::MAX, std::time::Duration::from_secs(1)),
+        ..nexo_server::limits::Limits::permissive()
     };
     Some(router(AppState {
         db,

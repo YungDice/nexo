@@ -9,6 +9,22 @@ use std::sync::Arc;
 use nexo_server::stream::hub::LocalHub;
 use nexo_server::{AppState, Storage, auth, db, router};
 
+/// The rate limits, unless the environment says otherwise.
+///
+/// Anything other than `off` -- including the variable being absent, which is
+/// the normal case -- gives the real limits.
+fn limits_from_env() -> nexo_server::limits::Limits {
+    match std::env::var("NEXO_RATE_LIMITS").as_deref() {
+        Ok("off") => {
+            tracing::warn!(
+                "NEXO_RATE_LIMITS=off: rate limiting is DISABLED. Local testing only; never set this in production."
+            );
+            nexo_server::limits::Limits::permissive()
+        }
+        _ => nexo_server::limits::Limits::default(),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -46,7 +62,16 @@ async fn main() -> anyhow::Result<()> {
         // Both are fine at one process on one machine (PLAN.md G5); a second
         // instance would need them in Redis beside the fan-out, for the same
         // reason and at the same time.
-        limits: Arc::new(nexo_server::limits::Limits::default()),
+        //
+        // `NEXO_RATE_LIMITS=off` exists for one reason: the integration suite
+        // in `crates/client/tests` registers a dozen accounts in a couple of
+        // seconds, all from 127.0.0.1, and the auth limit is per address. With
+        // limits on, every one of those tests fails with 429 before it reaches
+        // the thing it is testing -- so the only end-to-end coverage Nexo has
+        // could not be run against a local server at all.
+        //
+        // It is opt-in, it is loud, and it must never be set in production.
+        limits: Arc::new(limits_from_env()),
     };
     match &state.storage {
         Some(storage) => tracing::info!(

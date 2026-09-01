@@ -332,11 +332,60 @@ pub fn open_with<T: Transport>(
             }
         };
 
+        let has_envelopes = summary.latest_envelope_id.is_some();
+        let mut joined = Conversation::load(ctx.provider, id, now_ms())?.is_some();
+
+        // Envelopes, but no group here. Two very different situations wear
+        // this shape, and only a sync tells them apart:
+        //
+        //  - An invitation that has not been collected yet. The Welcome is in
+        //    the stream, waiting. Syncing joins the group and all is well.
+        //  - A conversation whose Welcome was never sent, because the commit
+        //    reached the server and the Welcome that followed it did not.
+        //
+        // The second is a trap with no way out, and it is worth being precise
+        // about why. The server hands back the one DM that exists for a pair,
+        // so every fresh attempt is answered with this same conversation;
+        // `discard_conversation` refuses anything holding an envelope, and
+        // this holds the commit; and the Welcome that would admit us is never
+        // coming, because the device that would have sent it failed before it
+        // could. So the chat is listed, opens, and answers every message with
+        // "You are not in that conversation." for as long as the account
+        // exists.
+        //
+        // Syncing first is what makes it safe to act: after a full pass from
+        // the stored cursor, a Welcome addressed to this device either arrived
+        // or does not exist.
+        if has_envelopes && !joined {
+            tracing::info!(%id, "no group for a conversation that has envelopes; syncing before judging it");
+            sync(ctx, id)?;
+            joined = Conversation::load(ctx.provider, id, now_ms())?.is_some();
+            if !joined {
+                // Leaving is the only exit. It is also the honest description
+                // of the state: this device is a member the server believes in
+                // and the group has never heard of. Once the membership row is
+                // gone the pair no longer has a DM, and the next create makes
+                // a real one.
+                tracing::warn!(
+                    %id,
+                    "a full sync found no Welcome for this device; leaving the conversation so a usable one can be created"
+                );
+                if let Some(mine) = ctx.store.account()?.map(|a| a.handle)
+                    && let Err(error) = ctx.transport.remove_member(&summary.conversation_id, &mine)
+                {
+                    // Worth saying, not worth stopping for: without it the
+                    // create below is handed this same conversation again and
+                    // the person stays stuck, which is what the log is for.
+                    tracing::warn!(%id, %error, "could not leave the unjoinable conversation");
+                }
+                ctx.store.delete_conversation(&summary.conversation_id)?;
+                continue;
+            }
+        }
+
         // Has anything ever been sent in it, or do we hold the group? Either
         // makes it real. Neither makes it a leftover from a `start_with` that
         // did not finish.
-        let has_envelopes = summary.latest_envelope_id.is_some();
-        let joined = Conversation::load(ctx.provider, id, now_ms())?.is_some();
         if !has_envelopes && !joined {
             tracing::warn!(
                 %id,

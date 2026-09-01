@@ -24,9 +24,9 @@ use nexo_client::conversations::{self, Context};
 use nexo_client::transport::Transport;
 use nexo_client::{HttpTransport, session};
 use nexo_crypto::identity::{IdentityKeypair, SafetyNumber};
-use nexo_crypto::mls::credential_for;
+use nexo_crypto::mls::{Conversation, credential_for};
 use nexo_platform::SecureStore;
-use nexo_protocol::DeviceId;
+use nexo_protocol::{ConversationId, DeviceId};
 use nexo_store::EncryptedStore;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::OpenMlsProvider;
@@ -619,4 +619,66 @@ fn a_twenty_megabyte_attachment_round_trips_as_ciphertext() {
         "GCM adds a tag, so ciphertext should be longer than plaintext"
     );
     println!("ok: the object in the bucket is verifiably ciphertext");
+}
+
+/// A conversation whose Welcome was never sent must not trap the person in it.
+///
+/// This is the state a `start_with` leaves when the commit reaches the server
+/// and the Welcome behind it does not: the conversation exists, both people are
+/// members, one envelope is in the stream, and nobody holds a group the other
+/// can be admitted to.
+///
+/// Left alone it is a trap with no exit, and each part of the trap is
+/// reasonable on its own. The server keeps one DM per pair, so every attempt to
+/// start a fresh chat is answered with this one. `discard_conversation` refuses
+/// anything holding an envelope, and this holds the commit. And the Welcome
+/// that would admit the second device is never coming, because the device that
+/// would have sent it failed first. The chat therefore opens, looks ordinary,
+/// and answers every message with "You are not in that conversation." forever.
+///
+/// The exit is leaving: once the membership row is gone the pair no longer has
+/// a DM, and the next create makes one that works.
+#[test]
+#[ignore = "needs a running nexo-server and Postgres"]
+fn a_conversation_whose_welcome_never_came_does_not_trap_anyone() {
+    let alice = Client::new("trap-alice");
+    let bob = Client::new("trap-bob");
+    conversations::publish_key_packages(&alice.ctx(), 5).expect("alice publishes");
+    conversations::publish_key_packages(&bob.ctx(), 5).expect("bob publishes");
+
+    // Exactly what a half-finished `start_with` leaves behind: the rows, and a
+    // commit, and no Welcome.
+    let orphan = ConversationId::new_v4().to_string();
+    alice
+        .transport
+        .create_conversation(&orphan, std::slice::from_ref(&bob.handle))
+        .expect("the server creates it");
+    alice
+        .transport
+        .send(
+            &orphan,
+            "00ff00ff",
+            0,
+            true,
+            &ConversationId::new_v4().to_string(),
+        )
+        .expect("a commit reaches the server");
+
+    // Bob asks to talk to alice. The server will offer him the orphan.
+    let opened = conversations::open_with(&bob.ctx(), &alice.handle).expect("open");
+
+    assert_ne!(
+        opened.to_string(),
+        orphan,
+        "bob must not be handed the conversation he can never enter"
+    );
+    assert!(
+        Conversation::load(&bob.provider, opened, 1_760_000_000_000)
+            .expect("load")
+            .is_some(),
+        "the conversation bob is given must be one he holds the group for"
+    );
+
+    // The proof that matters: he can actually send in it.
+    conversations::send_message(&bob.ctx(), opened, "hello at last").expect("bob can send");
 }

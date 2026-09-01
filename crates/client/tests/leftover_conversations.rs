@@ -76,7 +76,9 @@ impl Transport for Listing {
         Ok(self.summaries.clone())
     }
     fn discard_conversation(&self, conversation_id: &str) -> Result<(), TransportError> {
-        self.discarded.borrow_mut().push(conversation_id.to_string());
+        self.discarded
+            .borrow_mut()
+            .push(conversation_id.to_string());
         Ok(())
     }
     fn set_access_token(&self, _token: &str) {}
@@ -118,14 +120,7 @@ impl Transport for Listing {
     fn create_conversation(&self, _: &str, _: &[String]) -> Result<String, TransportError> {
         unimplemented!("discover never creates")
     }
-    fn send(
-        &self,
-        _: &str,
-        _: &str,
-        _: i64,
-        _: bool,
-        _: &str,
-    ) -> Result<Accepted, TransportError> {
+    fn send(&self, _: &str, _: &str, _: i64, _: bool, _: &str) -> Result<Accepted, TransportError> {
         unimplemented!("discover never sends")
     }
     fn add_member(&self, _: &str, _: &str) -> Result<(), TransportError> {
@@ -250,7 +245,10 @@ fn a_conversation_holding_an_envelope_is_left_alone() {
     let added = conversations::discover(&device.ctx(&transport)).unwrap();
 
     assert_eq!(added, 1, "an invitation must still appear");
-    assert!(transport.discarded.borrow().is_empty(), "nothing to discard");
+    assert!(
+        transport.discarded.borrow().is_empty(),
+        "nothing to discard"
+    );
 }
 
 /// Holding the group is enough on its own, envelopes or not.

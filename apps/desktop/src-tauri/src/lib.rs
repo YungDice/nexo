@@ -139,10 +139,16 @@ fn init_tracing() {
     // §4.5: nothing above `debug` may contain user content, and `debug` is
     // compiled out of release builds. `debug_assertions` is the switch, and
     // the release profile in the workspace manifest turns it off.
+    //
+    // `nexo_client` is named as well as this crate, and that is the point:
+    // conversations, joins and the reasons a send was refused all happen in
+    // that crate, and a filter that named only this one discarded every line
+    // explaining them. What reached the console was the summary the user saw
+    // anyway -- "You are not in that conversation." -- and nothing about why.
     let default = if cfg!(debug_assertions) {
-        "nexo_desktop_lib=debug"
+        "nexo_desktop_lib=debug,nexo_client=debug"
     } else {
-        "nexo_desktop_lib=info"
+        "nexo_desktop_lib=info,nexo_client=info"
     };
     tracing_subscriber::fmt()
         .with_env_filter(

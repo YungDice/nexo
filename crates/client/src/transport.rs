@@ -9,7 +9,7 @@
 //!
 //! [`Transport`] exists so that [`crate::session`] can be tested without a
 //! server. The HTTP implementation arrives with M4, when the client starts
-//! talking to `api.dice.fit` for real.
+//! talking to `api.delidev.net` for real.
 
 use serde::{Deserialize, Serialize};
 

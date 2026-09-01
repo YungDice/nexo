@@ -486,6 +486,85 @@ pub async fn upload_image(
     .await
 }
 
+/// A picked file, handed to the page as a `data:` URL so it can be cropped.
+///
+/// The page cannot open a local path: `convertFileSrc` needs the asset
+/// protocol, which is not enabled, and enabling it would mean granting the
+/// WebView a way to read files by path — the same grant the filesystem
+/// capability was removed for. Rust reads the one file the user picked and
+/// hands over its bytes, which keeps the picker the only thing that chooses
+/// what is readable.
+#[tauri::command]
+pub async fn read_image_for_crop(path: String) -> Result<String, FeedErrorView> {
+    let bytes = std::fs::read(&path).map_err(|e| FeedErrorView {
+        kind: "unreadable_file",
+        message: format!("That image could not be read: {e}"),
+    })?;
+
+    if bytes.len() > MAX_INLINE_IMAGE_BYTES {
+        return Err(FeedErrorView {
+            kind: "too_large",
+            message: "That image is too large to open.".into(),
+        });
+    }
+    // Sniffed, never taken from the extension. This goes into the page.
+    let mime = sniff_mime(&bytes);
+    if mime == "application/octet-stream" {
+        return Err(FeedErrorView {
+            kind: "not_an_image",
+            message: "That file is not an image.".into(),
+        });
+    }
+
+    Ok(data_url(mime, &bytes))
+}
+
+/// Uploads an image the page produced, rather than one on disk.
+///
+/// The cropper re-encodes to PNG or JPEG on a canvas, so the bytes that should
+/// be stored exist only in the page. They come back base64 and are checked
+/// exactly as a file from disk is — the page is not a trusted source, and a
+/// canvas is no guarantee about what it drew.
+#[tauri::command]
+pub async fn upload_image_bytes(
+    state: State<'_, ClientState>,
+    data: String,
+) -> Result<String, FeedErrorView> {
+    use base64::Engine as _;
+
+    with_client(&state, move |client| {
+        // A `data:` URL, as the canvas produced it.
+        let encoded = data
+            .split_once(";base64,")
+            .map(|(_, rest)| rest)
+            .unwrap_or(&data);
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| failure("invalid_request", "That image could not be decoded."))?;
+
+        if bytes.is_empty() {
+            return Err(failure("invalid_request", "That image is empty."));
+        }
+        if bytes.len() as u64 > MAX_IMAGE_BYTES {
+            return Err(failure(
+                "too_large",
+                format!(
+                    "Images are limited to {} MB.",
+                    MAX_IMAGE_BYTES / (1024 * 1024)
+                ),
+            ));
+        }
+        if sniff_mime(&bytes) == "application/octet-stream" {
+            return Err(failure("not_an_image", "That is not an image."));
+        }
+
+        let (url, key) = client.transport.media_upload_url(bytes.len() as u64)?;
+        client.transport.put_object(&url, bytes)?;
+        Ok(key)
+    })
+    .await
+}
+
 /// A time-limited URL for rendering a feed or profile image.
 ///
 /// Kept for callers outside the WebView. The page itself cannot use this: the

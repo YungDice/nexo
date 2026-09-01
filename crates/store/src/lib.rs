@@ -35,7 +35,7 @@ pub type StoredIdentity = (Zeroizing<Vec<u8>>, Vec<u8>);
 /// The schema version this build writes and expects.
 ///
 /// One constant, so a migration and the test that checks it cannot disagree.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// The file name the store always uses, under the app data directory.
 pub const STORE_FILE_NAME: &str = "store.db";
@@ -385,6 +385,56 @@ impl EncryptedStore {
                      PRIMARY KEY (conversation_id, device_id)
                  );
                  PRAGMA user_version = 8;
+                 COMMIT;",
+            )?;
+        }
+
+        if version < 9 {
+            // Full-text search over message bodies (BRIEF 6.1).
+            //
+            // Inside the encrypted file, which is the whole point: the search
+            // term never leaves the machine and the index is as protected as
+            // the messages it indexes. A server-side search would need the
+            // plaintext, and there is none to give it.
+            //
+            // `content=` makes this an external-content table -- the index
+            // stores no copy of the body, only the terms. One copy of the
+            // plaintext, in `messages`, where it already was.
+            //
+            // The triggers are what keep it true. An FTS table that drifts from
+            // its source silently returns results that do not exist and misses
+            // ones that do, which is worse than no search.
+            self.connection.execute_batch(
+                "BEGIN;
+                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                     body,
+                     content='messages',
+                     content_rowid='envelope_id'
+                 );
+
+                 -- Everything already stored. A search that only found messages
+                 -- sent after the upgrade would look broken.
+                 INSERT INTO messages_fts (rowid, body)
+                     SELECT envelope_id, body FROM messages;
+
+                 CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+                     INSERT INTO messages_fts (rowid, body) VALUES (new.envelope_id, new.body);
+                 END;
+
+                 -- 'delete' rows are how an external-content table is told to
+                 -- forget: the old terms have to be withdrawn explicitly.
+                 CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+                     INSERT INTO messages_fts (messages_fts, rowid, body)
+                         VALUES ('delete', old.envelope_id, old.body);
+                 END;
+
+                 CREATE TRIGGER messages_fts_update AFTER UPDATE ON messages BEGIN
+                     INSERT INTO messages_fts (messages_fts, rowid, body)
+                         VALUES ('delete', old.envelope_id, old.body);
+                     INSERT INTO messages_fts (rowid, body) VALUES (new.envelope_id, new.body);
+                 END;
+
+                 PRAGMA user_version = 9;
                  COMMIT;",
             )?;
         }
@@ -916,6 +966,53 @@ impl EncryptedStore {
         }
     }
 
+    /// Messages matching a search term, newest first.
+    ///
+    /// The term is treated as literal text, not as FTS5 query syntax. Somebody
+    /// searching for `AND` means the word; quoting it is what stops the parser
+    /// reading it as an operator, and a bare `"` in the term would otherwise be
+    /// a syntax error rather than a search.
+    ///
+    /// Prefix-matched on the last token, so results appear while typing rather
+    /// than only on a completed word.
+    pub fn search_messages(&self, term: &str, limit: i64) -> Result<Vec<SearchHit>, StoreError> {
+        let cleaned = term.trim();
+        if cleaned.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Each token quoted, the last one given a prefix star. `""` is how FTS5
+        // escapes a quote inside a quoted string.
+        let mut tokens: Vec<String> = cleaned
+            .split_whitespace()
+            .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+            .collect();
+        if let Some(last) = tokens.last_mut() {
+            last.push('*');
+        }
+        let query = tokens.join(" ");
+
+        let mut statement = self.connection.prepare(
+            "SELECT m.envelope_id, m.conversation_id, m.body, m.sent_at_ms,
+                    m.sender_device_id
+             FROM messages_fts f
+             JOIN messages m ON m.envelope_id = f.rowid
+             WHERE messages_fts MATCH ?1
+             ORDER BY m.sent_at_ms DESC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(rusqlite::params![query, limit], |row| {
+            Ok(SearchHit {
+                envelope_id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                body: row.get(2)?,
+                sent_at_ms: row.get(3)?,
+                outgoing: row.get::<_, Option<String>>(4)?.is_none(),
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// Every peer this device has seen in a conversation.
     pub fn peers(&self, conversation_id: &str) -> Result<Vec<StoredPeer>, StoreError> {
         let mut statement = self.connection.prepare(
@@ -1055,6 +1152,21 @@ impl EncryptedStore {
         )?;
         Ok(())
     }
+}
+
+/// One message that matched a search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    /// The server's envelope id, which addresses the message.
+    pub envelope_id: i64,
+    /// Which conversation it is in, so the UI can open it.
+    pub conversation_id: String,
+    /// The plaintext body that matched.
+    pub body: String,
+    /// When the server received it.
+    pub sent_at_ms: i64,
+    /// Whether this device sent it.
+    pub outgoing: bool,
 }
 
 /// One peer in a conversation, as this device last saw them.
@@ -1622,6 +1734,123 @@ mod tests {
         // a change: they are separate groups and separate observations.
         assert_eq!(store.peers("c1").unwrap()[0].identity_key, vec![1]);
         assert_eq!(store.peers("c2").unwrap()[0].identity_key, vec![2]);
+    }
+
+    fn a_message(store: &EncryptedStore, id: i64, body: &str) {
+        store
+            .insert_message(id, "c1", None, body, 1_000 + id)
+            .unwrap();
+    }
+
+    #[test]
+    fn search_finds_a_message_by_a_word_in_it() {
+        let dir = TempDir::new("fts-basic");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_message(&store, 1, "the eagle has landed");
+        a_message(&store, 2, "nothing to report");
+
+        let hits = store.search_messages("eagle", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].envelope_id, 1);
+        assert_eq!(hits[0].conversation_id, "c1");
+    }
+
+    /// Results should appear while typing, not only on a finished word.
+    #[test]
+    fn search_matches_a_prefix_of_the_last_word() {
+        let dir = TempDir::new("fts-prefix");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_message(&store, 1, "the eagle has landed");
+
+        assert_eq!(store.search_messages("eag", 10).unwrap().len(), 1);
+        assert_eq!(store.search_messages("the eag", 10).unwrap().len(), 1);
+    }
+
+    /// The term is text somebody typed, not a query language.
+    ///
+    /// `AND`, `OR`, `NOT` and `*` are FTS5 operators; a quote is a syntax
+    /// error. Unescaped, searching for any of them returns a database error
+    /// rather than a result, which reads as the search being broken.
+    #[test]
+    fn search_treats_operators_and_quotes_as_literal_text() {
+        let dir = TempDir::new("fts-escape");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_message(&store, 1, "salt AND pepper");
+        a_message(&store, 2, r#"she said "hello" once"#);
+
+        assert_eq!(
+            store.search_messages("AND", 10).unwrap().len(),
+            1,
+            "AND is a word here, not an operator"
+        );
+        // The point is that this does not error.
+        assert!(store.search_messages("\"hello\"", 10).is_ok());
+        assert!(store.search_messages("*", 10).is_ok());
+    }
+
+    #[test]
+    fn search_ignores_an_empty_term() {
+        let dir = TempDir::new("fts-empty");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_message(&store, 1, "something");
+        assert!(store.search_messages("   ", 10).unwrap().is_empty());
+    }
+
+    /// The index must not drift from the messages it indexes.
+    ///
+    /// An external-content FTS table keeps no copy of the body, so a deletion
+    /// has to withdraw the terms explicitly. Without that trigger a search
+    /// returns rows whose message is gone.
+    #[test]
+    fn a_deleted_message_leaves_the_index() {
+        let dir = TempDir::new("fts-delete");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_message(&store, 1, "ephemeral");
+        assert_eq!(store.search_messages("ephemeral", 10).unwrap().len(), 1);
+
+        store
+            .connection()
+            .execute("DELETE FROM messages WHERE envelope_id = 1", [])
+            .unwrap();
+        assert!(
+            store.search_messages("ephemeral", 10).unwrap().is_empty(),
+            "the index must forget what the table forgot"
+        );
+    }
+
+    /// Messages that predate the upgrade have to be searchable too.
+    ///
+    /// A search that only found what arrived after the migration would look
+    /// broken to anyone with existing history -- which is everyone upgrading.
+    #[test]
+    fn search_covers_messages_written_before_the_index_existed() {
+        let dir = TempDir::new("fts-backfill");
+
+        {
+            let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+            a_message(&store, 1, "written beforehand");
+            // Drop the index and the triggers, leaving the store as a v8 one:
+            // rows in `messages`, nothing in `messages_fts`.
+            store
+                .connection()
+                .execute_batch(
+                    "DROP TRIGGER messages_fts_insert;
+                     DROP TRIGGER messages_fts_delete;
+                     DROP TRIGGER messages_fts_update;
+                     DROP TABLE messages_fts;
+                     PRAGMA user_version = 8;",
+                )
+                .unwrap();
+        }
+
+        // Reopening runs migration 9, which backfills.
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        assert_eq!(
+            store.search_messages("beforehand", 10).unwrap().len(),
+            1,
+            "existing history must be searchable after the upgrade"
+        );
     }
 
     #[test]

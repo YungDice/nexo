@@ -37,7 +37,7 @@ use crate::transport::{
 };
 
 /// Where a release build talks to.
-pub const DEFAULT_BASE_URL: &str = "https://api.dice.fit";
+pub const DEFAULT_BASE_URL: &str = "https://api.delidev.net";
 
 /// How long to wait before giving up on the server.
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -657,13 +657,13 @@ mod tests {
 
     #[test]
     fn a_trailing_slash_does_not_produce_a_double_slash() {
-        let t = HttpTransport::with_base_url("https://api.dice.fit/");
-        assert_eq!(t.base_url(), "https://api.dice.fit");
+        let t = HttpTransport::with_base_url("https://api.delidev.net/");
+        assert_eq!(t.base_url(), "https://api.delidev.net");
     }
 
     #[test]
     fn the_release_default_is_the_real_api() {
-        assert_eq!(DEFAULT_BASE_URL, "https://api.dice.fit");
+        assert_eq!(DEFAULT_BASE_URL, "https://api.delidev.net");
         assert!(DEFAULT_BASE_URL.starts_with("https://"));
     }
 

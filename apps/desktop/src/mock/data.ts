@@ -40,7 +40,7 @@ export function buildMockData(now: Date): MockData {
     userId: 100_248,
     bio: "Designing the parts of software people actually touch. Currently on interface systems for small teams.",
     location: "Zürich",
-    links: ["dice.fit/carter"],
+    links: ["delidev.net/carter"],
     joinedAt: new Date(now.getFullYear(), 2, 14),
     presence: "online",
     lastSeen: now,
@@ -55,7 +55,7 @@ export function buildMockData(now: Date): MockData {
       userId: 100_311,
       bio: "Backend, mostly Rust. Ask me about database migrations at your own risk.",
       location: "Rotterdam",
-      links: ["dice.fit/abram"],
+      links: ["delidev.net/abram"],
       joinedAt: new Date(now.getFullYear(), 3, 2),
       presence: "online",
       lastSeen: now,
@@ -79,7 +79,7 @@ export function buildMockData(now: Date): MockData {
       userId: 100_517,
       bio: "Motion and interaction. Half of my job is deleting animations.",
       location: "Berlin",
-      links: ["dice.fit/desirae"],
+      links: ["delidev.net/desirae"],
       joinedAt: new Date(now.getFullYear(), 4, 6),
       presence: "offline",
       lastSeen: ago(now, 9 * HOUR),
@@ -103,7 +103,7 @@ export function buildMockData(now: Date): MockData {
       userId: 100_741,
       bio: "Security engineering. Sceptical by trade, not by temperament.",
       location: "Tallinn",
-      links: ["dice.fit/skylar"],
+      links: ["delidev.net/skylar"],
       joinedAt: new Date(now.getFullYear(), 5, 11),
       presence: "offline",
       lastSeen: ago(now, 2 * DAY),
@@ -274,11 +274,11 @@ export function buildMockData(now: Date): MockData {
         { id: "i-pane-b", name: "composer.png", size: 318_500, mime: "image/png", kind: "image" },
       ],
       preview: {
-        url: "https://dice.fit/nolan/panes",
+        url: "https://delidev.net/nolan/panes",
         title: "Message pane, dark",
         description:
           "Bubble grouping, day dividers and the composer at 56px. Timestamps sit under the last bubble in a run rather than on every one.",
-        source: "dice.fit",
+        source: "delidev.net",
       },
     },
     {
@@ -467,9 +467,9 @@ export function buildMockData(now: Date): MockData {
   const links: SharedLink[] = [
     {
       id: "l-1",
-      url: "https://dice.fit/nolan/panes",
+      url: "https://delidev.net/nolan/panes",
       title: "Message pane, dark",
-      source: "dice.fit",
+      source: "delidev.net",
       at: ago(now, 95 * MINUTE),
     },
     {
@@ -481,9 +481,9 @@ export function buildMockData(now: Date): MockData {
     },
     {
       id: "l-3",
-      url: "https://dice.fit/desirae/motion",
+      url: "https://delidev.net/desirae/motion",
       title: "Motion spec, one page",
-      source: "dice.fit",
+      source: "delidev.net",
       at: ago(now, 6 * DAY),
     },
   ];

@@ -6,9 +6,10 @@ import { relativeTime, safetyNumber } from "../../lib/format";
 import { copyText, notify, openUrl, pickFile } from "../../lib/native";
 import { fieldFor, hashString } from "../../lib/palette";
 import { useProfile } from "../../app/useProfile";
-import { asFeedError, pinPost, unpinPost } from "../../lib/feed";
+import { asFeedError, pinPost, readImageForCrop, unpinPost } from "../../lib/feed";
 import { deviceFingerprint } from "../../lib/auth";
 import { RemoteImage } from "../../components/ui/RemoteImage";
+import { ImageCropper } from "../../components/ui/ImageCropper";
 import type {
   MyProfile,
   Post,
@@ -53,14 +54,27 @@ export function ProfilePage({ now }: { now: Date }) {
   const live = useProfile();
   const me = live.profile;
 
-  const changeBanner = async () => {
-    const picked = await pickFile({ title: "Change banner", images: true });
-    if (picked) await live.setImage("banner", picked.path);
-  };
-  const changePicture = async () => {
-    const picked = await pickFile({ title: "Change picture", images: true });
-    if (picked) await live.setImage("avatar", picked.path);
-  };
+  // What the cropper is currently working on. `null` when it is closed.
+  const [cropping, setCropping] = useState<{
+    which: "avatar" | "banner";
+    src: string;
+  } | null>(null);
+
+  async function pickFor(which: "avatar" | "banner") {
+    const picked = await pickFile({
+      title: which === "avatar" ? "Change picture" : "Change banner",
+      images: true,
+    });
+    if (!picked) return;
+    try {
+      setCropping({ which, src: await readImageForCrop(picked.path) });
+    } catch (error) {
+      await notify("Couldn't open that image", asFeedError(error).message);
+    }
+  }
+
+  const changeBanner = () => void pickFor("banner");
+  const changePicture = () => void pickFor("avatar");
 
   if (live.loading || !me) {
     return (
@@ -232,6 +246,22 @@ export function ProfilePage({ now }: { now: Date }) {
           </div>
         </div>
       </div>
+      {cropping ? (
+        <ImageCropper
+          src={cropping.src}
+          // A 3:1 banner and a square avatar, matching where each is drawn.
+          aspect={cropping.which === "banner" ? 3 : 1}
+          round={cropping.which === "avatar"}
+          title={cropping.which === "banner" ? "Position your banner" : "Position your picture"}
+          onCancel={() => setCropping(null)}
+          onDone={async (dataUrl) => {
+            const which = cropping.which;
+            setCropping(null);
+            await live.setImage(which, dataUrl);
+          }}
+        />
+      ) : null}
+
     </Panel>
   );
 }

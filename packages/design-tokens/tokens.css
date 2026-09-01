@@ -53,6 +53,11 @@
   --accent-hue: 255;
   --color-accent: hsl(var(--accent-hue) 93% 67%);
   --color-accent-soft: hsl(var(--accent-hue) 100% 78%);
+  /* The primary button's glow.
+     Derived from --accent-hue rather than written as a fixed rgba, so it
+     follows a changed accent. A hardcoded violet stayed violet while the
+     button beside it turned red, which is worse than having no glow. */
+  --shadow-accent: 0 6px 20px -8px hsl(var(--accent-hue) 93% 60% / 0.9);
 
   /* Status. Used where a state is being reported, never for decoration. */
   --color-success: #3dd68c;

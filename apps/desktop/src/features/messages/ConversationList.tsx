@@ -3,7 +3,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { isMuted, useApp } from "../../app/store";
 import { cn } from "../../lib/cn";
 import { relativeTime } from "../../lib/format";
-import { asConversationError, deleteConversation } from "../../lib/conversations";
+import {
+  asConversationError,
+  deleteConversation,
+  searchMessages,
+} from "../../lib/conversations";
 import { confirm, notify } from "../../lib/native";
 
 import type { Conversation, Message } from "../../lib/types";
@@ -42,10 +46,10 @@ function countLabel(n: number): string {
 /**
  * The 300px conversation list (§7.3): own profile card, search, then the rows.
  *
- * Search covers conversation names and message bodies. That works locally
- * because both are already decrypted on this machine — at M2 it becomes an
- * FTS5 query inside the encrypted store, and the server never sees the term
- * (§6.1).
+ * Search covers conversation names and message bodies. Names are matched here;
+ * bodies go through the FTS5 index inside the encrypted store, so the whole of
+ * history is searched rather than the one message each row happens to be
+ * showing — and the term never reaches the network (§6.1).
  */
 export function ConversationList({
   now,
@@ -78,18 +82,53 @@ export function ConversationList({
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [anchor, setAnchor] = useState<string | null>(null);
 
+  // Conversations whose history contains the term.
+  //
+  // The old filter looked at `lastMessages`, which holds one message per
+  // conversation -- and only for the open one. So "search" found a word if it
+  // happened to be in the newest message and nowhere else, which is close
+  // enough to nothing that the comment above it was a promise rather than a
+  // description.
+  const [matching, setMatching] = useState<ReadonlySet<string> | null>(null);
+  const term = query.trim();
+
+  useEffect(() => {
+    if (!term) {
+      setMatching(null);
+      return;
+    }
+    let cancelled = false;
+    // Debounced: a query per keystroke would run an FTS scan per keystroke.
+    const timer = window.setTimeout(() => {
+      void searchMessages(term, 200)
+        .then((hits) => {
+          if (!cancelled) setMatching(new Set(hits.map((h) => h.conversation_id)));
+        })
+        .catch(() => {
+          // Falling back to titles alone is better than an error banner over a
+          // search box; the name filter below still applies.
+          if (!cancelled) setMatching(new Set());
+        });
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [term]);
+
   const rows = useMemo(() => {
-    const term = query.trim().toLowerCase();
+    const lowered = term.toLowerCase();
     return conversations
       .map((base) => ({
         conversation: { ...base, ...overrides[base.id] },
         last: lastMessages[base.id],
       }))
-      .filter(({ conversation, last }) => {
-        if (!term) return true;
+      .filter(({ conversation }) => {
+        if (!lowered) return true;
+        // A name match needs no index; a body match comes from FTS5.
         return (
-          conversation.title.toLowerCase().includes(term) ||
-          (last?.body ?? "").toLowerCase().includes(term)
+          conversation.title.toLowerCase().includes(lowered) ||
+          (matching?.has(conversation.id) ?? false)
         );
       })
       // Pinned first, then by when each conversation was last *written in*,
@@ -112,7 +151,7 @@ export function ConversationList({
           (a.conversation.lastMessageAt?.getTime() ?? 0)
         );
       });
-  }, [query, overrides, conversations, lastMessages]);
+  }, [term, matching, overrides, conversations, lastMessages]);
 
   const order = useMemo(() => rows.map((row) => row.conversation.id), [rows]);
 

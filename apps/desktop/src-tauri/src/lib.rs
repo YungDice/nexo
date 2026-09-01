@@ -92,6 +92,7 @@ pub fn run() {
             conversations::add_to_conversation,
             conversations::rename_conversation,
             conversations::mark_verified,
+            conversations::search_messages,
             conversations::acknowledge_key_change,
             conversations::set_conversation_avatar,
             conversations::conversation_avatar,
@@ -127,6 +128,8 @@ pub fn run() {
             feed::delete_comment,
             feed::image_url,
             feed::image_data_url,
+            feed::read_image_for_crop,
+            feed::upload_image_bytes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running nexo");

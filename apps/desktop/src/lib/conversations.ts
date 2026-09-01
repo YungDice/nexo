@@ -281,6 +281,26 @@ export function acknowledgeKeyChange(conversationId: string): Promise<void> {
   return invoke<void>("acknowledge_key_change", { conversationId });
 }
 
+/** One message that matched a search. */
+export interface SearchHit {
+  envelope_id: number;
+  conversation_id: string;
+  body: string;
+  sent_at_ms: number;
+  outgoing: boolean;
+}
+
+/**
+ * Messages matching a term, newest first.
+ *
+ * Runs against the FTS5 index inside the encrypted store. The term never
+ * leaves the machine — a server-side search would need the plaintext, and the
+ * server has none.
+ */
+export function searchMessages(term: string, limit?: number): Promise<SearchHit[]> {
+  return invoke<SearchHit[]>("search_messages", { term, limit: limit ?? null });
+}
+
 /** Adds someone to a conversation that already exists. */
 export function addToConversation(conversationId: string, handle: string): Promise<void> {
   return invoke<void>("add_to_conversation", { conversationId, handle });

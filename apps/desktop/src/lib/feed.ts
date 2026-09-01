@@ -262,6 +262,21 @@ export function updateVisibility(
  * presigned PUT is a bearer credential for one object, and there is no reason
  * for a WebView to be holding one.
  */
+/**
+ * A picked file, as a `data:` URL, so the page can crop it.
+ *
+ * The page cannot read a local path — that capability was removed deliberately.
+ * Rust reads the one file the picker returned and hands over its bytes.
+ */
+export function readImageForCrop(path: string): Promise<string> {
+  return invoke<string>("read_image_for_crop", { path });
+}
+
+/** Uploads an image the cropper produced. Returns its object key. */
+export function uploadImageBytes(dataUrl: string): Promise<string> {
+  return invoke<string>("upload_image_bytes", { data: dataUrl });
+}
+
 export function uploadImage(path: string): Promise<string> {
   return invoke<string>("upload_image", { path });
 }

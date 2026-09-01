@@ -157,7 +157,13 @@ export function PublicProfile({ handle, now }: { handle: string; now: Date }) {
           </span>
         </div>
 
+        {/* Neither action makes sense against yourself. The store already
+            redirects your own handle to your own profile, so reaching here as
+            `is_me` means something upstream missed -- and a Message button that
+            starts a conversation with your own account is the visible result. */}
         <div className="flex items-start justify-end gap-2 pt-3">
+          {profile?.is_me ? null : (
+          <>
           <Button icon="messages" disabled={!profile || starting} onClick={() => void message()}>
             {starting ? "Opening…" : "Message"}
           </Button>
@@ -168,6 +174,8 @@ export function PublicProfile({ handle, now }: { handle: string; now: Date }) {
           >
             {blocked ? "Unblock" : "Block"}
           </Button>
+          </>
+          )}
         </div>
 
         <div className="mt-6">

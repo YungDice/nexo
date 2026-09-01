@@ -571,6 +571,52 @@ pub async fn acknowledge_key_change(
     .await
 }
 
+/// Messages matching a search term, newest first.
+///
+/// Runs against the FTS5 index inside the encrypted store, so the term never
+/// leaves the machine. A server-side search would need the plaintext, and the
+/// server has none to search.
+#[tauri::command]
+pub async fn search_messages(
+    state: State<'_, ClientState>,
+    term: String,
+    limit: Option<i64>,
+) -> Result<Vec<SearchHitView>, ConversationErrorView> {
+    with_client(&state, move |client| {
+        // Enough to fill a list without turning a one-letter term into a scan
+        // of every message ever received.
+        let limit = limit.unwrap_or(50).clamp(1, 200);
+        let hits = client
+            .store
+            .search_messages(&term, limit)
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
+
+        Ok(hits
+            .into_iter()
+            .map(|h| SearchHitView {
+                envelope_id: h.envelope_id,
+                conversation_id: h.conversation_id,
+                body: h.body,
+                sent_at_ms: h.sent_at_ms,
+                outgoing: h.outgoing,
+            })
+            .collect())
+    })
+    .await
+}
+
+/// One search result.
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchHitView {
+    pub envelope_id: i64,
+    pub conversation_id: String,
+    /// The matching text. Plaintext, and only ever inside this process and the
+    /// WebView that asked for it.
+    pub body: String,
+    pub sent_at_ms: i64,
+    pub outgoing: bool,
+}
+
 /// Sends a message.
 #[tauri::command]
 pub async fn send_message(

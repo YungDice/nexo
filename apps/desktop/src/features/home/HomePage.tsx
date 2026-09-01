@@ -355,13 +355,17 @@ function PostComposer({ onPost }: { onPost: (input: NewPostInput) => Promise<voi
           size={38}
         />
         <textarea
-          rows={2}
+          rows={3}
           value={body}
           maxLength={MAX_POST}
           onChange={(event) => setBody(event.target.value)}
           aria-label="Write a post"
           placeholder="Say something public"
-          className="text-text-hi placeholder:text-text-lo min-h-[52px] flex-1 resize-none bg-transparent py-1.5 text-message leading-6 outline-none"
+          // Grows with the text instead of scrolling inside two lines, and can
+          // be dragged taller. `field-sizing-content` does the growing where it
+          // is supported; `max-h` keeps a very long post from pushing the Post
+          // button off-screen, and `resize-y` is the manual escape hatch.
+          className="text-text-hi placeholder:text-text-lo min-h-[72px] max-h-[420px] flex-1 resize-y overflow-y-auto bg-transparent py-1.5 text-message leading-6 outline-none [field-sizing:content]"
         />
       </div>
       {images.length > 0 ? (
@@ -548,10 +552,16 @@ function PostCard({
               key={key}
               imageKey={key}
               alt="Attached image"
+              // Fitted, not cropped. A 16/9 box with `cover` cut the top and
+              // bottom off anything portrait, which throws away the part the
+              // person framed. The box keeps its shape so the grid stays even;
+              // the image sits inside it whole.
+              fit="contain"
               className={cn(
+                "bg-surface-3",
                 post.media_keys.length === 1
-                  ? "aspect-[16/9] max-h-[300px] w-full"
-                  : "aspect-[4/3] max-h-[220px] w-full",
+                  ? "aspect-[16/9] max-h-[420px] w-full"
+                  : "aspect-[4/3] max-h-[260px] w-full",
               )}
             />
           ))}

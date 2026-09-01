@@ -6,7 +6,7 @@ import {
   postsBy,
   updateProfile as updateProfileCall,
   updateVisibility as updateVisibilityCall,
-  uploadImage,
+  uploadImageBytes,
   type MyProfile,
   type Post,
   type ProfileEdit,
@@ -35,8 +35,8 @@ export interface LiveProfile {
   saving: boolean;
   save: (edit: ProfileEdit) => Promise<boolean>;
   setVisibility: (field: VisibilityField, value: Visibility) => Promise<void>;
-  /** Uploads an image from a path and commits it as the avatar or banner. */
-  setImage: (which: "avatar" | "banner", path: string) => Promise<void>;
+  /** Commits a cropped image as the avatar or banner. */
+  setImage: (which: "avatar" | "banner", dataUrl: string) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -103,13 +103,16 @@ export function useProfile(): LiveProfile {
   );
 
   const setImage = useCallback(
-    async (which: "avatar" | "banner", path: string) => {
+    async (which: "avatar" | "banner", dataUrl: string) => {
       setSaving(true);
       try {
         // Uploaded first, committed second (§5.3: objects are write-once). If
         // the upload fails the old picture stays, rather than the profile
         // pointing at an object that was never written.
-        const key = await uploadImage(path);
+        //
+        // The bytes come from the cropper rather than from disk: what gets
+        // stored is the region the person chose, already capped at 1920px.
+        const key = await uploadImageBytes(dataUrl);
         setProfile(
           await updateProfileCall(
             which === "avatar" ? { avatar_key: key } : { banner_key: key },

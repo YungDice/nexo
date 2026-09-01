@@ -15,10 +15,10 @@ because the client is a Windows binary and needs a Windows runner).
 
 ## Phase 0 — Decisions to make before you click anything
 
-### 0.1 Do you control `dice.fit`?
+### 0.1 Do you control `delidev.net`?
 
-The whole design hardcodes `api.dice.fit`, `nexo.dice.fit` and
-`updates.dice.fit`. Hetzner is an ICANN-accredited registrar but its TLD list is
+The whole design hardcodes `api.delidev.net`, `www.delidev.net` and
+`updates.delidev.net`. Hetzner is an ICANN-accredited registrar but its TLD list is
 conventional (`.com`, `.de`, `.net`, `.org`, `.eu`, `.ch`, `.at` …) and almost
 certainly excludes `.fit`. That is fine: leave the registration wherever it is
 and point the nameservers at Hetzner DNS. You do not need to transfer it.
@@ -222,7 +222,7 @@ external ever needs to reach the database.
 
 In **Hetzner DNS Console** (<https://dns.hetzner.com>, free):
 
-1. Add zone `dice.fit`.
+1. Add zone `delidev.net`.
 2. At your existing registrar, change the nameservers to the ones Hetzner shows.
 3. Add records:
 
@@ -254,7 +254,7 @@ sudo apt update && sudo apt install -y caddy
 `/etc/caddy/Caddyfile`:
 
 ```caddyfile
-api.dice.fit {
+api.delidev.net {
 	encode zstd gzip
 	header {
 		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
@@ -264,7 +264,7 @@ api.dice.fit {
 	reverse_proxy 127.0.0.1:8080
 }
 
-updates.dice.fit {
+updates.delidev.net {
 	root * /srv/updates
 	file_server
 }
@@ -354,7 +354,7 @@ there; `ProtectHome=yes` means a key under a home directory could not be read.
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin nexo
 sudo systemctl daemon-reload
 sudo systemctl enable --now nexo-server
-curl -s https://api.dice.fit/v1/health
+curl -s https://api.delidev.net/v1/health
 # {"status":"ok","protocol_version":1}
 ```
 
@@ -444,7 +444,7 @@ backup.
 
 ## Phase 10 — Updates host (M9, not before)
 
-`updates.dice.fit` serves the updater: static files behind Caddy, nothing
+`updates.delidev.net` serves the updater: static files behind Caddy, nothing
 else. No database, no code — the security of the channel comes from the
 minisign signature the app verifies (`docs/RELEASING.md`), not from this
 host, so it stays boring on purpose.
@@ -453,7 +453,7 @@ host, so it stays boring on purpose.
 2. Caddy: a second site block serving a directory.
 
    ```
-   updates.dice.fit {
+   updates.delidev.net {
    	root * /var/www/nexo-updates
    	file_server
    	header {

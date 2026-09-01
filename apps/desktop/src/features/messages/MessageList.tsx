@@ -435,7 +435,9 @@ function AttachedImage({
         onContextMenu={onContextMenu}
         aria-label={`Open ${attachment.name}`}
         title={attachment.name}
-        className="aspect-[4/3] w-full min-w-36 cursor-zoom-in bg-cover bg-center"
+        // Fitted rather than cropped: a picture somebody sent is not the
+        // app's to trim. The lightbox shows it full size either way.
+        className="aspect-[4/3] w-full min-w-36 cursor-zoom-in bg-contain bg-center bg-no-repeat bg-surface-3"
         style={
           url
             ? { backgroundImage: `url(${url})` }

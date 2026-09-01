@@ -13,7 +13,7 @@ const variants: Record<Variant, string> = {
   // §7.1: the accent is the outgoing bubble and the primary action. It is used
   // sparingly enough that it still means "this one".
   primary:
-    "bg-accent text-white hover:bg-accent-soft shadow-[0_6px_20px_-8px_rgba(123,92,250,0.9)]",
+    "bg-accent text-white hover:bg-accent-soft shadow-[var(--shadow-accent)]",
   secondary:
     "border border-line-strong bg-fill text-text-hi hover:bg-fill-active",
   ghost: "text-text-mid hover:bg-fill-hover hover:text-text-hi",

@@ -42,11 +42,21 @@ export function RemoteImage({
   alt,
   className,
   style,
+  fit = "cover",
 }: {
   /** The object key, e.g. `media/42/{uuid}`. */
   imageKey: string;
   alt: string;
   className?: string;
+  /**
+   * How the image sits in its box.
+   *
+   * `cover` fills and crops — right for an avatar, where the box is a circle
+   * and the middle is what matters. `contain` fits the whole image inside,
+   * which is right for anything somebody chose to post: cropping their picture
+   * to a shape the layout preferred throws away the part they framed.
+   */
+  fit?: "cover" | "contain";
   /** Exact dimensions, for callers sized in pixels rather than in classes. */
   style?: CSSProperties;
 }) {
@@ -84,7 +94,11 @@ export function RemoteImage({
     <div
       role="img"
       aria-label={alt}
-      className={cn("bg-cover bg-center", className)}
+      className={cn(
+        fit === "contain" ? "bg-contain bg-no-repeat" : "bg-cover",
+        "bg-center",
+        className,
+      )}
       style={{ backgroundImage: `url(${url})`, ...style }}
     />
   );

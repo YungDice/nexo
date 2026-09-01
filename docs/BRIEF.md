@@ -3,8 +3,8 @@
 > Paste this whole document into your coding agent as the project brief.
 
 **Product:** Nexo
-**Domain:** `dice.fit`
-**Service hosts:** API + WebSocket at `api.dice.fit`, marketing/download page at `nexo.dice.fit`, updater manifests at `updates.dice.fit`. Use these exact hosts everywhere — no `localhost` hardcoded outside dev config, no placeholder domains.
+**Domain:** `delidev.net`
+**Service hosts:** API + WebSocket at `api.delidev.net`, marketing/download page at `www.delidev.net`, updater manifests at `updates.delidev.net`. Use these exact hosts everywhere — no `localhost` hardcoded outside dev config, no placeholder domains.
 
 ---
 
@@ -107,7 +107,7 @@ Ship a **Privacy** panel in Settings that states exactly the table above in plai
 
 - Tauri capabilities: start from empty. Allow only the specific commands the UI needs. No `shell`, no broad `fs`, no `http` plugin from the frontend.
 - CSP: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob:; connect-src 'self' ipc: https://ipc.localhost; object-src 'none'; frame-ancestors 'none'`
-- **Certificate pinning** for `api.dice.fit` in the Rust HTTP/WS client: pin the SPKI of the leaf plus one backup key held offline. Ship a documented rotation path — a pinned client that outlives its pin is a bricked client.
+- **Certificate pinning** for `api.delidev.net` in the Rust HTTP/WS client: pin the SPKI of the leaf plus one backup key held offline. Ship a documented rotation path — a pinned client that outlives its pin is a bricked client.
 - Rate limit auth endpoints (10/min/IP), KeyPackage fetches (60/min/account), and message send (30/s/account).
 - Link previews are **generated client-side and off by default** — a server-side preview fetcher is a request-forgery and metadata leak.
 - No crash reporting that can capture plaintext. If you add crash reporting later, it must be opt-in and scrub message content.
@@ -152,7 +152,7 @@ Index `envelopes(conversation_id, id)` and `envelopes(delivered_at) WHERE delive
 
 ### 5.2 API surface
 
-Base URL `https://api.dice.fit`, WebSocket `wss://api.dice.fit/v1/stream`. Both behind Caddy or nginx terminating TLS 1.3 on the Hetzner VPS, with HSTS (`max-age=63072000; includeSubDomains; preload`).
+Base URL `https://api.delidev.net`, WebSocket `wss://api.delidev.net/v1/stream`. Both behind Caddy or nginx terminating TLS 1.3 on the Hetzner VPS, with HSTS (`max-age=63072000; includeSubDomains; preload`).
 
 ```
 POST   /v1/auth/register          handle, display_name, pw_verifier, identity_pubkey, key_packages[]
@@ -314,7 +314,7 @@ Sentence case. Active voice. A button that says "Send invite" produces a toast t
 - Start-with-Windows toggle via registry `Run` key (user scope, never machine scope).
 - Auto-lock after N minutes idle → locks the encrypted store, requires Windows Hello or password to unlock.
 - Installer: NSIS, per-user by default (no admin prompt), Authenticode signed.
-- Updater: Tauri's updater pointed at `https://updates.dice.fit/nexo/{{target}}/{{current_version}}`, manifests signed with the Tauri minisign key (private half never in the repo, never in CI logs — use a GitHub Actions secret). Tauri downloads full binaries rather than diffs, which is fine at this bundle size but measure it.
+- Updater: Tauri's updater pointed at `https://updates.delidev.net/nexo/{{target}}/{{current_version}}`, manifests signed with the Tauri minisign key (private half never in the repo, never in CI logs — use a GitHub Actions secret). Tauri downloads full binaries rather than diffs, which is fine at this bundle size but measure it.
 
 ---
 

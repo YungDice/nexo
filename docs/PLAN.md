@@ -307,6 +307,6 @@ envelope code never share a module, so the distinction cannot erode quietly.
 ## External dependencies with their own clocks
 
 - **Code-signing certificate** — start now; weeks of lead time (risk 1).
-- **Hetzner VPS and `dice.fit` DNS** — needed by M4.
+- **Hetzner VPS and `delidev.net` DNS** — needed by M4.
 - **Hetzner Object Storage credentials** — needed by M6.
 - **Strawberry Perl on the dev machine** — needed by M2 (risk 3).

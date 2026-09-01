@@ -147,6 +147,38 @@ async fn install(
     Ok(())
 }
 
+/// Publishes KeyPackages for the device that just signed in.
+///
+/// **Both** register and login need this, and for a long time only register did
+/// it. That was invisible while a replaced device's packages stayed claimable:
+/// a reinstalled account was reachable through the *old* device's supply, which
+/// meant the Welcome went somewhere the new device could not read. Retiring
+/// those packages fixed the silent half and exposed this one -- a freshly
+/// signed-in device published nothing, so nobody could start a conversation
+/// with it at all.
+///
+/// Not fatal. The account exists and the user is signed in; the periodic refill
+/// retries. But it is warned about, because the failure is otherwise invisible:
+/// the other person is simply told there is no key package for that handle,
+/// with no way to learn why.
+async fn publish_key_packages_for(client_state: &State<'_, ClientState>, when: &str) {
+    let handle = client_state.0.clone();
+    let problem = tauri::async_runtime::spawn_blocking(move || {
+        let guard = handle.lock().ok()?;
+        let logged_in = guard.as_ref()?;
+        conversations::publish_key_packages(&logged_in.context(), nexo_crypto::KEY_PACKAGE_TARGET)
+            .err()
+            .map(|e| e.to_string())
+    })
+    .await
+    .ok()
+    .flatten();
+
+    if let Some(error) = problem {
+        tracing::warn!(%error, %when, "publishing key packages failed");
+    }
+}
+
 /// Where the encrypted store lives, or an error the UI can show.
 fn store_path() -> Result<std::path::PathBuf, AuthErrorView> {
     nexo_store::default_path().ok_or(AuthErrorView {
@@ -208,26 +240,7 @@ pub async fn register(
     let user_id = account.user_id;
     install(&state, &client_state, session).await?;
 
-    // Publish KeyPackages immediately. Without them nobody can start a
-    // conversation with this account, and the failure is invisible: the other
-    // person is simply told there is no key package for that handle, with no
-    // way to know why.
-    let handle = client_state.0.clone();
-    let problem = tauri::async_runtime::spawn_blocking(move || {
-        let guard = handle.lock().ok()?;
-        let logged_in = guard.as_ref()?;
-        conversations::publish_key_packages(&logged_in.context(), nexo_crypto::KEY_PACKAGE_TARGET)
-            .err()
-            .map(|e| e.to_string())
-    })
-    .await
-    .ok()
-    .flatten();
-    if let Some(error) = problem {
-        // Not fatal: the account exists and the user is signed in. The
-        // periodic refill retries it.
-        tracing::warn!(%error, "publishing key packages at registration failed");
-    }
+    publish_key_packages_for(&client_state, "registration").await;
 
     tracing::info!(user_id, "registered");
     Ok(account)
@@ -260,6 +273,12 @@ pub async fn login(
     let account = AccountView::from(session.account.clone());
     let user_id = account.user_id;
     install(&state, &client_state, session).await?;
+
+    // Signing in on a machine with no local store generates a fresh identity
+    // keypair, which is a new device with an empty supply. Without this it is
+    // an account nobody can start a conversation with.
+    publish_key_packages_for(&client_state, "sign-in").await;
+
     tracing::info!(user_id, "signed in");
     Ok(account)
 }

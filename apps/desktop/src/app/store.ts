@@ -284,7 +284,17 @@ export const useApp = create<AppState>()(
         // mean "whoever you last looked at".
         set({ route, listDrawerOpen: false, viewingHandle: null }),
       viewProfile: (handle) =>
-        set({ route: "profile", viewingHandle: handle, listDrawerOpen: false }),
+        set((s) => ({
+          route: "profile",
+          // Your own handle opens *your* profile, not a read-only view of
+          // yourself -- which offered a Message button that started a
+          // conversation with your own account.
+          viewingHandle:
+            handle && handle.toLowerCase() === s.account?.handle.toLowerCase()
+              ? null
+              : handle,
+          listDrawerOpen: false,
+        })),
       openConversation: (id) => set({ activeConversationId: id, listDrawerOpen: false }),
       toggleContextPanel: () => set((s) => ({ contextPanelOpen: !s.contextPanelOpen })),
       setListDrawer: (open) => set({ listDrawerOpen: open }),

@@ -23,7 +23,7 @@
 #    tag filter or not, with zero jobs in it. Thirty-seven red runs and not one
 #    step ever executed. The check is a `run:` step now, reading the secret
 #    through `env`, where it is allowed.
-# 2. It wrote `manifest-windows-x86_64.json` pointing at updates.delidev.net. The
+# 2. It wrote `manifest-windows-x86_64.json` pointing at updates.dice.fit. The
 #    app fetches `latest.json` from the GitHub release (see
 #    `plugins.updater.endpoints` in tauri.conf.json), so both the name and the
 #    URL were wrong and an update check would have 404'd.

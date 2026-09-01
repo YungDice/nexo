@@ -97,7 +97,7 @@ knowing exactly which part:
   editing the licence (see above).
 
 The distinction that actually matters: **MIT licenses the software; it says
-nothing about operating the service.** The moment `api.delidev.net` accepts a
+nothing about operating the service.** The moment `api.dice.fit` accepts a
 registration, that is a separate legal relationship with a user, governed by
 terms of service and a privacy notice that do not exist in this repository yet.
 No licence text will stand in for them.
@@ -132,7 +132,7 @@ software:
 > This product includes software developed by the OpenSSL Project for use in the
 > OpenSSL Toolkit.
 
-Read literally that reaches the marketing page at `www.delidev.net`, not just the
+Read literally that reaches the marketing page at `nexo.dice.fit`, not just the
 About panel. The cheap and complete answer is to carry the acknowledgement in
 the third-party notices and in the download page footer, and then stop thinking
 about it.

@@ -11,6 +11,7 @@
 //! server. The HTTP implementation arrives with M4, when the client starts
 //! talking to `api.dice.fit` for real.
 
+use nexo_protocol::{MeetProfile, MeetProfileUpdate, MeetRequest};
 use serde::{Deserialize, Serialize};
 
 /// Argon2id parameters the server tells the client to use.
@@ -85,6 +86,14 @@ pub enum TransportError {
         /// What the server considers current.
         current: i64,
     },
+    /// The server has no such thing.
+    ///
+    /// Separate from [`Rejected`](Self::Rejected) because for some calls it is
+    /// not a failure at all: "you are not on the map" is an ordinary answer,
+    /// and a caller should be able to say so without reading an error message
+    /// to find out.
+    #[error("not found")]
+    NotFound,
     /// The server rejected the request.
     #[error("the server rejected the request: {0}")]
     Rejected(String),
@@ -296,4 +305,58 @@ pub trait Transport {
 
     /// Everything after `since_id`.
     fn sync(&self, conversation_id: &str, since_id: i64) -> Result<Vec<Envelope>, TransportError>;
+
+    // ------------------------------------------------------------ Meet&Greet ---
+    //
+    // Unlike everything above, none of this carries ciphertext. A pin, a
+    // headline and a character are readable by the server by design, and the
+    // agreement screen says so — see `apps/server/src/meet.rs`.
+
+    /// Every active pin, minus blocks. `after` continues a page.
+    fn meet_pins(&self, after: Option<&str>) -> Result<Vec<MeetProfile>, TransportError>;
+
+    /// My own pin. `None` when I am not on the map.
+    fn meet_me(&self) -> Result<Option<MeetProfile>, TransportError>;
+
+    /// Place or move my pin, or change what goes with it.
+    ///
+    /// What comes back from the server is not what was sent: the pin is
+    /// coarsened on write. A caller that wants to draw its own pin has to read
+    /// it back rather than assume.
+    fn meet_set_me(&self, update: &MeetProfileUpdate) -> Result<(), TransportError>;
+
+    /// Come off the map, keeping the character.
+    fn meet_leave(&self) -> Result<(), TransportError>;
+
+    /// Accept the agreement at a given version.
+    fn meet_consent(&self, version: i32) -> Result<(), TransportError>;
+
+    /// Intros waiting for me.
+    fn meet_requests(&self) -> Result<Vec<MeetRequest>, TransportError>;
+
+    /// Mark an already-opened conversation as an intro.
+    fn meet_open_request(
+        &self,
+        handle: &str,
+        conversation_id: &str,
+    ) -> Result<MeetRequest, TransportError>;
+
+    /// File a report about a post, a comment or a person.
+    ///
+    /// Here rather than beside the map because reporting is not a Meet&Greet
+    /// feature — the server has had the endpoint since BRIEF 13 and the feed
+    /// wants it too. This is simply the first caller.
+    fn report(
+        &self,
+        subject_kind: &str,
+        subject_id: i64,
+        reason: &str,
+        note: Option<&str>,
+    ) -> Result<(), TransportError>;
+
+    /// Answer an intro. Accepting lifts the one-message cap.
+    fn meet_accept(&self, id: i64) -> Result<(), TransportError>;
+
+    /// Refuse an intro. Also lifts the cap — see the server's `resolve`.
+    fn meet_decline(&self, id: i64) -> Result<(), TransportError>;
 }

@@ -1,6 +1,13 @@
-# Status at v0.1.3
+# Status at v0.1.16
 
 What the app actually does today.
+
+**The two sections below stop at v0.1.3.** Everything after that heading was
+written against that release and has not been re-walked; several things it
+calls absent have since been built. What landed after it is listed under
+*Since v0.1.3* at the foot of this file. Re-walking the older sections is worth
+doing and has not been done — saying so is better than leaving a reader to
+discover it.
 
 Written by walking the code, not the commit messages: every line below was
 checked against the file it names. `docs/PLAN.md` tracks the milestones M0–M9;
@@ -103,3 +110,60 @@ Twelve features, in the order they matter to someone using the app.
 - **A draggable divider on Home**, between the feed and the most recent
   conversation. Replaces three fixed hairlines with one line that means
   something. `preferences.homeChatWidth`.
+
+---
+
+## Since v0.1.3
+
+Written the same way as the rest: walked against the code, not the commit log.
+
+### Messaging
+
+- **Search across history**, not just the newest message per row. FTS5 inside
+  the encrypted store, so the term never leaves the machine
+  (`crates/store`, schema 9).
+- **Key-change detection.** `conversation_peers` records the key a peer was
+  last seen with, so a change is noticed and reported rather than assumed
+  benign. `mark_verified` and `acknowledge_key_change` are deliberately
+  separate: having seen a change is not the same as having re-compared digits.
+- **Conversations that could never be entered are now escaped.** A `start_with`
+  whose commit reached the server but whose Welcome did not used to leave a
+  chat that was listed, opened, and answered every message with "You are not in
+  that conversation." for ever. `open_with` syncs, and if no Welcome exists it
+  leaves the conversation so a usable one can be made.
+
+### Server
+
+- **Rate limits across every mutating route** — posts, comments, reactions,
+  media, profile and membership, beside the auth and send limits that already
+  existed. `NEXO_RATE_LIMITS=off` exists for the integration suite and is
+  loud about itself at startup.
+- **Device retirement** on login, and **reporting** (`/v1/reports`).
+
+### Meet&Greet (M10)
+
+A fifth destination: a world map on which a person may place one pin saying
+roughly where they are, wearing a character they built.
+
+- **Nexo never reads device location.** No `navigator.geolocation` call exists
+  in the feature, and `meet_profiles` has no column that could hold a
+  measurement. A pin is a claim somebody typed.
+- **The pin is coarsened before it is stored** — snapped to a 0.25° grid and
+  offset by a fixed amount derived from the account, so repeated saves disclose
+  no more than the first. The submitted figure is never written anywhere.
+- **The map is bundled**, not tiled: MapLibre over 105 KB of public-domain
+  Natural Earth data. No tile server, no API key, no attribution obligation,
+  and nothing fetched at runtime.
+- **A NexoChar is stored as its config**, never as an image — a couple of
+  hundred bytes of JSON rendered by whichever client draws it. Nothing in
+  object storage, and no picture to moderate.
+- **An intro buys exactly one message** until it is answered, enforced by the
+  delivery service rather than the app.
+- **Blocking removes both pins**, in both directions, reusing `blocks`.
+- The whole feature is behind a lazy import: the map chunk is 288 KB gzipped
+  and the startup bundle is unchanged.
+
+**Known gap:** on this machine the map shows horizontal banding while being
+dragged, under a transparent window with the DWM acrylic backdrop. WebGL,
+the worker and zoom all work; the banding is cosmetic and unresolved. Three
+candidate fixes were identified and none has been confirmed.

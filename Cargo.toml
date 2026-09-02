@@ -51,6 +51,10 @@ sqlx = { version = "=0.8.6", default-features = false, features = [
     # devices.id and refresh_tokens.id are UUID columns; without this the
     # query! macros refuse to map them.
     "uuid",
+    # meet_profiles.char_config is JSONB. The server never looks inside it --
+    # it is a NexoChar config, rendered on the client -- but it still has to
+    # carry the column, and without this the query! macros refuse to map it.
+    "json",
 ] }
 # Development convenience: reads a .env at the repo root so `pnpm dev:server`
 # needs no exported variables. The server has no .env -- systemd's

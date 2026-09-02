@@ -8,6 +8,7 @@ import { IconRail } from "./components/chrome/IconRail";
 import { PageTitleCell, TopBar } from "./components/chrome/TopBar";
 import { IconButton } from "./components/ui/Button";
 import { HomePage } from "./features/home/HomePage";
+import { MeetPage } from "./features/meet/MeetPage";
 import { MessagesHeader } from "./features/messages/MessagesHeader";
 import { MessagesPage } from "./features/messages/MessagesPage";
 import { ProfilePage } from "./features/profile/ProfilePage";
@@ -107,6 +108,7 @@ function AppShell({ account }: { account: Account }) {
               }
             />
           ) : null}
+          {route === "meet" ? <PageTitleCell title="Meet&Greet" /> : null}
           {route === "profile" ? <PageTitleCell title="Profile" /> : null}
           {route === "settings" ? <PageTitleCell title="Settings" /> : null}
         </TopBar>
@@ -114,6 +116,7 @@ function AppShell({ account }: { account: Account }) {
         <div className="flex min-h-0 flex-1">
           <IconRail unread={unread} />
           {route === "home" ? <HomePage now={now} /> : null}
+          {route === "meet" ? <MeetPage /> : null}
           {route === "messages" ? <MessagesPage now={now} /> : null}
           {route === "profile" ? (
             viewingHandle ? (

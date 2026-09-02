@@ -11,6 +11,7 @@ mod client;
 mod commands;
 mod conversations;
 mod feed;
+mod meet;
 mod preview;
 mod windows;
 
@@ -107,6 +108,16 @@ pub fn run() {
             conversations::flush_outbox,
             conversations::outbox_count,
             conversations::safety_number,
+            meet::meet_pins,
+            meet::meet_me,
+            meet::meet_set_me,
+            meet::meet_leave,
+            meet::meet_consent,
+            meet::meet_requests,
+            meet::meet_send_request,
+            meet::meet_accept_request,
+            meet::meet_decline_request,
+            meet::meet_report,
             feed::feed,
             feed::posts_by,
             feed::create_post,

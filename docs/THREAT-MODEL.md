@@ -167,6 +167,43 @@ WebView already holds decrypted messages this is a small step, but it is a step.
 never asks for, and it does not survive the app: nothing is stored, logged, or
 sent anywhere.
 
+### 2.8 A Meet&Greet pin says roughly where you are, to everyone
+
+Placing a pin publishes three things — the pin, a headline and a character — to
+every signed-in Nexo user and to the server. None of it is encrypted. That is
+the same deal as a profile or a post, and the agreement screen says so in those
+words before anyone appears on the map.
+
+**What a pin actually discloses.** Not a measurement. Nexo never reads device
+location: there is no `navigator.geolocation` call in the client and no column
+in `meet_profiles` that could hold an accuracy, a heading or a time of
+observation. A pin is a place somebody dragged onto a map, and the schema
+cannot express anything stronger.
+
+What is stored is deliberately worse than what was submitted. `meet::coarsen`
+snaps the pin to a 0.25° grid — roughly 25 km — and then offsets it by an
+amount derived from the account id. The submitted figure is never written, so
+it cannot leak from the database later, and the map's `MAX_ZOOM` of 6 means the
+UI cannot draw a pin at a building even if one were stored.
+
+**Why the offset is fixed rather than random.** A jitter re-rolled on each save
+would let anyone who watched a pin being written several times average the
+offsets away and recover the true grid point. Deriving it from the account
+makes every save land in the same place, so saving a hundred times discloses
+exactly what saving once did. This is tested, in
+`the_same_account_is_jittered_identically_every_time`.
+
+**What it does not protect against.** Somebody who says where they live has
+said where they live. A grid cell of 25 km is meaningful against an observer
+reading the database; it is not a defence against a person choosing to place
+their pin on their own street and writing their town in the headline. The
+feature is honest about being public, and that honesty is the protection.
+
+**Metadata, as everywhere else.** An intro is an ordinary MLS conversation, so
+its contents are end-to-end encrypted and *who wrote to whom, and when* is not
+— §2.2 applies unchanged. The one-message cap is enforced by the delivery
+service rather than the app, for the reason §2.6 gives about blocking.
+
 ## 3. Adversaries in scope
 
 **A network attacker.** Defeated by TLS 1.3 for transport plus MLS for content.

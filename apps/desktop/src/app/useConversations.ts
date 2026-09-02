@@ -40,7 +40,6 @@ function toConversation(wire: WireConversation): Conversation {
     title: wire.title ?? "Unnamed conversation",
     memberIds: wire.members,
     unread: 0,
-    epoch: 0,
     // From the encrypted store now, not from a browser boolean. The old one
     // survived key changes it knew nothing about.
     verified: wire.verified,
@@ -108,7 +107,9 @@ export interface LiveConversations {
   refresh: () => Promise<void>;
 }
 
-export function useConversations(activeId: string | undefined): LiveConversations {
+export function useConversations(
+  activeId: string | undefined,
+): LiveConversations {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [safety, setSafety] = useState<string | null>(null);
@@ -202,7 +203,8 @@ export function useConversations(activeId: string | undefined): LiveConversation
   const clearUnread = useApp((s) => s.clearUnread);
   const unreadMap = useApp((s) => s.unread);
   useEffect(() => {
-    if (activeId && messages.length >= 0 && document.hasFocus()) clearUnread(activeId);
+    if (activeId && messages.length >= 0 && document.hasFocus())
+      clearUnread(activeId);
   }, [activeId, clearUnread, messages.length]);
 
   // Switching conversation reloads immediately rather than waiting for a tick.

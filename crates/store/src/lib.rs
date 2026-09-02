@@ -35,7 +35,7 @@ pub type StoredIdentity = (Zeroizing<Vec<u8>>, Vec<u8>);
 /// The schema version this build writes and expects.
 ///
 /// One constant, so a migration and the test that checks it cannot disagree.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// The file name the store always uses, under the app data directory.
 pub const STORE_FILE_NAME: &str = "store.db";
@@ -435,6 +435,40 @@ impl EncryptedStore {
                  END;
 
                  PRAGMA user_version = 9;
+                 COMMIT;",
+            )?;
+        }
+
+        if version < 10 {
+            // The Meet&Greet map, cached so the tab opens on something.
+            //
+            // The pin list is not a feed and must never become one: it is
+            // fetched when the tab is opened and when somebody pulls, never on
+            // a timer and never through the sync agent, which belongs to
+            // messages. What this table buys is the first paint -- reopening
+            // draws yesterday's map immediately and replaces it when the fetch
+            // lands, instead of showing an empty world for a round trip.
+            //
+            // `char_config` is stored as the JSON text it arrived as. This
+            // crate has no more business parsing a hairstyle than the server
+            // does; the renderer is the only thing that reads it.
+            //
+            // It is a cache, so it is disposable: `fetched_at_ms` is what tells
+            // a reader how stale the map is, and clearing the table loses
+            // nothing that a fetch will not bring back.
+            self.connection.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS meet_pins (
+                     handle        TEXT PRIMARY KEY,
+                     display_name  TEXT NOT NULL,
+                     lat           REAL NOT NULL,
+                     lon           REAL NOT NULL,
+                     headline      TEXT,
+                     char_config   TEXT NOT NULL,
+                     updated_at_ms INTEGER NOT NULL,
+                     fetched_at_ms INTEGER NOT NULL
+                 );
+                 PRAGMA user_version = 10;
                  COMMIT;",
             )?;
         }
@@ -1013,6 +1047,65 @@ impl EncryptedStore {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Replace the cached map with what the server just returned.
+    ///
+    /// Wholesale, in one transaction: a pin that has gone is gone, and a
+    /// half-written map is never visible to a reader. The list is small enough
+    /// that reconciling row by row would be more code for no gain.
+    pub fn cache_meet_pins(&self, pins: &[MeetPin], fetched_at_ms: i64) -> Result<(), StoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute("DELETE FROM meet_pins", [])?;
+        {
+            let mut statement = transaction.prepare(
+                "INSERT INTO meet_pins
+                     (handle, display_name, lat, lon, headline, char_config,
+                      updated_at_ms, fetched_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            for pin in pins {
+                statement.execute(rusqlite::params![
+                    pin.handle,
+                    pin.display_name,
+                    pin.lat,
+                    pin.lon,
+                    pin.headline,
+                    pin.char_config,
+                    pin.updated_at_ms,
+                    fetched_at_ms,
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// The map as this device last saw it. Empty before the first fetch.
+    pub fn cached_meet_pins(&self) -> Result<Vec<MeetPin>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT handle, display_name, lat, lon, headline, char_config,
+                    updated_at_ms, fetched_at_ms
+             FROM meet_pins
+             ORDER BY handle",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(MeetPin {
+                handle: row.get(0)?,
+                display_name: row.get(1)?,
+                lat: row.get(2)?,
+                lon: row.get(3)?,
+                headline: row.get(4)?,
+                char_config: row.get(5)?,
+                updated_at_ms: row.get(6)?,
+                fetched_at_ms: row.get(7)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Every peer this device has seen in a conversation.
     pub fn peers(&self, conversation_id: &str) -> Result<Vec<StoredPeer>, StoreError> {
         let mut statement = self.connection.prepare(
@@ -1167,6 +1260,32 @@ pub struct SearchHit {
     pub sent_at_ms: i64,
     /// Whether this device sent it.
     pub outgoing: bool,
+}
+
+/// One pin on the Meet&Greet map, as this device last fetched it.
+///
+/// A cached copy of what the server returned, kept only so the tab opens on a
+/// map rather than on nothing. `char_config` is the JSON exactly as it
+/// arrived — this crate does not read it, and the renderer is the only thing
+/// that does.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeetPin {
+    /// Who this is.
+    pub handle: String,
+    /// What to call them.
+    pub display_name: String,
+    /// Where the server says they are. Already coarsened when it was stored.
+    pub lat: f64,
+    /// The other half of the pin.
+    pub lon: f64,
+    /// Their one line, if they wrote one.
+    pub headline: Option<String>,
+    /// The NexoChar config, as JSON text.
+    pub char_config: String,
+    /// When they last moved the pin.
+    pub updated_at_ms: i64,
+    /// When this device last fetched the map, so a reader can tell how old it is.
+    pub fetched_at_ms: i64,
 }
 
 /// One peer in a conversation, as this device last saw them.
@@ -1740,6 +1859,68 @@ mod tests {
         store
             .insert_message(id, "c1", None, body, 1_000 + id)
             .unwrap();
+    }
+
+    fn a_pin(handle: &str) -> MeetPin {
+        MeetPin {
+            handle: handle.into(),
+            display_name: handle.to_uppercase(),
+            lat: 47.1,
+            lon: 8.2,
+            headline: Some("here for the mountains".into()),
+            char_config: r#"{"topVariant":"hoodie"}"#.into(),
+            updated_at_ms: 1_760_000_000_000,
+            fetched_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn the_cached_map_round_trips() {
+        let dir = TempDir::new("meet-cache");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        assert!(store.cached_meet_pins().unwrap().is_empty());
+
+        store
+            .cache_meet_pins(&[a_pin("dice"), a_pin("bananaaboy")], 42)
+            .unwrap();
+
+        let back = store.cached_meet_pins().unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].handle, "bananaaboy", "ordered by handle");
+        assert_eq!(back[1].char_config, r#"{"topVariant":"hoodie"}"#);
+        assert!(back.iter().all(|p| p.fetched_at_ms == 42));
+    }
+
+    /// A pin that has gone must not linger. The cache is the whole map, not a
+    /// pile of every pin ever seen.
+    #[test]
+    fn caching_the_map_again_replaces_it_rather_than_adding_to_it() {
+        let dir = TempDir::new("meet-replace");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        store
+            .cache_meet_pins(&[a_pin("dice"), a_pin("gone")], 1)
+            .unwrap();
+        store.cache_meet_pins(&[a_pin("dice")], 2).unwrap();
+
+        let back = store.cached_meet_pins().unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].handle, "dice");
+    }
+
+    /// Upgrading an existing store must not lose it or fail to gain the table.
+    #[test]
+    fn a_store_from_before_the_map_gains_the_cache() {
+        let dir = TempDir::new("meet-upgrade");
+        {
+            let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+            store
+                .connection()
+                .execute_batch("DROP TABLE meet_pins; PRAGMA user_version = 9;")
+                .unwrap();
+        }
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        assert!(store.cached_meet_pins().unwrap().is_empty());
     }
 
     #[test]

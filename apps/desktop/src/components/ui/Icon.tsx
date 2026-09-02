@@ -28,6 +28,17 @@ const glyphs = {
       <path d="M4.5 21a7.5 7.5 0 0 1 15 0" />
     </>
   ),
+  // A globe, not a map pin. The pin is what a person places; the destination is
+  // the world they place it on -- and a pin in the rail would promise that
+  // something here knows where you are, which is the one thing this feature
+  // is built not to do.
+  meet: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z" />
+    </>
+  ),
   userPlus: (
     <>
       <circle cx="10" cy="8" r="3.6" />

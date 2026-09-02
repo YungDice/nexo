@@ -11,7 +11,13 @@
  *    that claims a security property the app does not have (rule 5).
  */
 
-import type { Conversation, Message, Person, Post, SharedLink } from "../lib/types";
+import type {
+  Conversation,
+  Message,
+  Person,
+  Post,
+  SharedLink,
+} from "../lib/types";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -129,9 +135,9 @@ export function buildMockData(now: Date): MockData {
       title: "Design team",
       memberIds: ["u-me", "u-nolan", "u-desirae", "u-mira", "u-chance"],
       unread: 0,
-      epoch: 42,
       verified: false,
-      safetyDigits: "418290734615082973461508297346150829734615082973461508418290",
+      safetyDigits:
+        "418290734615082973461508297346150829734615082973461508418290",
       muted: false,
     },
     {
@@ -140,9 +146,9 @@ export function buildMockData(now: Date): MockData {
       title: "Abram Culhane",
       memberIds: ["u-me", "u-abram"],
       unread: 4,
-      epoch: 17,
       verified: true,
-      safetyDigits: "902371845620193847562019384756201938475620193847562019902371",
+      safetyDigits:
+        "902371845620193847562019384756201938475620193847562019902371",
       muted: false,
     },
     {
@@ -151,9 +157,9 @@ export function buildMockData(now: Date): MockData {
       title: "Chance Baptiste",
       memberIds: ["u-me", "u-chance"],
       unread: 1,
-      epoch: 8,
       verified: false,
-      safetyDigits: "553019284736550192847365501928473655019284736550192847553019",
+      safetyDigits:
+        "553019284736550192847365501928473655019284736550192847553019",
       muted: false,
     },
     {
@@ -162,9 +168,9 @@ export function buildMockData(now: Date): MockData {
       title: "Desirae Dias",
       memberIds: ["u-me", "u-desirae"],
       unread: 0,
-      epoch: 31,
       verified: true,
-      safetyDigits: "117482930561174829305611748293056117482930561174829305117482",
+      safetyDigits:
+        "117482930561174829305611748293056117482930561174829305117482",
       muted: true,
     },
     {
@@ -173,9 +179,9 @@ export function buildMockData(now: Date): MockData {
       title: "Nolan Mango",
       memberIds: ["u-me", "u-nolan"],
       unread: 0,
-      epoch: 12,
       verified: false,
-      safetyDigits: "640182937455640182937455640182937455640182937455640182640182",
+      safetyDigits:
+        "640182937455640182937455640182937455640182937455640182640182",
       muted: false,
     },
     {
@@ -184,9 +190,9 @@ export function buildMockData(now: Date): MockData {
       title: "Skylar Rosser",
       memberIds: ["u-me", "u-skylar"],
       unread: 0,
-      epoch: 5,
       verified: true,
-      safetyDigits: "308561947230856194723085619472308561947230856194723085308561",
+      safetyDigits:
+        "308561947230856194723085619472308561947230856194723085308561",
       muted: false,
     },
   ];
@@ -201,9 +207,27 @@ export function buildMockData(now: Date): MockData {
       at: ago(now, 27 * HOUR),
       state: "read",
       attachments: [
-        { id: "i-list-a", name: "list-100.png", size: 486_000, mime: "image/png", kind: "image" },
-        { id: "i-list-b", name: "list-125.png", size: 502_400, mime: "image/png", kind: "image" },
-        { id: "i-list-c", name: "list-150.png", size: 531_200, mime: "image/png", kind: "image" },
+        {
+          id: "i-list-a",
+          name: "list-100.png",
+          size: 486_000,
+          mime: "image/png",
+          kind: "image",
+        },
+        {
+          id: "i-list-b",
+          name: "list-125.png",
+          size: 502_400,
+          mime: "image/png",
+          kind: "image",
+        },
+        {
+          id: "i-list-c",
+          name: "list-150.png",
+          size: 531_200,
+          mime: "image/png",
+          kind: "image",
+        },
       ],
     },
     {
@@ -270,8 +294,20 @@ export function buildMockData(now: Date): MockData {
       at: ago(now, 95 * MINUTE),
       state: "read",
       attachments: [
-        { id: "i-pane-a", name: "pane-dark.png", size: 742_000, mime: "image/png", kind: "image" },
-        { id: "i-pane-b", name: "composer.png", size: 318_500, mime: "image/png", kind: "image" },
+        {
+          id: "i-pane-a",
+          name: "pane-dark.png",
+          size: 742_000,
+          mime: "image/png",
+          kind: "image",
+        },
+        {
+          id: "i-pane-b",
+          name: "composer.png",
+          size: 318_500,
+          mime: "image/png",
+          kind: "image",
+        },
       ],
       preview: {
         url: "https://dice.fit/nolan/panes",
@@ -346,7 +382,7 @@ export function buildMockData(now: Date): MockData {
       id: "m-15",
       conversationId: "c-chance",
       authorId: "u-chance",
-      body: "Are we still calling the numeric ID an ID everywhere, or does it become a \"Nexo number\" in the profile?",
+      body: 'Are we still calling the numeric ID an ID everywhere, or does it become a "Nexo number" in the profile?',
       at: ago(now, 3 * HOUR),
       state: "read",
     },
@@ -495,7 +531,8 @@ export function buildMockData(now: Date): MockData {
     messages,
     posts,
     links,
-    deviceFingerprint: "729140385620617394852073619408572639184057263918405726729140",
+    deviceFingerprint:
+      "729140385620617394852073619408572639184057263918405726729140",
   };
 }
 
@@ -515,7 +552,10 @@ export function messagesFor(data: MockData, conversationId: string): Message[] {
 }
 
 /** The preview line in a conversation row, and the sort key for the list. */
-export function lastMessage(data: MockData, conversationId: string): Message | undefined {
+export function lastMessage(
+  data: MockData,
+  conversationId: string,
+): Message | undefined {
   const all = messagesFor(data, conversationId);
   return all[all.length - 1];
 }
@@ -523,6 +563,8 @@ export function lastMessage(data: MockData, conversationId: string): Message | u
 /** Every attachment ever seen in a conversation, newest first (§6.1). */
 export function sharedAttachments(data: MockData, conversationId: string) {
   return messagesFor(data, conversationId)
-    .flatMap((m) => (m.attachments ?? []).map((a) => ({ attachment: a, at: m.at })))
+    .flatMap((m) =>
+      (m.attachments ?? []).map((a) => ({ attachment: a, at: m.at })),
+    )
     .reverse();
 }

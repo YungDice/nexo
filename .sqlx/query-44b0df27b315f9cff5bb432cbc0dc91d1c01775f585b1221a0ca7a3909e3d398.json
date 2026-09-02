@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE meet_requests\n         SET state = $3, resolved_at = now()\n         WHERE id = $1 AND to_id = $2 AND state = 'pending'\n         RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "44b0df27b315f9cff5bb432cbc0dc91d1c01775f585b1221a0ca7a3909e3d398"
+}

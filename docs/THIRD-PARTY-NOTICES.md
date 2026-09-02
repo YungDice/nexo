@@ -179,6 +179,46 @@ We ship no emoji **images** — the picker renders the platform font, which is
 already on the machine and is not ours to redistribute. Keep it that way; a
 bundled emoji set would add a CC-BY or OFL obligation and several megabytes.
 
+### 8. MapLibre GL JS — BSD-3-Clause, © MapLibre contributors
+
+The map renderer. A fork of mapbox-gl-js from before its licence changed, which
+is the reason it is here rather than Mapbox: BSD-3-Clause carries an attribution
+obligation in the distribution and nothing else — no key, no per-load billing,
+no terms restricting caching.
+
+The notice ships with the binary through the generated half of this file. There
+is no on-screen attribution requirement, because there is no basemap provider to
+attribute: see the next entry.
+
+### 9. Natural Earth via `world-atlas` — public domain, ISC package
+
+The countries of the world, as 105 KB of TopoJSON. `world-atlas` is ISC; the
+data inside it is Natural Earth, which is explicitly public domain and asks for
+no credit. `topojson-client`, which converts it, is ISC.
+
+**This is why the map has no attribution control and needs none.** There is no
+tile server, no API key and no tile request — the basemap is bundled and
+converted once at runtime. A tiled basemap from any provider would bring both a
+per-load cost and an on-screen credit obligation, and `attributionControl:
+false` in `mapStyle.ts` is only honest because there is genuinely nothing to
+attribute.
+
+### 10. DiceBear — MIT, and Voxel Art — CC0 1.0
+
+`@dicebear/core` is MIT. The Voxel Art style in `@dicebear/styles` is **CC0
+1.0**, a public-domain dedication that carries no attribution obligation at
+all — which is why a NexoChar can appear anywhere in the product without a
+credit line following it around.
+
+Only the one style is imported, by its own subpath. Importing the collection
+would pull all sixty-one styles into the bundle and, more to the point here,
+their several different licences — some styles in the collection are CC-BY-4.0
+and would put an attribution obligation on every avatar drawn.
+
+We ship no rendered characters. What is stored is a config, and the SVG is
+generated on the machine that draws it, so there is no image asset in the
+repository or in object storage to license.
+
 ---
 
 ## Where these end up

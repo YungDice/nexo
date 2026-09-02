@@ -35,6 +35,7 @@ use crate::transport::{
     Accepted, ClaimedKeyPackage, ConversationSummary, Envelope, SaltResponse, SessionTokens,
     Transport, TransportError,
 };
+use nexo_protocol::{MeetProfile, MeetProfileUpdate, MeetRequest};
 
 /// Where a release build talks to.
 pub const DEFAULT_BASE_URL: &str = "https://api.dice.fit";
@@ -88,6 +89,24 @@ impl Default for HttpTransport {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Percent-encode anything that is not safe unescaped in a query value.
+///
+/// Handles are the only thing passed here and are in practice plain, but
+/// "in practice" is not a guarantee the server makes, and a dependency for one
+/// call site is worse than eight lines (rule 8: every dependency is a decision).
+fn query_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
 }
 
 impl HttpTransport {
@@ -259,6 +278,17 @@ impl HttpTransport {
         })
     }
 
+    fn put_auth<B: serde::Serialize>(&self, path: &str, body: &B) -> Result<(), TransportError> {
+        self.with_refresh(|token| {
+            Self::finish::<()>(
+                self.agent
+                    .put(&format!("{}{path}", self.base_url))
+                    .header("authorization", &format!("Bearer {token}"))
+                    .send_json(body),
+            )
+        })
+    }
+
     fn delete_auth(&self, path: &str) -> Result<(), TransportError> {
         self.with_refresh(|token| {
             Self::finish::<()>(
@@ -326,11 +356,7 @@ fn classify(status: u16, body: &str) -> TransportError {
         (409, _) => TransportError::HandleTaken,
         (403, "wrong_password") => TransportError::WrongPassword,
         (401, _) => TransportError::InvalidCredentials,
-        (404, _) => TransportError::Rejected(if refusal.message.is_empty() {
-            "not found".to_string()
-        } else {
-            refusal.message
-        }),
+        (404, _) => TransportError::NotFound,
         _ => TransportError::Rejected(if refusal.message.is_empty() {
             format!("the server returned {status}")
         } else {
@@ -648,6 +674,82 @@ impl Transport for HttpTransport {
         self.get_auth(&format!(
             "/v1/conversations/{conversation_id}/sync?since_id={since_id}"
         ))
+    }
+
+    // ------------------------------------------------------------ Meet&Greet ---
+
+    fn meet_pins(&self, after: Option<&str>) -> Result<Vec<MeetProfile>, TransportError> {
+        match after {
+            Some(handle) => self.get_auth(&format!("/v1/meet/pins?after={}", query_escape(handle))),
+            None => self.get_auth("/v1/meet/pins"),
+        }
+    }
+
+    fn meet_me(&self) -> Result<Option<MeetProfile>, TransportError> {
+        // Not being on the map is an ordinary answer, not a failure, so the
+        // 404 the server gives becomes `None` rather than an error the caller
+        // has to know how to read.
+        match self.get_auth::<MeetProfile>("/v1/meet/me") {
+            Ok(profile) => Ok(Some(profile)),
+            Err(TransportError::NotFound) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn meet_set_me(&self, update: &MeetProfileUpdate) -> Result<(), TransportError> {
+        self.put_auth("/v1/meet/me", update)
+    }
+
+    fn meet_leave(&self) -> Result<(), TransportError> {
+        self.delete_auth("/v1/meet/me")
+    }
+
+    fn meet_consent(&self, version: i32) -> Result<(), TransportError> {
+        self.post_auth(
+            "/v1/meet/consent",
+            &serde_json::json!({ "version": version }),
+        )
+    }
+
+    fn meet_requests(&self) -> Result<Vec<MeetRequest>, TransportError> {
+        self.get_auth("/v1/meet/requests")
+    }
+
+    fn meet_open_request(
+        &self,
+        handle: &str,
+        conversation_id: &str,
+    ) -> Result<MeetRequest, TransportError> {
+        self.post_auth(
+            "/v1/meet/requests",
+            &serde_json::json!({ "handle": handle, "conversation_id": conversation_id }),
+        )
+    }
+
+    fn report(
+        &self,
+        subject_kind: &str,
+        subject_id: i64,
+        reason: &str,
+        note: Option<&str>,
+    ) -> Result<(), TransportError> {
+        self.post_auth(
+            "/v1/reports",
+            &serde_json::json!({
+                "subject_kind": subject_kind,
+                "subject_id": subject_id,
+                "reason": reason,
+                "note": note,
+            }),
+        )
+    }
+
+    fn meet_accept(&self, id: i64) -> Result<(), TransportError> {
+        self.post_auth(&format!("/v1/meet/requests/{id}/accept"), &())
+    }
+
+    fn meet_decline(&self, id: i64) -> Result<(), TransportError> {
+        self.post_auth(&format!("/v1/meet/requests/{id}/decline"), &())
     }
 }
 

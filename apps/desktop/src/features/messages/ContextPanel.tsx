@@ -63,7 +63,12 @@ export function ContextPanel({
                   type="button"
                   aria-label={attachment.name}
                   title={attachment.name}
-                  onClick={() => void notify(attachment.name, "Full-size preview arrives with the media milestone.")}
+                  onClick={() =>
+                    void notify(
+                      attachment.name,
+                      "Full-size preview arrives with the media milestone.",
+                    )
+                  }
                   className="size-11 shrink-0 rounded-[10px] ring-1 ring-line-strong transition-transform duration-[var(--motion-fast)] ease-[var(--ease-state)] hover:-translate-y-0.5"
                   style={{ background: fieldFor(attachment.id) }}
                 />
@@ -87,7 +92,10 @@ export function ContextPanel({
             {files.slice(0, 3).map(({ attachment, at }) => {
               const tone = fileTone(attachment.name);
               return (
-                <li key={attachment.id} className="flex items-center gap-3 py-2">
+                <li
+                  key={attachment.id}
+                  className="flex items-center gap-3 py-2"
+                >
                   <span
                     className="text-text-hi flex size-9 shrink-0 items-center justify-center rounded-[10px] font-mono text-[9px] font-semibold"
                     style={{ background: tone.tint }}
@@ -192,15 +200,24 @@ function Encryption({
       <p className="text-text-mid text-meta leading-relaxed">
         {conversation.verified ? (
           <>
-            <Icon name="shield" size={13} className="text-success mr-1.5 inline align-[-2px]" />
+            <Icon
+              name="shield"
+              size={13}
+              className="text-success mr-1.5 inline align-[-2px]"
+            />
             You compared these digits with{" "}
-            {conversation.kind === "dm" ? conversation.title : "this group"} and they matched.
+            {conversation.kind === "dm" ? conversation.title : "this group"} and
+            they matched.
           </>
         ) : (
           <>
-            <Icon name="shield" size={13} className="text-text-lo mr-1.5 inline align-[-2px]" />
-            Compare these digits over a channel you already trust. Until you do, nothing
-            proves the keys belong to who you think.
+            <Icon
+              name="shield"
+              size={13}
+              className="text-text-lo mr-1.5 inline align-[-2px]"
+            />
+            Compare these digits over a channel you already trust. Until you do,
+            nothing proves the keys belong to who you think.
           </>
         )}
       </p>
@@ -213,12 +230,15 @@ function Encryption({
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center">
         <button
           type="button"
           onClick={async () => {
             if (conversation.verified) {
-              await notify("Compare again", "Read the digits above with the other side and confirm they match before marking it verified again.");
+              await notify(
+                "Compare again",
+                "Read the digits above with the other side and confirm they match before marking it verified again.",
+              );
               return;
             }
             const ok = await confirm(
@@ -236,9 +256,6 @@ function Encryption({
         >
           {conversation.verified ? "Compare again" : "Mark as verified"}
         </button>
-        <span className="text-text-lo font-mono text-[11px]">
-          epoch {conversation.epoch}
-        </span>
       </div>
     </section>
   );
@@ -252,7 +269,10 @@ function Encryption({
  * hook because this list has no per-row busy state to track -- the dialog is
  * the interaction, and it is modal.
  */
-async function saveSharedFile(attachment: { id: string; name: string }): Promise<void> {
+async function saveSharedFile(attachment: {
+  id: string;
+  name: string;
+}): Promise<void> {
   const path = await pickSavePath(attachment.name);
   if (!path) return;
   try {

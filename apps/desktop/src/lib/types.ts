@@ -31,7 +31,8 @@ export interface Person {
 }
 
 /** Where a message got to. `failed` is a real state, not an edge case (§6.1). */
-export type DeliveryState = "sending" | "sent" | "delivered" | "read" | "failed";
+export type DeliveryState =
+  "sending" | "sent" | "delivered" | "read" | "failed";
 
 export interface Attachment {
   id: string;
@@ -74,8 +75,6 @@ export interface Conversation {
   title: string;
   memberIds: string[];
   unread: number;
-  /** The MLS epoch this client is at. Shown in the verify panel. */
-  epoch: number;
   /** §4.1: safety numbers verified by hand. Unverified is not "insecure". */
   verified: boolean;
   /**

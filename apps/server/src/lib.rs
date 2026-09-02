@@ -25,6 +25,7 @@ pub mod delivery;
 pub mod health;
 pub mod limits;
 pub mod media;
+pub mod meet;
 pub mod posts;
 pub mod profiles;
 pub mod reports;
@@ -51,6 +52,7 @@ pub fn router(state: AppState) -> Router {
         .merge(blocks::router())
         .merge(delivery::router())
         .merge(media::router())
+        .merge(meet::router())
         .merge(profiles::router())
         .merge(posts::router())
         .merge(reports::router())

@@ -797,6 +797,46 @@ async fn send(
         return Err(DeliveryError::Refused);
     }
 
+    // Meet&Greet's one-message rule, enforced where it is true rather than
+    // where it is convenient.
+    //
+    // An intro from the map buys exactly one message until the person who
+    // received it answers. That belongs here, beside the block check, for the
+    // reason `blocks.rs` gives about itself: a cap the client applies is a
+    // promise the product cannot keep, and this one guards a stranger's inbox.
+    //
+    // The proof this needs -- that the conversation has two members and who the
+    // other one is -- was established immediately above, so the rule costs one
+    // more query and nothing else. Commits are exempt: the group's own
+    // machinery is not a message, and refusing one would break the
+    // conversation rather than quieten it.
+    if others.len() == 1 && !request.is_commit {
+        let pending = sqlx::query!(
+            "SELECT 1 AS \"present!\" FROM meet_requests
+             WHERE conversation_id = $1 AND from_id = $2 AND state = 'pending'",
+            conversation_id,
+            caller.user_id
+        )
+        .fetch_optional(&state.db)
+        .await?
+        .is_some();
+        if pending {
+            let already = sqlx::query!(
+                "SELECT count(*) AS \"n!\" FROM envelopes
+                 WHERE conversation_id = $1 AND sender_device_id IN
+                       (SELECT id FROM devices WHERE user_id = $2)
+                   AND NOT is_commit",
+                conversation_id,
+                caller.user_id
+            )
+            .fetch_one(&state.db)
+            .await?;
+            if already.n > 0 {
+                return Err(DeliveryError::Refused);
+            }
+        }
+    }
+
     let ciphertext = unhex(&request.ciphertext, "ciphertext")?;
     if ciphertext.is_empty() {
         return Err(DeliveryError::Invalid("Empty ciphertext.".into()));

@@ -112,6 +112,7 @@ Each module owns its own `router()`, merged in `lib.rs`.
 | `blocks.rs` | `/v1/blocks*` |
 | `media.rs` | `/v1/media/{upload,download}` — presigned S3 URLs |
 | `reports.rs` | `/v1/reports` |
+| `meet.rs` | `/v1/meet/{pins,me,consent,requests}` — Meet&Greet. Owns pin coarsening. |
 | `stream/` (`mod`, `hub`) | `/v1/stream` — the WebSocket |
 | `health.rs` | `/v1/health` |
 | `db.rs`, `state.rs`, `storage.rs`, `limits.rs` | Pool, `AppState`, object storage, rate limits. No routes. |
@@ -123,7 +124,7 @@ without a regenerated `.sqlx` breaks an offline build — see
 
 ### Desktop shell (`apps/desktop/src-tauri/src`)
 
-70 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
+80 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
 crosses into the WebView is already decrypted, and nothing else does.
 
 | File | Commands | Owns |
@@ -132,6 +133,7 @@ crosses into the WebView is already decrypted, and nothing else does.
 | `conversations.rs` (1169 ln) | 22 | Messaging, attachments, `attachment_data_url`. |
 | `commands.rs` | 15 | Profile, settings, misc. |
 | `auth.rs` (665 ln) | 10 | Register, login, lock, PIN. |
+| `meet.rs` | 10 | Meet&Greet: the map, the pin, intros, reporting. |
 | `client.rs` | — | Builds and holds the `nexo-client` instance. |
 | `windows.rs` (502 ln) | — | Window creation, DWM backdrop, the acrylic path. |
 | `preview.rs` (534 ln) | — | Link previews. Off by default, on purpose. |
@@ -142,8 +144,8 @@ crosses into the WebView is already decrypted, and nothing else does.
 app/          Zustand store + hooks. store.ts is the state; use*.ts the seams to Rust.
 components/ui     Buttons, avatars, panes, controls, the hand-drawn icon set.
 components/chrome TopBar and IconRail.
-features/{auth,home,messages,profile,settings}   The four destinations plus auth.
-lib/          Typed wrappers around invoke(): auth, conversations, feed, profiles, blocks.
+features/{auth,home,meet,messages,profile,settings}  The five destinations plus auth.
+lib/          Typed wrappers around invoke(): auth, conversations, feed, profiles, blocks, meet.
 mock/         The data every surface reads where the network does not exist yet.
 ```
 
@@ -178,6 +180,7 @@ component reference.
 | Change what is stored on the client | `crates/store/src/lib.rs` (grep the table) → the caller in `crates/client` | — |
 | Change what is stored on the server | `apps/server/migrations/` (new file) → the module → regenerate `.sqlx` | — |
 | Anything MLS / group membership | `crates/crypto/src/mls.rs` → `crates/client/src/conversations.rs` → `apps/server/src/delivery/` | Do not touch OpenMLS internals |
+| A Meet&Greet change | `crates/protocol` → `apps/server/src/meet.rs` → `crates/client/src/meet.rs` → `features/meet/` | `BRIEF.md` |
 | A UI change | the `features/*` file → `components/ui` → `packages/design-tokens/tokens.css` | Rust, usually |
 | A new IPC call | `apps/desktop/src-tauri/src/<area>.rs` → register in `lib.rs` → `apps/desktop/src/lib/*.ts` | — |
 | Auth, login, tokens | `apps/server/src/auth/` → `crates/client/src/session.rs` → `features/auth/` | — |

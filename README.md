@@ -13,7 +13,10 @@ public profiles alongside private conversations.
 - **Conversation metadata** — who talks to whom, when, and message sizes — is
   visible to the server. That is the honest limit of this design.
 
-See [`docs/STATUS.md`](docs/STATUS.md) for what the app does today and what
+[`docs/CONTEXT.md`](docs/CONTEXT.md) is the map of the repository — where every
+concern lives, which document answers which question, and which two or three
+files a given task actually needs. Start there. Then
+[`docs/STATUS.md`](docs/STATUS.md) for what the app does today and what
 is known to be broken, [`docs/PLAN.md`](docs/PLAN.md) for the build plan and the open risks,
 [`docs/OPS.md`](docs/OPS.md) for the Hetzner runbook, and
 [`docs/BRIEF.md`](docs/BRIEF.md) for the original specification.
@@ -38,12 +41,16 @@ the network through a `Transport` trait, both supplied by the shell around it.
 Inside the client:
 
 ```
-src/styles/tokens.css   Colour, type, radius, motion and the glass utilities
 src/components/ui       Buttons, avatars, panes, controls, the icon set
 src/components/chrome   Titlebar and the icon rail
 src/features/{home,messages,profile,settings}
 src/mock                The data every surface reads until the network exists
 ```
+
+Colour, type, radius, motion and the glass utilities are not in the client at
+all: they are authored in `packages/design-tokens/tokens.css` and imported by
+`src/main.tsx`, so a second platform can consume the same values as
+`tokens.json` rather than a copy.
 
 `crates/protocol`, `crates/crypto` and `crates/platform` must compile unchanged
 for Android; keep every platform call behind `nexo-platform`.
@@ -235,8 +242,8 @@ their media are server-readable by design, and so is conversation metadata.
 ## Licence
 
 MIT — the text in [`LICENSE`](LICENSE), unedited on purpose so that licence
-scanners recognise it. Copyright is held jointly; see
-[`docs/LICENSING.md`](docs/LICENSING.md).
+scanners recognise it. Copyright is held under `delidev`, jointly by the two
+people who write here; see [`docs/LICENSING.md`](docs/LICENSING.md).
 
 That document is the precise version: what MIT obliges us to ship alongside the
 installer, which parts of its warranty disclaimer Swiss law does not enforce
@@ -245,3 +252,9 @@ vendored native libraries `cargo deny` cannot see, and the export-control
 position. It also names the three exposures a licence file cannot fix: the
 trademark on the name, BÜPF/VÜPF duties for a Swiss communications service, and
 revDSG/GDPR obligations once real users exist.
+
+[`docs/THIRD-PARTY-NOTICES.md`](docs/THIRD-PARTY-NOTICES.md) is the other half:
+what has to reach someone who installs the binary and never opens GitHub. Seven
+of those notices — SQLCipher, two OpenSSL-derived components, the two bundled
+fonts — are invisible to `cargo deny` and to `pnpm audit`, so they are carried
+by hand.

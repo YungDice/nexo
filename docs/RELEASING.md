@@ -144,14 +144,24 @@ distributes a copy: the copyright and permission notices travel with it. The
 source on GitHub satisfies that. The installer is also a copy, and on its own it
 does not — so the notices ship with the build, in the About panel (brief §236).
 
-Regenerate them when dependencies change, not every release:
+Regenerate them when dependencies change, not every release — and run **both**
+generators, because neither ecosystem's tool sees the other:
 
 ```powershell
 cargo about generate --format json > third-party-notices.json
+pnpm licenses list --prod --json > third-party-notices.npm.json
 ```
 
-Then add by hand the three things `cargo-about` and `cargo deny` both miss,
-because they read crate metadata and these are vendored C source:
+Then add by hand what neither tool can see. `cargo-about` and `cargo deny` read
+crate metadata, so vendored C source is invisible to them; `pnpm` reports the
+package's licence, not the licence of the font files inside it. The full list,
+with the path each notice must be copied from, is
+[`docs/THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) — including the two
+bundled typefaces, **Inter** and **JetBrains Mono**, both SIL OFL 1.1, whose
+notices and licence text have to travel with the binary and whose names are
+reserved if either is ever subsetted.
+
+The three from the vendored C, in short:
 
 - **SQLCipher**, BSD-3-clause, © Zetetic LLC — via `libsqlite3-sys`, which
   declares only `MIT` for its own wrapper.
@@ -164,7 +174,13 @@ because they read crate metadata and these are vendored C source:
   > the OpenSSL Toolkit.
 
 [`docs/LICENSING.md`](LICENSING.md) has the reasoning and the per-licence
-obligations.
+obligations; [`docs/THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) carries the
+release checklist that says when this is complete.
+
+Note what the About panel claims today — that the full dependency list ships
+with the app — and that it does not yet. Until the notices are embedded, the
+button opens `LICENSE` on GitHub over the network, which an offline machine
+cannot do.
 
 ### Before announcing
 

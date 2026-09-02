@@ -53,6 +53,13 @@ function toConversation(wire: WireConversation): Conversation {
     ...(wire.last_message_at_ms !== null
       ? { lastMessageAt: new Date(wire.last_message_at_ms) }
       : {}),
+    // The preview the core computed, carried through rather than dropped: the
+    // list cannot recompute it, because it holds no history for a conversation
+    // that is not open.
+    ...(wire.last_message !== null ? { lastMessage: wire.last_message } : {}),
+    ...(wire.last_message_outgoing !== null
+      ? { lastMessageOutgoing: wire.last_message_outgoing }
+      : {}),
   };
 }
 

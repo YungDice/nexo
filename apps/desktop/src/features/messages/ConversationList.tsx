@@ -488,13 +488,20 @@ function ConversationRow({
     }
   }
 
+  // `last` is only ever set for the conversation that is open -- the other
+  // rows have no history loaded at all. So the row prefers a live message when
+  // it has one and otherwise falls back to the preview the core sent with the
+  // conversation itself. Only when there is neither is a conversation really
+  // empty, and saying "No messages yet" about a full one reads as data loss.
   const preview = last?.undecryptable
     ? "Can't decrypt this message"
     : last?.body
       ? last.body
       : last?.attachments?.length
         ? `${last.attachments.length} attachment${last.attachments.length > 1 ? "s" : ""}`
-        : "No messages yet";
+        : conversation.lastMessage
+          ? conversation.lastMessage
+          : "No messages yet";
 
   return (
     <>

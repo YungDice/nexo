@@ -90,6 +90,17 @@ export interface Conversation {
   /** Whether the conversation has a picture of its own. */
   hasAvatar?: boolean;
   /**
+   * The newest message, as the core already computed it.
+   *
+   * The list needs this because only the *open* conversation's history is
+   * loaded — every other row has no messages in memory to look at. Without it
+   * the sidebar said "No messages yet" about conversations full of messages,
+   * which reads as data loss rather than as a missing preview.
+   */
+  lastMessage?: string | null;
+  /** Whether that message was ours, so the row can say who spoke last. */
+  lastMessageOutgoing?: boolean | null;
+  /**
    * @deprecated Muting lives in `conversationOverrides`, where it is a
    * deadline rather than a flag and survives a restart. Kept only because the
    * mock fixtures still set it; read `isMuted` from the store instead.

@@ -238,7 +238,7 @@ Read cost matters. Sizes are approximate and current.
 | [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | 10 KB | What must ship beside the `.exe`. |
 | [`README.md`](../README.md) | 12 KB | Setup, prerequisites, troubleshooting. For humans on a new machine. |
 | [`THREAT-MODEL.md`](THREAT-MODEL.md) | 17 KB | Adversaries in and out of scope; what is deliberately not protected. |
-| [`TUTORIAL.md`](TUTORIAL.md) | 18 KB | How the pieces fit, explained end to end. |
+| [`TUTORIAL.md`](TUTORIAL.md) | 18 KB | Every value you personally have to supply: accounts, costs, domains, secrets — and which of them block you today. |
 | [`OPS.md`](OPS.md) | 19 KB | The Hetzner runbook. Deploy, TLS, backups, incidents. |
 | [`PLAN.md`](PLAN.md) | 22 KB | Milestones M0–M9 and the open risks. |
 | [`BRIEF.md`](BRIEF.md) | 28 KB | The original specification. The source of the §-numbers other docs cite. |

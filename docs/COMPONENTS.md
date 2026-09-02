@@ -18,8 +18,9 @@ rule one below.
 1. **Tokens only.** A component that writes a hex colour or a millisecond
    number has left the design system; both themes and the glass toggle stop
    being guaranteed to hold. The tokens live in
-   `apps/desktop/src/styles/tokens.css`, and `packages/design-tokens` derives
-   the Android-readable `tokens.json` from them — a test fails if they drift.
+   `packages/design-tokens/tokens.css`, imported by `src/main.tsx`, and
+   `src/generate.ts` beside them derives the Android-readable `tokens.json` —
+   a test fails if the two drift.
 2. **No component touches `backdrop-filter`.** Surfaces ask `Panel` for a
    tone (`glass-0`–`glass-3`); the Settings toggle and the `@supports`
    fallback swap all of them at once (plan risk 9). The *window's* translucency

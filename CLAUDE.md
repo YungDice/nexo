@@ -2,13 +2,81 @@
 
 ## Zuerst lesen
 
-[`docs/CONTEXT.md`](docs/CONTEXT.md) ist der Einstieg — die Karte des
-Repositories: was wo liegt, welche Datei welche Frage beantwortet, und welche
-Invarianten nicht gebrochen werden dürfen. Die Tabelle *Task → where* nennt für
-die übliche Aufgabe die zwei bis drei Dateien, die man tatsächlich öffnen muss.
+Bevor an diesem Repository irgendetwas geändert wird, werden die nötigen
+Dokumente durchgesehen — in dieser Reihenfolge, und ohne Abkürzung:
+
+1. **Diese Datei ganz.** Sie ist kurz und sie enthält Regeln, die eine Arbeit
+   unbrauchbar machen, wenn man sie erst hinterher liest — Identität in
+   Commits, Branch-Namen, Sparsamkeit.
+2. **[`docs/CONTEXT.md`](docs/CONTEXT.md).** Die Karte des Repositories: was wo
+   liegt, welche Datei welche Frage beantwortet, welche Invarianten nicht
+   gebrochen werden dürfen. Die Tabelle *Task → where* nennt für die übliche
+   Aufgabe die zwei bis drei Dateien, die man tatsächlich öffnen muss.
+3. **Was diese Tabelle für die konkrete Aufgabe nennt** — und der Abschnitt
+   *Invarianten*, wenn die Aufgabe Krypto, den Server oder die WebView-Grenze
+   berührt.
+4. **[`docs/STATUS.md`](docs/STATUS.md)**, bevor ein Feature als fehlend gilt.
+
+Erst danach wird Code gelesen. Wer mit einem `grep` über den ganzen Baum
+beginnt, hat Schritt 2 übersprungen und zahlt es doppelt.
 
 `docs/` umfasst gut 235 KB Prosa. Alles davon zu lesen, um einen Handler zu
-ändern, ist der teure Fehler, den diese Karte verhindert.
+ändern, ist der andere teure Fehler — den verhindert dieselbe Karte.
+
+## Grosse Aufgaben: erst der Plan, dann Wellen
+
+Kommt eine Aufgabe als Haufen — ein Dutzend Features und Bugfixes in einer
+Nachricht, eine Liste aus einem Test-Durchgang, "und dann noch das hier" —
+wird **nicht** oben angefangen und durchgearbeitet. Das erzeugt einen Commit,
+den niemand mehr review'n kann, und einen halben Zustand, wenn die Sitzung
+vorher endet.
+
+Stattdessen:
+
+1. **Sortieren.** Jeden Punkt einzeln benennen und trennen:
+   - **Bugfix oder Feature?** Ein Fix stellt her, was schon versprochen ist;
+     ein Feature verspricht etwas Neues. Sie gehören nie in denselben Commit.
+   - **Was hängt woran?** Was zuerst muss, weil anderes darauf aufbaut.
+   - **Was ist gar keine Aufgabe?** Was `docs/STATUS.md` schon als erledigt
+     oder als bewusste Entscheidung führt, fällt hier raus — nicht später.
+2. **Plan schreiben, bevor eine Zeile geändert wird.** Die Wellen, ihre
+   Reihenfolge, und pro Welle die Dateien, die sie anfässt. Der Plan wird
+   gezeigt, nicht bloss gedacht.
+3. **Wellenweise lösen.** Eine Welle ist eine Gruppe, die zusammengehört und
+   zusammen geprüft werden kann. Pro Welle gilt:
+   - eine Sache, ein Thema — Fixes einer Ursache zusammen, Features einzeln;
+   - sie endet mit `.\scripts\check.ps1` grün und einem eigenen Commit;
+   - sie lässt das Repository in einem Zustand zurück, in dem man aufhören
+     könnte, ohne dass etwas halb fertig ist.
+4. **Zwischen den Wellen berichten.** Was fertig ist, was als Nächstes kommt,
+   und was sich am Plan geändert hat. Ein Plan, der beim ersten Widerstand
+   still angepasst wird, ist kein Plan.
+
+Was dabei nie passiert: der Umfang wird eigenmächtig kleiner. Fällt eine Welle
+aus, weil sie blockiert ist, wird das gesagt — nicht weggelassen.
+
+## Die Kontext-Datei aktuell halten
+
+[`docs/CONTEXT.md`](docs/CONTEXT.md) ist nur so viel wert, wie sie stimmt. Eine
+Karte, die auf eine Datei zeigt, die es nicht mehr gibt, kostet mehr als gar
+keine Karte — sie wird geglaubt.
+
+**Ändert eine Arbeit etwas, das dort beschrieben ist, wird sie im selben Commit
+mitgeändert.** Der Anlass ist konkret:
+
+| Änderung im Repo | Was in `docs/CONTEXT.md` nachgeführt wird |
+|---|---|
+| Datei oder Modul neu, verschoben, gelöscht | Die Karte und, falls betroffen, *Task → where* |
+| Neue oder geänderte Route | Die Routen-Tabelle des Server-Moduls |
+| Neuer `#[tauri::command]` | Die IPC-Tabelle und ihre Zahl |
+| Neue Crate, neues Package | Die Karte und die Invarianten-Notiz zur Portierbarkeit |
+| Befehl, Skript oder CI-Schritt geändert | *Commands* |
+| Neue Konvention, neue Stolperfalle | *Conventions that will trip you up* |
+| Neues oder gelöschtes Dokument in `docs/` | Der Doku-Index samt Grösse |
+
+Und: **fällt beim Arbeiten ein falscher Eintrag auf, wird er repariert** — auch
+wenn er mit der eigentlichen Aufgabe nichts zu tun hat. Das ist der einzige Weg,
+auf dem eine solche Datei über Monate brauchbar bleibt.
 
 ## Account-Identität
 

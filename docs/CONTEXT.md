@@ -176,7 +176,7 @@ component reference.
 
 | Task | Open, in this order | Do not open |
 |---|---|---|
-| Add or change an API endpoint | `crates/protocol/src/lib.rs` → the server module → `crates/client/src/http.rs` → the `lib/*.ts` wrapper | `BRIEF.md` |
+| Add or change an API endpoint | the type first — `crates/protocol/src/lib.rs` for the encrypted path, `crates/client/src/feed.rs` for feed and profile — then the server module → `crates/client/src/http.rs` → the `lib/*.ts` wrapper | `BRIEF.md` |
 | Change what is stored on the client | `crates/store/src/lib.rs` (grep the table) → the caller in `crates/client` | — |
 | Change what is stored on the server | `apps/server/migrations/` (new file) → the module → regenerate `.sqlx` | — |
 | Anything MLS / group membership | `crates/crypto/src/mls.rs` → `crates/client/src/conversations.rs` → `apps/server/src/delivery/` | Do not touch OpenMLS internals |

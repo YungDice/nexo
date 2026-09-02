@@ -12,6 +12,14 @@ expensive mistake this file prevents.
 or three files it names, then `grep` for the symbol. Read whole files only when
 you are changing their structure.
 
+**How to keep it:** a change that touches anything described here updates this
+file in the same commit — a moved module, a new route, a new IPC command, a
+changed command or convention, a document added to `docs/`. A stale entry found
+in passing gets fixed in passing, whether or not it belongs to the task at hand.
+A map that is believed and wrong costs more than no map.
+[`CLAUDE.md`](../CLAUDE.md) carries the same rule with the full list of
+triggers.
+
 ---
 
 ## The product, in five lines

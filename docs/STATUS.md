@@ -458,3 +458,18 @@ decision rather than configuration.
   Prev/Next in the order they were posted. The ring around each circle also
   used to lose its top and bottom edge: the scroll row had no padding to draw
   it into, and `overflow-x: auto` forces the vertical axis to clip too.
+- **An avatar shows a ring when this device holds a live story for that
+  person** — your own profile, and anyone else's. This was nowhere: the strip
+  was the only place a story showed at all, so finding out somebody had one
+  meant already being on Home when it happened to still be live. On somebody
+  else's profile the ring is also how you open it — there is no separate
+  "their Stories tab" to send you to instead. On your own it is a signal only:
+  the picture is already the control that changes the picture, and the
+  Stories tab is one tap away for actually watching what you posted. Reads the
+  same local, contact-scoped list the strip does, so it shows nothing for
+  anyone who is not a contact or has posted nothing right now — no new
+  privacy surface, since a non-contact's stories never reach this device to
+  begin with.
+- The strip's viewer (Prev/Next, the progress dots, the fetch-per-story dance)
+  moved into its own `StoryViewer` component so the new rings could open the
+  same one rather than a second implementation of it.

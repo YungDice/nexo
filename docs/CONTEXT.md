@@ -147,7 +147,11 @@ components/ui     Buttons, avatars, panes, controls, the hand-drawn icon set.
 components/chrome TopBar and IconRail.
 features/{auth,home,meet,messages,profile,settings}  The five destinations plus auth.
               home/Stories.tsx is the stories strip; stories have no destination of
-              their own, because their audience is contacts.
+              their own, because their audience is contacts. home/useStories.ts,
+              storyGroups.ts and StoryViewer.tsx are shared by every avatar that
+              can show a "has a story" ring, not just the strip -- read
+              storyGroups.ts before changing how a story is grouped or matched
+              to a person, since three call sites now depend on it agreeing.
 lib/          Typed wrappers around invoke(): auth, conversations, feed, profiles, blocks, meet.
               media.ts is the exception -- no invoke, just the rule that picks
               which player a bubble draws for an attachment.

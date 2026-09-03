@@ -1,18 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 
 import { Avatar } from "../../components/ui/Avatar";
-import { Icon } from "../../components/ui/Icon";
-import { cn } from "../../lib/cn";
 import { Callout } from "../../components/ui/Feedback";
-import { Modal } from "../../components/ui/Modal";
-import {
-  asMeetError,
-  listStories,
-  openStory,
-  type Story,
-} from "../../lib/meet";
+import { StoryViewer } from "./StoryViewer";
 import { pickAndPostStory } from "./story";
 import { groupStories, type StoryGroup } from "./storyGroups";
+import { useStories } from "./useStories";
 
 /**
  * The stories strip: other people's stories, on Home.
@@ -31,100 +24,30 @@ import { groupStories, type StoryGroup } from "./storyGroups";
  * this used to draw it exactly as it arrived: two posts from the same person
  * were two circles, indistinguishable from two different people. They are
  * grouped now (`groupStories`), with your own circle leading and a `×n` badge
- * where somebody posted more than once; tapping opens that person's stories in
- * the order they happened, with Prev/Next between them.
+ * where somebody posted more than once; tapping opens that person's stories
+ * (`StoryViewer`) in the order they happened, with Prev/Next between them.
  *
- * Two honesty points the UI has to carry, both from `docs/THREAT-MODEL.md`:
- *
- *  - A story is **public to your contacts and readable by nobody else**, but
- *    somebody who was allowed to see it can keep it. The composer says so
- *    before anything is posted, not afterwards.
- *  - The 24 hours are real on this device: opening the strip is what deletes
- *    expired stories *and their keys*. So the count here is the truth about
- *    what still exists locally, not a filtered view of something retained.
+ * The honesty point the UI has to carry, from `docs/THREAT-MODEL.md`: a story
+ * is **public to your contacts and readable by nobody else**, but somebody who
+ * was allowed to see it can keep it. The composer says so before anything is
+ * posted, not afterwards.
  */
 export function Stories({ canPost = false }: { canPost?: boolean }) {
-  const [stories, setStories] = useState<Story[] | null>(null);
-  const [viewing, setViewing] = useState<{
-    group: StoryGroup;
-    index: number;
-  } | null>(null);
-  const [src, setSrc] = useState<string | null>(null);
+  const { stories, refresh, problem: loadProblem } = useStories();
+  const [viewing, setViewing] = useState<StoryGroup | null>(null);
   const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-
-  // Reading is also the purge. Doing it on mount means the expired ones go
-  // whenever somebody opens Home, with no timer anywhere.
-  const load = useCallback(async () => {
-    try {
-      setStories(await listStories());
-      setProblem(null);
-    } catch (error) {
-      const e = asMeetError(error);
-      // Not being signed in yet is not a failure worth a banner.
-      if (e.kind !== "signed_out") setProblem(e.message);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const [postProblem, setPostProblem] = useState<string | null>(null);
 
   async function add() {
     setBusy(true);
     try {
       const result = await pickAndPostStory();
-      if (result.posted) await load();
-      else if (result.problem) setProblem(result.problem);
+      if (result.posted) await refresh();
+      else if (result.problem) setPostProblem(result.problem);
     } finally {
       setBusy(false);
     }
   }
-
-  const current = viewing ? viewing.group.stories[viewing.index] : undefined;
-
-  // Fetches whichever story `viewing` now points at. Runs on open and on
-  // every Prev/Next, rather than pre-fetching a whole group up front: most
-  // groups have one story, and the ones that do not are watched one at a
-  // time anyway.
-  useEffect(() => {
-    if (!current) return;
-    let cancelled = false;
-    setSrc(null);
-    setBusy(true);
-    void openStory(current.id)
-      .then((next) => {
-        if (!cancelled) setSrc(next);
-      })
-      .catch((error) => {
-        if (!cancelled) setProblem(asMeetError(error).message);
-      })
-      .finally(() => {
-        if (!cancelled) setBusy(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [current]);
-
-  const step = useCallback((by: number) => {
-    setViewing((v) => {
-      if (!v) return v;
-      const next = v.index + by;
-      if (next < 0 || next >= v.group.stories.length) return v;
-      return { group: v.group, index: next };
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!viewing) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "ArrowRight") step(1);
-      else if (event.key === "ArrowLeft") step(-1);
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [viewing, step]);
 
   const groups = groupStories(stories ?? []);
 
@@ -160,8 +83,7 @@ export function Stories({ canPost = false }: { canPost?: boolean }) {
             <button
               key={group.key}
               type="button"
-              onClick={() => setViewing({ group, index: 0 })}
-              disabled={busy}
+              onClick={() => setViewing(group)}
               className="flex shrink-0 flex-col items-center gap-1"
               aria-label={
                 count > 1
@@ -205,98 +127,14 @@ export function Stories({ canPost = false }: { canPost?: boolean }) {
         ) : null}
       </div>
 
-      {problem ? (
+      {loadProblem || postProblem ? (
         <Callout tone="warning" icon="alert" className="mt-2">
-          {problem}
+          {postProblem ?? loadProblem}
         </Callout>
       ) : null}
 
-      {viewing && current ? (
-        <Modal
-          label={
-            viewing.group.mine
-              ? "Your story"
-              : `Story from ${viewing.group.authorHandle || "a contact"}`
-          }
-          onClose={() => setViewing(null)}
-        >
-          <div className="relative">
-            {viewing.index > 0 ? (
-              <button
-                type="button"
-                aria-label="Previous"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  step(-1);
-                }}
-                className="absolute top-1/2 -left-4 z-10 -translate-x-full -translate-y-1/2 rounded-full bg-black/50 p-2 text-white hover:bg-black/70"
-              >
-                <Icon name="chevronLeft" size={20} />
-              </button>
-            ) : null}
-
-            <div className="rounded-panel bg-surface-2 border-line max-w-[560px] border p-3">
-              {viewing.group.stories.length > 1 ? (
-                <div className="mb-2 flex gap-1" aria-hidden="true">
-                  {viewing.group.stories.map((s, i) => (
-                    <span
-                      key={s.id}
-                      className={cn(
-                        "h-[3px] flex-1 rounded-full",
-                        i <= viewing.index ? "bg-accent" : "bg-line",
-                      )}
-                    />
-                  ))}
-                </div>
-              ) : null}
-
-              {!src ? (
-                <div
-                  className="flex h-[240px] w-[300px] items-center justify-center"
-                  aria-label="Loading"
-                  role="img"
-                >
-                  <span className="text-text-lo text-meta">Decrypting…</span>
-                </div>
-              ) : /* A `data:` URL from Rust. Nothing remote is fetched — rule 3.
-                     The kind comes from the URL itself, which Rust built from the
-                     *sniffed* type rather than from anything the sender claimed. */
-              src.startsWith("data:video/") ? (
-                <video
-                  src={src}
-                  controls
-                  autoPlay
-                  className="rounded-control max-h-[70vh] w-auto"
-                />
-              ) : (
-                <img
-                  src={src}
-                  alt=""
-                  className="rounded-control max-h-[70vh] w-auto"
-                />
-              )}
-              <p className="text-text-lo mt-2 text-meta">
-                Gone {new Date(current.expires_at_ms).toLocaleString()} — from
-                this device and from the server. Someone who has already seen
-                it can still have kept it.
-              </p>
-            </div>
-
-            {viewing.index < viewing.group.stories.length - 1 ? (
-              <button
-                type="button"
-                aria-label="Next"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  step(1);
-                }}
-                className="absolute top-1/2 -right-4 z-10 -translate-y-1/2 translate-x-full rounded-full bg-black/50 p-2 text-white hover:bg-black/70"
-              >
-                <Icon name="chevronLeft" size={20} className="rotate-180" />
-              </button>
-            ) : null}
-          </div>
-        </Modal>
+      {viewing ? (
+        <StoryViewer group={viewing} onClose={() => setViewing(null)} />
       ) : null}
     </section>
   );

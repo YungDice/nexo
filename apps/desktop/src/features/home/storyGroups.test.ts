@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Story } from "../../lib/meet";
-import { groupStories } from "./storyGroups";
+import { groupStories, hasLiveStory, storyGroupFor } from "./storyGroups";
 
 const story = (over: Partial<Story>): Story => ({
   id: 1,
@@ -88,5 +88,37 @@ describe("groupStories", () => {
 
   it("returns nothing for no stories", () => {
     expect(groupStories([])).toEqual([]);
+  });
+});
+
+/**
+ * The question a "has an active story" ring needs answered: does this device
+ * hold a live story for this specific person, or for the reader themself.
+ */
+describe("storyGroupFor / hasLiveStory", () => {
+  it("finds a contact's group by handle", () => {
+    const stories = [story({ id: 1, author_handle: "alice" })];
+    expect(storyGroupFor(stories, "alice")?.stories.map((s) => s.id)).toEqual([1]);
+    expect(hasLiveStory(stories, "alice")).toBe(true);
+  });
+
+  it("finds the reader's own group with null", () => {
+    const stories = [story({ id: 1, author_device_id: "", author_handle: "me" })];
+    expect(storyGroupFor(stories, null)?.mine).toBe(true);
+    expect(hasLiveStory(stories, null)).toBe(true);
+  });
+
+  it("is absent for somebody with no live story here", () => {
+    const stories = [story({ id: 1, author_handle: "alice" })];
+    expect(storyGroupFor(stories, "bob")).toBeUndefined();
+    expect(hasLiveStory(stories, "bob")).toBe(false);
+    expect(hasLiveStory(stories, null)).toBe(false);
+  });
+
+  it("does not let an unresolved contact answer for the reader's own ring", () => {
+    // A received story with no handle yet must never satisfy `null` -- that
+    // would put a stranger's story behind the reader's own avatar ring.
+    const stories = [story({ id: 1, author_device_id: "dev-a", author_handle: "" })];
+    expect(hasLiveStory(stories, null)).toBe(false);
   });
 });

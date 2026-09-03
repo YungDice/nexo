@@ -67,3 +67,26 @@ export function groupStories(stories: Story[]): StoryGroup[] {
   const others = groups.filter((g) => !g.mine);
   return [...mine, ...others];
 }
+
+/**
+ * One person's group, if this device currently holds a live story of theirs.
+ *
+ * `null` asks for the reader's own group. Built on `groupStories` rather than
+ * scanning the flat list separately, so there is exactly one place that
+ * decides what "the same person" means -- a handle where one is known, a
+ * device id while it is not, and the reader's own empty device id never
+ * confused with either.
+ */
+export function storyGroupFor(
+  stories: Story[],
+  handle: string | null,
+): StoryGroup | undefined {
+  return groupStories(stories).find((g) =>
+    handle === null ? g.mine : g.authorHandle === handle,
+  );
+}
+
+/** Whether this device currently holds a live story for that person. */
+export function hasLiveStory(stories: Story[], handle: string | null): boolean {
+  return storyGroupFor(stories, handle) !== undefined;
+}

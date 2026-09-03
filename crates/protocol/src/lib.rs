@@ -127,6 +127,24 @@ pub enum Payload {
         /// Plaintext size in bytes.
         size: u64,
     },
+    /// A payload this build cannot read.
+    ///
+    /// Produced only by [`Payload::decode`] and never sent — it is what a
+    /// client does *instead of* guessing. The alternative is what this used to
+    /// do: render the raw JSON as though someone had typed it, which turns
+    /// every future variant into a bubble full of punctuation on every
+    /// installation that has not updated yet.
+    ///
+    /// The `kind` is carried so the UI can say which thing is missing rather
+    /// than only that something is. The undecoded bytes are kept beside the
+    /// message by the client, because MLS will not decrypt that envelope a
+    /// second time: a build that learns the variant later can still read what
+    /// arrived today.
+    #[serde(skip)]
+    Unsupported {
+        /// The `kind` the sender used.
+        kind: String,
+    },
 }
 
 impl Payload {
@@ -149,6 +167,10 @@ impl Payload {
             // Neither is something anyone said, so neither is a preview of the
             // conversation. The row keeps whatever came before it.
             Payload::Rename { .. } | Payload::GroupAvatar { .. } => "",
+            // Nor is this. Whatever it says, this build cannot read it, and
+            // guessing at a preview would be the same mistake in a smaller
+            // place.
+            Payload::Unsupported { .. } => "",
         }
     }
 
@@ -168,17 +190,41 @@ impl Payload {
 
     /// Decodes what came out of an MLS message.
     ///
-    /// Falls back to treating unrecognised bytes as text, because the very
-    /// first messages this project ever sent were bare UTF-8 with no envelope,
-    /// and refusing to read them would be a self-inflicted data loss.
+    /// Three outcomes, and the distinction between the last two is the point:
+    ///
+    /// - a payload this build knows;
+    /// - a JSON object naming a `kind` it cannot read — [`Payload::Unsupported`],
+    ///   which draws no bubble and says so;
+    /// - anything else — text, because the very first messages this project
+    ///   ever sent were bare UTF-8 with no envelope, and refusing to read them
+    ///   would be self-inflicted data loss.
+    ///
+    /// The middle case used to fall through to the last one. That made every
+    /// new variant a display bug on older installations, and it read the
+    /// sender's structure as if it were their prose — the opposite of failing
+    /// closed (rule 7).
     pub fn decode(bytes: &[u8]) -> Self {
         match serde_json::from_slice::<Payload>(bytes) {
             Ok(payload) => payload,
-            Err(_) => Payload::Text {
-                body: String::from_utf8_lossy(bytes).into_owned(),
+            Err(_) => match tagged_kind(bytes) {
+                Some(kind) => Payload::Unsupported { kind },
+                None => Payload::Text {
+                    body: String::from_utf8_lossy(bytes).into_owned(),
+                },
             },
         }
     }
+}
+
+/// The `kind` of a JSON object, when the bytes are one.
+///
+/// Deliberately not a second attempt at the whole payload: all this decides is
+/// whether somebody sent a *tagged* thing, and pulling one string out of an
+/// untyped value cannot fail on fields this build has never heard of — which
+/// is exactly the case it exists to catch.
+fn tagged_kind(bytes: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    Some(value.get("kind")?.as_str()?.to_string())
 }
 
 /// Reduces a sender-supplied file name to something safe to write to disk.
@@ -481,6 +527,54 @@ mod tests {
             Payload::decode(b"just a message"),
             Payload::text("just a message")
         );
+    }
+
+    #[test]
+    fn an_unknown_kind_is_not_rendered_as_text() {
+        // What a newer build's payload looks like to this one. Reading it as
+        // prose would put raw JSON in a chat bubble on every installation that
+        // has not updated, which is what this used to do.
+        let from_the_future = br#"{"kind":"reaction","target":42,"emoji":"x"}"#;
+        assert_eq!(
+            Payload::decode(from_the_future),
+            Payload::Unsupported {
+                kind: "reaction".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_malformed_known_kind_also_fails_closed() {
+        // A `text` payload with no body is not a message someone typed; it is
+        // a payload that did not survive the trip. Same answer, because the
+        // honest thing to say about both is "this did not open".
+        assert_eq!(
+            Payload::decode(br#"{"kind":"text"}"#),
+            Payload::Unsupported {
+                kind: "text".into()
+            }
+        );
+    }
+
+    #[test]
+    fn json_that_is_not_a_tagged_payload_is_still_text() {
+        // Somebody typing JSON into the composer is sending prose that happens
+        // to have braces in it. Only a `kind` makes it a payload.
+        let typed = br#"{"hello": "world"}"#;
+        assert_eq!(
+            Payload::decode(typed),
+            Payload::text(r#"{"hello": "world"}"#)
+        );
+    }
+
+    #[test]
+    fn an_unsupported_payload_previews_as_nothing() {
+        // It must not reach the conversation list. A row that shows the kind
+        // of a thing it cannot read is leaking structure into prose again.
+        let payload = Payload::Unsupported {
+            kind: "reaction".into(),
+        };
+        assert_eq!(payload.preview(), "");
     }
 
     #[test]

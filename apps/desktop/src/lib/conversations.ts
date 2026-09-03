@@ -53,6 +53,15 @@ export interface Message {
   pending: boolean;
   /** Present when the message carries a file. */
   attachment: Attachment | null;
+  /**
+   * The `kind` of a payload this build could not read, when that is what
+   * arrived — otherwise `null`.
+   *
+   * Rule 7 reaches the UI here. A newer client can send a shape this one has
+   * never heard of, and the honest answer is to say so rather than to render
+   * whatever the bytes happen to look like.
+   */
+  unsupported: string | null;
 }
 
 /**

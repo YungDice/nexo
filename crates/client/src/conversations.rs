@@ -1065,6 +1065,16 @@ pub fn sync<T: Transport>(
                             // this envelope a second time.
                             let stored = match &payload {
                                 Payload::Attachment { .. } => Some(payload.encode_string()),
+                                // Kept verbatim rather than re-encoded: this
+                                // build cannot represent what arrived, so
+                                // encoding it back would write "{}" over it.
+                                // And this is the only chance -- MLS will not
+                                // decrypt this envelope again, so a build that
+                                // learns the variant later reads the bytes
+                                // from here or never sees them at all.
+                                Payload::Unsupported { .. } => {
+                                    Some(String::from_utf8_lossy(&plaintext).into_owned())
+                                }
                                 // Text needs nothing beyond the body already in
                                 // `body`; a future variant that does will fail
                                 // to open its file until it is added here, which

@@ -76,6 +76,14 @@ pub struct MessageView {
     /// key, and the nonce stay in Rust (rule 2) -- the WebView asks to save an
     /// attachment by envelope id and never sees what opens it.
     pub attachment: Option<AttachmentView>,
+    /// The `kind` of a payload this build cannot read, when that is what
+    /// arrived.
+    ///
+    /// Rule 7 in this layer: a message that did not open is shown as one. The
+    /// bytes are still in the store, so a later build that knows the kind
+    /// reads them from there -- but this build must not pretend the sender
+    /// typed the JSON it could not parse.
+    pub unsupported: Option<String>,
 }
 
 /// The visible facts about an attached file.
@@ -104,6 +112,17 @@ fn bubble_body(stored: &str, payload: Option<&str>) -> String {
         // everything it has to say through the file row beneath it.
         Payload::Attachment { body, .. } => body.unwrap_or_default(),
         _ => stored.to_string(),
+    }
+}
+
+/// The `kind` of an unreadable payload, when that is what was stored.
+///
+/// `None` for everything this build understands, including a message with no
+/// payload at all -- the overwhelmingly common case, and the cheap one.
+fn unsupported_kind(payload: Option<&str>) -> Option<String> {
+    match Payload::decode(payload?.as_bytes()) {
+        Payload::Unsupported { kind } => Some(kind),
+        _ => None,
     }
 }
 
@@ -643,6 +662,8 @@ pub async fn send_message(
             outgoing: true,
             pending: sent.envelope_id().is_none(),
             attachment: None,
+            // We wrote it, so this build understands it by construction.
+            unsupported: None,
         })
     })
     .await
@@ -775,6 +796,7 @@ pub async fn conversation_messages(
                 outgoing: true,
                 pending: true,
                 attachment: AttachmentView::from_payload(item.payload.as_deref()),
+                unsupported: None,
             })
             .collect();
 
@@ -785,6 +807,7 @@ pub async fn conversation_messages(
                 outgoing: m.sender_device_id.is_none(),
                 sender_device_id: m.sender_device_id,
                 attachment: AttachmentView::from_payload(m.payload.as_deref()),
+                unsupported: unsupported_kind(m.payload.as_deref()),
                 body: bubble_body(&m.body, m.payload.as_deref()),
                 sent_at_ms: m.sent_at_ms,
                 // Everything in `messages` was accepted by the server before

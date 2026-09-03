@@ -66,6 +66,14 @@ export interface Message {
    * not open" — and that means carrying it in the model from the start.
    */
   undecryptable?: boolean;
+  /**
+   * Set when the payload decrypted but this build does not know its shape.
+   *
+   * Distinct from `undecryptable`: the message opened, and the remedy is an
+   * update rather than asking the sender to try again. The bytes are kept in
+   * the store, so a later build reads what arrived today.
+   */
+  unsupported?: string;
 }
 
 export interface Conversation {

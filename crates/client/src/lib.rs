@@ -305,6 +305,9 @@ mod tests {
         fn story_url(&self, _id: i64) -> Result<String, TransportError> {
             unimplemented!("not a story test")
         }
+        fn list_stories(&self) -> Result<Vec<transport::StorySummary>, TransportError> {
+            unimplemented!("not a story test")
+        }
 
         fn search_users(
             &self,

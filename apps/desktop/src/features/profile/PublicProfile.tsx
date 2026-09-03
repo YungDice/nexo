@@ -14,6 +14,10 @@ import { Icon } from "../../components/ui/Icon";
 import { Panel } from "../../components/ui/Surface";
 import { RemoteImage } from "../../components/ui/RemoteImage";
 import { startConversation } from "../../lib/conversations";
+import { StoryViewer } from "../home/StoryViewer";
+import { storyGroupFor } from "../home/storyGroups";
+import { useStories } from "../home/useStories";
+import { cn } from "../../lib/cn";
 
 /**
  * Somebody else's profile.
@@ -30,6 +34,15 @@ export function PublicProfile({ handle, now }: { handle: string; now: Date }) {
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [viewingStory, setViewingStory] = useState(false);
+  // The same local list Home's strip and the reader's own ring read --
+  // whatever this device currently holds a live story for. If `handle` is
+  // not a contact, or is one but has posted nothing right now, nothing here
+  // ever matches: the fan-out in `stories::post` never reached this device in
+  // the first place, so there is no story to find and no separate check to
+  // write for "should this be hidden".
+  const { stories } = useStories();
+  const storyGroup = storyGroupFor(stories ?? [], handle);
   const [blocked, setBlocked] = useState(false);
   const [blocking, setBlocking] = useState(false);
 
@@ -143,7 +156,29 @@ export function PublicProfile({ handle, now }: { handle: string; now: Date }) {
             />
           )}
 
-          <span className="ring-surface-2 absolute -bottom-10 left-5 rounded-full ring-4">
+          {/* Two rings, same construction as the reader's own avatar: the
+              inner `ring-surface-2` separates the picture from the banner
+              behind it, unconditionally; the outer one, only when this device
+              currently holds a live story from this person, is the same
+              accent-and-offset the strip uses. Unlike the reader's own
+              avatar, this one is also the way *in* -- there is no "their
+              Stories tab" to visit instead, so the ring is the entry point. */}
+          <button
+            type="button"
+            disabled={!storyGroup}
+            onClick={() => setViewingStory(true)}
+            aria-label={
+              storyGroup
+                ? `View ${profile?.display_name ?? handle}'s story`
+                : undefined
+            }
+            className={cn(
+              "absolute -bottom-10 left-5 block rounded-full outline-none",
+              storyGroup
+                ? "ring-accent focus-visible:ring-accent cursor-pointer ring-2 ring-offset-2 ring-offset-[var(--color-surface-1)]"
+                : "ring-surface-2 ring-4",
+            )}
+          >
             {profile?.avatar_key ? (
               <RemoteImage
                 imageKey={profile.avatar_key}
@@ -154,7 +189,7 @@ export function PublicProfile({ handle, now }: { handle: string; now: Date }) {
             ) : (
               <Avatar seed={handle} name={profile?.display_name ?? handle} size={88} />
             )}
-          </span>
+          </button>
         </div>
 
         {/* Neither action makes sense against yourself. The store already
@@ -264,6 +299,10 @@ export function PublicProfile({ handle, now }: { handle: string; now: Date }) {
           </Callout>
         ) : null}
       </div>
+
+      {viewingStory && storyGroup ? (
+        <StoryViewer group={storyGroup} onClose={() => setViewingStory(false)} />
+      ) : null}
     </Panel>
   );
 }

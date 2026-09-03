@@ -29,6 +29,8 @@ import { FactRow, Field, Tabs, TextArea } from "../../components/ui/Controls";
 import { PrivacyPanel } from "./PrivacyPanel";
 import { Stories } from "../home/Stories";
 import { pickAndPostStory } from "../home/story";
+import { hasLiveStory } from "../home/storyGroups";
+import { useStories } from "../home/useStories";
 import {
   Callout,
   EmptyState,
@@ -73,6 +75,11 @@ export function ProfilePage({ now }: { now: Date }) {
   const [editing, setEditing] = useState(false);
   const live = useProfile();
   const me = live.profile;
+  // For the ring on the avatar below -- independent of the Stories tab's own
+  // read, which remounts by `storiesEpoch` instead. Two reads of the same
+  // local list are cheap; sharing one between a ring and a tab that gets
+  // replaced by its own gallery next would be the wrong thing to couple.
+  const { stories: myStories, refresh: refreshStories } = useStories();
 
   // What the cropper is currently working on. `null` when it is closed.
   const [cropping, setCropping] = useState<{
@@ -110,6 +117,7 @@ export function ProfilePage({ now }: { now: Date }) {
       const result = await pickAndPostStory();
       if (result.posted) {
         setStoriesEpoch((n) => n + 1);
+        void refreshStories();
         setTab("stories");
       } else if (result.problem) {
         await notify("Couldn't post that story", result.problem);
@@ -188,6 +196,22 @@ export function ProfilePage({ now }: { now: Date }) {
                 acted on and giving no hint that the picture was changeable at
                 all; the banner beside it had the better idea already. */}
             <div className="absolute -bottom-10 left-5">
+            {/* A ring around the ring: the existing `ring-surface-2 ring-4`
+                separates the picture from the banner behind it and stays
+                exactly as it was. This one is a second, outer signal that
+                says "there is a story here" -- `ring-offset` so it does not
+                collide with the one underneath, same construction as the
+                strip's circles. It does not change what a click here does:
+                the picture is already the control that changes the picture,
+                and the Stories tab (one tap away) is where an existing one is
+                actually watched. */}
+            <span
+              className={cn(
+                "block rounded-full",
+                hasLiveStory(myStories ?? [], null) &&
+                  "ring-accent ring-2 ring-offset-2 ring-offset-[var(--color-surface-1)]",
+              )}
+            >
             <button
               type="button"
               aria-label="Change picture"
@@ -210,6 +234,7 @@ export function ProfilePage({ now }: { now: Date }) {
                 <Icon name="camera" size={22} className="text-white" />
               </span>
             </button>
+            </span>
 
             {/* Adding to your story, on the picture, because that is where
                 people look for it -- and a *sibling* of the button rather

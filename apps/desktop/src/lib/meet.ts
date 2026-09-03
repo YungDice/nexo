@@ -262,12 +262,18 @@ export function revokeInvite(id: number): Promise<void> {
 export interface Story {
   id: number;
   /**
-   * Who posted it, when known. **Empty for a story that arrived over the
-   * wire**: an envelope names a device, not an account, and inventing a handle
-   * from a device id would put a UUID under somebody's story.
+   * Who posted it.
+   *
+   * A received story arrives over MLS, which names a device rather than an
+   * account, so Rust starts this blank and fills it in from the server's own
+   * `GET /v1/stories` listing, matched by id — never invented from the device
+   * id, which would put a UUID under somebody's story. It stays blank only
+   * when that reconciliation could not run (offline) or found nothing to
+   * match (a story arrived and the listing has not caught up yet); either is
+   * rare and both are honestly unresolved rather than guessed.
    */
   author_handle: string;
-  /** The device that sent it, resolved to a person the same way a message is. */
+  /** The device that sent it. Empty for this device's own stories. */
   author_device_id: string;
   mime: string;
   created_at_ms: number;

@@ -440,3 +440,36 @@ decision rather than configuration.
   that does not produce a rejected request), then images, then text. A link
   without a scheme is now said while it can still be fixed rather than coming
   back as a refusal.
+
+### Since v0.1.20
+
+- **Stories name who posted them, and stop drawing the same person twice.** A
+  received story arrives over MLS, which names a device, not an account —
+  `author_handle` started blank and stayed that way forever, because nothing
+  ever called the reconciliation its own doc comment already promised.
+  `GET /v1/stories` already existed on the server for exactly this (it joins
+  against `users`, filtered to contacts and the unblocked — the same boundary
+  the fan-out itself respects) and the client never called it.
+  `stories::live` now does, matching by id and filling in only what was
+  blank; a failed request (offline) falls back to the unresolved list rather
+  than losing the read. On the strip, several posts from the same person used
+  to be drawn as separate, unlabelled circles — the flat list has no grouping
+  of its own — and are now one circle with a `×n` badge, opened with
+  Prev/Next in the order they were posted. The ring around each circle also
+  used to lose its top and bottom edge: the scroll row had no padding to draw
+  it into, and `overflow-x: auto` forces the vertical axis to clip too.
+- **An avatar shows a ring when this device holds a live story for that
+  person** — your own profile, and anyone else's. This was nowhere: the strip
+  was the only place a story showed at all, so finding out somebody had one
+  meant already being on Home when it happened to still be live. On somebody
+  else's profile the ring is also how you open it — there is no separate
+  "their Stories tab" to send you to instead. On your own it is a signal only:
+  the picture is already the control that changes the picture, and the
+  Stories tab is one tap away for actually watching what you posted. Reads the
+  same local, contact-scoped list the strip does, so it shows nothing for
+  anyone who is not a contact or has posted nothing right now — no new
+  privacy surface, since a non-contact's stories never reach this device to
+  begin with.
+- The strip's viewer (Prev/Next, the progress dots, the fetch-per-story dance)
+  moved into its own `StoryViewer` component so the new rings could open the
+  same one rather than a second implementation of it.

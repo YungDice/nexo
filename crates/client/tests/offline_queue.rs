@@ -271,6 +271,9 @@ impl Transport for CutNetwork {
     fn story_url(&self, id: i64) -> Result<String, TransportError> {
         self.inner.story_url(id)
     }
+    fn list_stories(&self) -> Result<Vec<nexo_client::transport::StorySummary>, TransportError> {
+        self.inner.list_stories()
+    }
 
     fn search_users(
         &self,

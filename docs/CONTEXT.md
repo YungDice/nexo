@@ -125,7 +125,7 @@ without a regenerated `.sqlx` breaks an offline build — see
 
 ### Desktop shell (`apps/desktop/src-tauri/src`)
 
-91 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
+92 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
 crosses into the WebView is already decrypted, and nothing else does.
 
 | File | Commands | Owns |
@@ -134,7 +134,7 @@ crosses into the WebView is already decrypted, and nothing else does.
 | `conversations.rs` | 26 | Messaging, attachments, reactions, pinning, local delete, edit and retract. |
 | `commands.rs` | 15 | Profile, settings, misc. |
 | `auth.rs` (665 ln) | 11 | Register, login, lock, PIN, delete the account. |
-| `meet.rs` | 16 | Meet&Greet: the map, the pin, intros, reporting, search, invitations, stories. |
+| `meet.rs` | 17 | Meet&Greet: the map, the pin, intros, reporting, search, invitations, stories. |
 | `client.rs` | — | Builds and holds the `nexo-client` instance. |
 | `windows.rs` (502 ln) | — | Window creation, DWM backdrop, the acrylic path. |
 | `preview.rs` (534 ln) | — | Link previews. Off by default, on purpose. |
@@ -146,6 +146,8 @@ app/          Zustand store + hooks. store.ts is the state; use*.ts the seams to
 components/ui     Buttons, avatars, panes, controls, the hand-drawn icon set.
 components/chrome TopBar and IconRail.
 features/{auth,home,meet,messages,profile,settings}  The five destinations plus auth.
+              home/Stories.tsx is the stories strip; stories have no destination of
+              their own, because their audience is contacts.
 lib/          Typed wrappers around invoke(): auth, conversations, feed, profiles, blocks, meet.
 mock/         The data every surface reads where the network does not exist yet.
 ```

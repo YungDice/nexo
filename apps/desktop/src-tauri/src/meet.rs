@@ -492,7 +492,23 @@ pub async fn story_post(state: State<'_, ClientState>, path: String) -> Result<i
         if mime == "application/octet-stream" {
             return Err(failure(
                 "not_an_image",
-                "That file is not an image or video.",
+                "That file is not a picture or a video.",
+            ));
+        }
+        // Refused here rather than at the viewer.
+        //
+        // The upload route allows 25 MB and `story_open` renders at most 12,
+        // so without this a larger video would encrypt, upload, fan out to
+        // every contact, and then be unwatchable by all of them — including
+        // the person who posted it. Better to say no once than to say "too
+        // large to display" to everybody afterwards.
+        if contents.len() > crate::feed::MAX_INLINE_IMAGE_BYTES {
+            return Err(failure(
+                "too_large",
+                format!(
+                    "A story is up to {} MB.",
+                    crate::feed::MAX_INLINE_IMAGE_BYTES / (1024 * 1024)
+                ),
             ));
         }
         let id = nexo_client::stories::post(&client.context(), &contents, mime, now_ms())
@@ -519,6 +535,33 @@ pub async fn story_list(state: State<'_, ClientState>) -> Result<Vec<StoryView>,
                 expires_at_ms: s.expires_at_ms,
             })
             .collect())
+    })
+    .await
+}
+
+/// A story's bytes, as a `data:` URL the page can render.
+///
+/// The key stays in Rust, exactly as an attachment's does (rule 2): the page
+/// asks by id and gets pixels, never what opened them.
+#[tauri::command]
+pub async fn story_open(state: State<'_, ClientState>, id: i64) -> Result<String, MeetErrorView> {
+    with_client(&state, move |client| {
+        let (bytes, _declared) = nexo_client::stories::open(&client.context(), id, now_ms())
+            .map_err(|e| MeetErrorView::from(nexo_client::meet::MeetError::from(e)))?;
+
+        if bytes.len() > crate::feed::MAX_INLINE_IMAGE_BYTES {
+            return Err(failure("too_large", "That story is too large to display."));
+        }
+        // Sniffed from the bytes, never taken from what the sender declared:
+        // this string decides how the WebView renders it.
+        let mime = crate::feed::sniff_mime(&bytes);
+        if !crate::feed::is_renderable(mime) {
+            return Err(failure(
+                "not_renderable",
+                "That story is not a picture or a video.",
+            ));
+        }
+        Ok(crate::feed::data_url(mime, &bytes))
     })
     .await
 }

@@ -26,6 +26,14 @@ function fileName(path: string): string {
 export async function pickFile(options?: {
   title?: string;
   images?: boolean;
+  /**
+   * Offer video as well as pictures.
+   *
+   * Separate from `images` because most callers genuinely mean pictures — an
+   * avatar or a banner cannot be a film. A story can, and `sniff_mime` has
+   * understood MP4 and WebM all along; only this dialog was refusing them.
+   */
+  media?: boolean;
 }): Promise<PickedFile | null> {
   try {
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -33,9 +41,35 @@ export async function pickFile(options?: {
       multiple: false,
       directory: false,
       title: options?.title ?? "Choose a file",
-      ...(options?.images
-        ? { filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }] }
-        : {}),
+      ...(options?.media
+        ? {
+            filters: [
+              {
+                name: "Pictures and video",
+                extensions: [
+                  "png",
+                  "jpg",
+                  "jpeg",
+                  "gif",
+                  "webp",
+                  "mp4",
+                  "m4v",
+                  "mov",
+                  "webm",
+                ],
+              },
+            ],
+          }
+        : options?.images
+          ? {
+              filters: [
+                {
+                  name: "Images",
+                  extensions: ["png", "jpg", "jpeg", "gif", "webp"],
+                },
+              ],
+            }
+          : {}),
     });
     if (!path || Array.isArray(path)) return null;
     return { path, name: fileName(path), url: convertFileSrc(path) };
@@ -53,10 +87,15 @@ export async function pickFile(options?: {
  * Rust side — but the user picks the real destination, so a hostile name
  * cannot decide where a file lands.
  */
-export async function pickSavePath(suggestedName: string): Promise<string | null> {
+export async function pickSavePath(
+  suggestedName: string,
+): Promise<string | null> {
   try {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const path = await save({ title: "Save attachment", defaultPath: suggestedName });
+    const path = await save({
+      title: "Save attachment",
+      defaultPath: suggestedName,
+    });
     return path ?? null;
   } catch {
     return null;
@@ -167,7 +206,9 @@ export interface BackdropReport {
  * wallpaper and the windows underneath can only be reached by the desktop
  * window manager.
  */
-export async function setWindowBackdrop(kind: BackdropKind): Promise<BackdropReport> {
+export async function setWindowBackdrop(
+  kind: BackdropKind,
+): Promise<BackdropReport> {
   try {
     return await invoke<BackdropReport>("set_window_backdrop", { kind });
   } catch {
@@ -220,7 +261,9 @@ export interface LinkPreviewData {
  * Resolves `null` for anything that could not be previewed. A link with no
  * preview stays a link, which is the same thing the setting-off path renders.
  */
-export async function previewLink(url: string): Promise<LinkPreviewData | null> {
+export async function previewLink(
+  url: string,
+): Promise<LinkPreviewData | null> {
   try {
     return await invoke<LinkPreviewData>("preview_link", { url });
   } catch {

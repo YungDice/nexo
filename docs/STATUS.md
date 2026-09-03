@@ -316,6 +316,14 @@ candidate fixes were identified and none has been confirmed.
 - A story that has already expired when it arrives is **not written down at
   all** — the key is never put on disk.
 
+**There is a UI now**, and there was not when this section was first written —
+the whole of wave 7 existed as protocol, server, store, client and IPC with no
+screen, which is not a shippable state and should not have been written up as
+one. The strip sits at the top of Home rather than in its own destination,
+because a story's audience is contacts and Home is already where other
+people's things appear. Opening Home is also what purges expired stories and
+their keys.
+
 **Layer 3 is applied.** `nexo-enc` carries one lifecycle rule, `story/` after
 two days. It could not have been applied before: stories and attachments shared
 the `enc/<uuid>/<uuid>` key space, so any rule reaching stories would have

@@ -129,6 +129,7 @@ pub fn run() {
             meet::meet_revoke_invite,
             meet::story_post,
             meet::story_list,
+            meet::story_open,
             feed::feed,
             feed::posts_by,
             feed::create_post,

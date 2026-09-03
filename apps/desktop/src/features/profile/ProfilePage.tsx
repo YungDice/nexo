@@ -27,6 +27,7 @@ import { Avatar } from "../../components/ui/Avatar";
 import { Button, IconButton } from "../../components/ui/Button";
 import { FactRow, Field, Tabs, TextArea } from "../../components/ui/Controls";
 import { PrivacyPanel } from "./PrivacyPanel";
+import { Stories } from "../home/Stories";
 import {
   Callout,
   EmptyState,
@@ -38,7 +39,7 @@ import { Panel, SectionHeader } from "../../components/ui/Surface";
 import { useSignOut } from "../auth/useSignOut";
 import { PrivacyTable } from "../settings/PrivacyTable";
 
-type Tab = "posts" | "media" | "identity" | "privacy";
+type Tab = "posts" | "media" | "identity" | "stories" | "privacy";
 
 export interface ProfileEdits {
   displayName: string;
@@ -255,6 +256,7 @@ export function ProfilePage({ now }: { now: Date }) {
                 { id: "posts", label: "Posts", icon: "home" },
                 { id: "media", label: "Media", icon: "image" },
                 { id: "identity", label: "Identity", icon: "key" },
+                { id: "stories", label: "Stories", icon: "image" },
                 { id: "privacy", label: "Privacy", icon: "shield" },
               ]}
               active={tab}
@@ -278,6 +280,25 @@ export function ProfilePage({ now }: { now: Date }) {
                   void live.setVisibility(field, value)
                 }
               />
+            ) : null}
+            {tab === "stories" ? (
+              <section className="flex flex-col gap-3">
+                <div>
+                  <h2 className="text-text-hi font-display text-[17px] font-medium">
+                    Your stories
+                  </h2>
+                  {/* The honest description, before anything is posted rather
+                      than after. Contacts is not a follower list: it is
+                      whoever you already share a conversation with. */}
+                  <p className="text-text-lo mt-1 text-meta">
+                    A story goes to everyone you already have a conversation
+                    with, and disappears after 24 hours — from the server, and
+                    from their app. Someone who has already seen it can still
+                    have kept it. Pictures and video.
+                  </p>
+                </div>
+                <Stories canPost />
+              </section>
             ) : null}
             {tab === "privacy" ? (
               <PrivacyPanel

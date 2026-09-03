@@ -6,9 +6,15 @@ import { relativeTime } from "../../lib/format";
 import { notify, openUrl, pickFile } from "../../lib/native";
 import { useFeed, type NewPostInput } from "../../app/useFeed";
 import { RemoteImage } from "../../components/ui/RemoteImage";
+import { Stories } from "./Stories";
 import { EmojiPicker } from "../../components/ui/EmojiPicker";
 import { CommentThread } from "./CommentThread";
-import { uploadImage, type FeedSort, type Post, type PostKind } from "../../lib/feed";
+import {
+  uploadImage,
+  type FeedSort,
+  type Post,
+  type PostKind,
+} from "../../lib/feed";
 import { asFeedError } from "../../lib/feed";
 import { Avatar } from "../../components/ui/Avatar";
 import { Button, IconButton } from "../../components/ui/Button";
@@ -99,117 +105,140 @@ export function HomePage({ now }: { now: Date }) {
       className="flex min-h-0 min-w-0 flex-1"
       style={{ "--home-chat-w": `${chatWidth}px` } as CSSProperties}
     >
-      <Panel tone="content" edge={false} className="flex min-w-0 flex-1 flex-col">
+      <Panel
+        tone="content"
+        edge={false}
+        className="flex min-w-0 flex-1 flex-col"
+      >
         <div className="min-h-0 flex-1 overflow-y-auto">
-        {/* No rules of its own. The column used to draw a hairline down each
+          {/* No rules of its own. The column used to draw a hairline down each
             side of itself, which put three vertical lines across a page that
             has one division in it — and none of the three was the one you
             could move. That one is the splitter below. */}
-        <div className="mx-auto flex min-h-full w-full max-w-[660px] flex-col gap-4 px-6 py-5">
-          {live.problem ? (
-            <Callout tone="warning" icon="alert">
-              {live.problem}
-            </Callout>
-          ) : null}
+          <div className="mx-auto flex min-h-full w-full max-w-[660px] flex-col gap-4 px-6 py-5">
+            {live.problem ? (
+              <Callout tone="warning" icon="alert">
+                {live.problem}
+              </Callout>
+            ) : null}
 
-          <Field
-            label="Search the feed"
-            hideLabel
-            icon="search"
-            placeholder="Search loaded posts"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            autoFocus
-          />
+            <Field
+              label="Search the feed"
+              hideLabel
+              icon="search"
+              placeholder="Search loaded posts"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              autoFocus
+            />
 
-          <PostComposer onPost={live.post} />
+            {/* Above the composer, because a story is somebody else's and the
+              composer is yours -- and because opening Home is what purges the
+              expired ones. */}
+            <Stories />
 
-          {/* Ordering, not filtering: every post is still here, and which one
+            <PostComposer onPost={live.post} />
+
+            {/* Ordering, not filtering: every post is still here, and which one
               is at the top is the whole difference between them. */}
-          <div className="flex gap-1" role="tablist" aria-label="Sort the feed">
-            {FEED_SORTS.map((option) => (
-              <button
-                key={option.sort}
-                type="button"
-                role="tab"
-                aria-selected={live.sort === option.sort}
-                onClick={() => live.setSort(option.sort)}
-                className={cn(
-                  "rounded-control px-2.5 py-1.5 text-[11px] font-medium transition-colors duration-[var(--motion-fast)]",
-                  live.sort === option.sort
-                    ? "bg-fill-active text-text-hi"
-                    : "text-text-lo hover:bg-fill-hover",
-                )}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+            <div
+              className="flex gap-1"
+              role="tablist"
+              aria-label="Sort the feed"
+            >
+              {FEED_SORTS.map((option) => (
+                <button
+                  key={option.sort}
+                  type="button"
+                  role="tab"
+                  aria-selected={live.sort === option.sort}
+                  onClick={() => live.setSort(option.sort)}
+                  className={cn(
+                    "rounded-control px-2.5 py-1.5 text-[11px] font-medium transition-colors duration-[var(--motion-fast)]",
+                    live.sort === option.sort
+                      ? "bg-fill-active text-text-hi"
+                      : "text-text-lo hover:bg-fill-hover",
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
 
-          {/* §4.4 and rule 5: the feed has to say plainly that it is not
+            {/* §4.4 and rule 5: the feed has to say plainly that it is not
               end-to-end encrypted, and the place to say it is where people
               write. A sentence under the composer is read; a bordered warning
               box above it becomes furniture within a day. */}
-          <p className="text-text-mid -mt-1 flex items-start gap-2 px-1 text-meta leading-relaxed">
-            <Icon name="globe" size={14} className="text-text-lo mt-0.5 shrink-0" />
-            Posts are public. Anyone signed in to Nexo can read them, and so can whoever runs
-            the server. Your messages are end-to-end encrypted; the feed is not.
-          </p>
-
-          {live.loading ? (
-            <div className="flex flex-col gap-3" aria-label="Loading the feed">
-              <PostSkeleton />
-              <PostSkeleton />
-            </div>
-          ) : visible.length === 0 ? (
-            query.trim() ? (
-              <EmptyState
-                icon="search"
-                title="No matches"
-                body={`Nothing loaded so far matches "${query.trim()}".`}
+            <p className="text-text-mid -mt-1 flex items-start gap-2 px-1 text-meta leading-relaxed">
+              <Icon
+                name="globe"
+                size={14}
+                className="text-text-lo mt-0.5 shrink-0"
               />
-            ) : (
-              /* §6.2: an empty state that invites the first post rather than
+              Posts are public. Anyone signed in to Nexo can read them, and so
+              can whoever runs the server. Your messages are end-to-end
+              encrypted; the feed is not.
+            </p>
+
+            {live.loading ? (
+              <div
+                className="flex flex-col gap-3"
+                aria-label="Loading the feed"
+              >
+                <PostSkeleton />
+                <PostSkeleton />
+              </div>
+            ) : visible.length === 0 ? (
+              query.trim() ? (
+                <EmptyState
+                  icon="search"
+                  title="No matches"
+                  body={`Nothing loaded so far matches "${query.trim()}".`}
+                />
+              ) : (
+                /* §6.2: an empty state that invites the first post rather than
                  apologising for emptiness. */
-              <EmptyState
-                icon="home"
-                title="Nothing here yet"
-                body="Be the first to post. Whatever you write here is public."
-              />
-            )
-          ) : (
-            <ul className="flex flex-col gap-3">
-              {visible.map((post, index) => (
-                <li key={post.id}>
-                  <PostCard
-                    post={post}
-                    now={now}
-                    index={index}
-                    onDelete={() => void live.remove(post.id)}
-                    onReact={(emoji) => void live.toggleReaction(post.id, emoji)}
-                    onVote={(value) => void live.castVote(post.id, value)}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
+                <EmptyState
+                  icon="home"
+                  title="Nothing here yet"
+                  body="Be the first to post. Whatever you write here is public."
+                />
+              )
+            ) : (
+              <ul className="flex flex-col gap-3">
+                {visible.map((post, index) => (
+                  <li key={post.id}>
+                    <PostCard
+                      post={post}
+                      now={now}
+                      index={index}
+                      onDelete={() => void live.remove(post.id)}
+                      onReact={(emoji) =>
+                        void live.toggleReaction(post.id, emoji)
+                      }
+                      onVote={(value) => void live.castVote(post.id, value)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
 
-          {/* The sentinel. Skeletons while a page is on its way, and a plain
+            {/* The sentinel. Skeletons while a page is on its way, and a plain
               end-of-feed line rather than an infinite spinner that never
               resolves — §6.2 wants infinite scroll, not an infinite wait. */}
-          <div ref={sentinel} className="flex flex-col gap-3 pb-4">
-            {live.loadingMore ? (
-              <>
-                <PostSkeleton />
-                <PostSkeleton />
-              </>
-            ) : !live.hasMore && live.posts.length > 0 ? (
-              <p className="text-text-lo py-2 text-center text-meta">
-                That's the whole feed.
-              </p>
-            ) : null}
+            <div ref={sentinel} className="flex flex-col gap-3 pb-4">
+              {live.loadingMore ? (
+                <>
+                  <PostSkeleton />
+                  <PostSkeleton />
+                </>
+              ) : !live.hasMore && live.posts.length > 0 ? (
+                <p className="text-text-lo py-2 text-center text-meta">
+                  That's the whole feed.
+                </p>
+              ) : null}
+            </div>
           </div>
-        </div>
         </div>
       </Panel>
       {showChat ? (
@@ -218,7 +247,9 @@ export function HomePage({ now }: { now: Date }) {
             width={chatWidth}
             min={MIN_HOME_CHAT}
             minOther={MIN_HOME_FEED}
-            onResize={(next) => row.current?.style.setProperty("--home-chat-w", `${next}px`)}
+            onResize={(next) =>
+              row.current?.style.setProperty("--home-chat-w", `${next}px`)
+            }
             onCommit={(next) => setPreference("homeChatWidth", next)}
             label="Resize the conversation panel"
           />
@@ -240,20 +271,30 @@ const FEED_SORTS: { sort: FeedSort; label: string }[] = [
 ];
 
 /** The three kinds, in the order they are offered. */
-const POST_KINDS: { kind: PostKind; label: string; icon: "messages" | "link" | "image" }[] = [
+const POST_KINDS: {
+  kind: PostKind;
+  label: string;
+  icon: "messages" | "link" | "image";
+}[] = [
   { kind: "text", label: "Text", icon: "messages" },
   { kind: "link", label: "Link", icon: "link" },
   { kind: "image", label: "Image", icon: "image" },
 ];
 
-function PostComposer({ onPost }: { onPost: (input: NewPostInput) => Promise<void> }) {
+function PostComposer({
+  onPost,
+}: {
+  onPost: (input: NewPostInput) => Promise<void>;
+}) {
   const me = useApp((s) => s.account);
   const myAvatarKey = useApp((s) => s.myAvatarKey);
   const [kind, setKind] = useState<PostKind>("text");
   const [title, setTitle] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
   const [body, setBody] = useState("");
-  const [images, setImages] = useState<{ path: string; name: string; url: string }[]>([]);
+  const [images, setImages] = useState<
+    { path: string; name: string; url: string }[]
+  >([]);
   const [busy, setBusy] = useState(false);
   const remaining = MAX_POST - body.length;
 
@@ -264,7 +305,9 @@ function PostComposer({ onPost }: { onPost: (input: NewPostInput) => Promise<voi
       ? linkUrl.trim().length > 0
       : kind === "image"
         ? images.length > 0
-        : body.trim().length > 0 || images.length > 0 || title.trim().length > 0;
+        : body.trim().length > 0 ||
+          images.length > 0 ||
+          title.trim().length > 0;
 
   const addImage = async () => {
     // §6.2: up to four.
@@ -407,7 +450,9 @@ function PostComposer({ onPost }: { onPost: (input: NewPostInput) => Promise<voi
         <div className="flex items-center gap-0.5">
           <IconButton
             name="image"
-            label={images.length >= 4 ? "Four images is the limit" : "Add an image"}
+            label={
+              images.length >= 4 ? "Four images is the limit" : "Add an image"
+            }
             size={17}
             active={images.length > 0}
             disabled={images.length >= 4}
@@ -466,7 +511,8 @@ function PostCard({
   useEffect(() => {
     if (!pickerOpen) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!pickerWrap.current?.contains(event.target as Node)) setPickerOpen(false);
+      if (!pickerWrap.current?.contains(event.target as Node))
+        setPickerOpen(false);
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
@@ -500,21 +546,31 @@ function PostCard({
             <span className="text-text-hi truncate text-body font-medium hover:underline">
               {post.author_display_name}
             </span>
-            <span className="text-text-lo truncate text-meta">@{post.author_handle}</span>
+            <span className="text-text-lo truncate text-meta">
+              @{post.author_handle}
+            </span>
           </button>
           <span className="text-text-lo text-[11px]">
             {relativeTime(new Date(post.created_at_ms), now)}
           </span>
         </div>
         {post.is_mine ? (
-          <IconButton name="trash" label="Delete this post" size={16} onClick={onDelete} />
+          <IconButton
+            name="trash"
+            label="Delete this post"
+            size={16}
+            onClick={onDelete}
+          />
         ) : (
           <IconButton
             name="more"
             label="Post options"
             size={16}
             onClick={() =>
-              void notify("Post options", "Muting authors and reporting posts arrive with the feed milestone.")
+              void notify(
+                "Post options",
+                "Muting authors and reporting posts arrive with the feed milestone.",
+              )
             }
           />
         )}
@@ -537,7 +593,11 @@ function PostCard({
           }}
           className="rounded-panel bg-surface-3/70 mt-2 flex items-center gap-2 border border-line px-3 py-2"
         >
-          <Icon name="external" size={14} className="text-accent-soft shrink-0" />
+          <Icon
+            name="external"
+            size={14}
+            className="text-accent-soft shrink-0"
+          />
           <span className="text-accent-soft min-w-0 flex-1 truncate text-[11px] underline decoration-line-strong underline-offset-2">
             {post.link_url}
           </span>
@@ -583,25 +643,25 @@ function PostCard({
         {post.reactions.map((reaction) => {
           const mine = post.my_reactions.includes(reaction.emoji);
           return (
-          <button
-            key={reaction.emoji}
-            type="button"
-            aria-label={`${reaction.count} reacted ${reaction.emoji}`}
-            aria-pressed={mine}
-            onClick={() => onReact(reaction.emoji)}
-            className={cn(
-              "rounded-full px-2.5 py-1 text-meta transition-colors duration-[var(--motion-fast)] ease-[var(--ease-state)]",
-              mine
-                ? "bg-accent/18 text-accent-soft"
-                : "text-text-mid bg-fill-hover hover:bg-fill-active",
-            )}
-          >
-            {/* User content, not chrome: the emoji is what someone chose to
+            <button
+              key={reaction.emoji}
+              type="button"
+              aria-label={`${reaction.count} reacted ${reaction.emoji}`}
+              aria-pressed={mine}
+              onClick={() => onReact(reaction.emoji)}
+              className={cn(
+                "rounded-full px-2.5 py-1 text-meta transition-colors duration-[var(--motion-fast)] ease-[var(--ease-state)]",
+                mine
+                  ? "bg-accent/18 text-accent-soft"
+                  : "text-text-mid bg-fill-hover hover:bg-fill-active",
+              )}
+            >
+              {/* User content, not chrome: the emoji is what someone chose to
                 react with. Every icon in the interface itself is from the
                 icon set. */}
-            <span aria-hidden="true">{reaction.emoji}</span>{" "}
-            <span className="font-mono text-[11px]">{reaction.count}</span>
-          </button>
+              <span aria-hidden="true">{reaction.emoji}</span>{" "}
+              <span className="font-mono text-[11px]">{reaction.count}</span>
+            </button>
           );
         })}
         <div className="relative" ref={pickerWrap}>
@@ -685,7 +745,11 @@ function VoteControl({
       <span
         className={cn(
           "min-w-[1.5rem] text-center font-mono text-[11px]",
-          myVote === 1 ? "text-accent-soft" : myVote === -1 ? "text-warning" : "text-text-mid",
+          myVote === 1
+            ? "text-accent-soft"
+            : myVote === -1
+              ? "text-warning"
+              : "text-text-mid",
         )}
       >
         {score}

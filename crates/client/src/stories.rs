@@ -126,6 +126,51 @@ pub fn live<T: Transport>(
     Ok(ctx.store.live_stories(now_ms)?)
 }
 
+/// Fetch a story and open it.
+///
+/// The key never leaves this crate: the caller gets plaintext bytes, the same
+/// bargain an attachment makes (rule 2). The expiry is checked here as well as
+/// by the server, because a story whose key we still hold is one we could
+/// otherwise open after it was supposed to be gone.
+pub fn open<T: Transport>(
+    ctx: &Context<'_, T>,
+    id: i64,
+    now_ms: i64,
+) -> Result<(Vec<u8>, String), ConversationError> {
+    // `live_stories` purges as it reads, so a story that has expired is not in
+    // this list and its key is no longer on the disk.
+    let story = ctx
+        .store
+        .live_stories(now_ms)?
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or(ConversationError::NotAMember)?;
+
+    let url = ctx.transport.story_url(id)?;
+    let ciphertext = ctx.transport.get_object(&url)?;
+
+    let plaintext = nexo_crypto::attachment::decrypt(
+        &ciphertext,
+        &unhex(&story.enc_key)?,
+        &unhex(&story.nonce)?,
+        &unhex(&story.sha256)?,
+    )?;
+    Ok((plaintext.to_vec(), story.mime))
+}
+
+fn unhex(s: &str) -> Result<Vec<u8>, ConversationError> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(s.get(i..i + 2).unwrap_or("zz"), 16).map_err(|_| {
+                ConversationError::Transport(crate::transport::TransportError::Rejected(
+                    "that story is unreadable".into(),
+                ))
+            })
+        })
+        .collect()
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

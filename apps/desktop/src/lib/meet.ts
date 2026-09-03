@@ -297,3 +297,13 @@ export function postStory(path: string): Promise<number> {
 export function listStories(): Promise<Story[]> {
   return invoke<Story[]>("story_list");
 }
+
+/**
+ * A story's bytes, as a `data:` URL.
+ *
+ * The key that opens it stays in Rust — the page asks by id and gets pixels,
+ * never what decrypted them.
+ */
+export function openStory(id: number): Promise<string> {
+  return invoke<string>("story_open", { id });
+}

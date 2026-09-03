@@ -108,11 +108,12 @@ Each module owns its own `router()`, merged in `lib.rs`.
 | `auth/` (`mod`, `password`, `tokens`, `bearer`, `salt`) | `/v1/auth/{register,login,refresh,logout,salt,change-password,delete-account}` |
 | `delivery/` (`mod`, `epoch`) | `/v1/conversations*` (send, sync, members), `/v1/keypackages*` |
 | `posts.rs` (1206 ln) | `/v1/posts*`, `/v1/feed`, `/v1/comments/{id}`, `/v1/users/{handle}/posts` |
-| `profiles.rs` | `/v1/me`, `/v1/me/visibility`, `/v1/users/{handle}` |
+| `profiles.rs` | `/v1/me`, `/v1/me/visibility`, `/v1/users/{handle}`, `/v1/users` (search) |
 | `blocks.rs` | `/v1/blocks*` |
 | `media.rs` | `/v1/media/{upload,download}` — presigned S3 URLs |
 | `reports.rs` | `/v1/reports` |
-| `meet.rs` | `/v1/meet/{pins,me,consent,requests}` — Meet&Greet. Owns pin coarsening. |
+| `stories.rs` (`mod`, `expiry`) | `/v1/stories*` — 24-hour encrypted stories. Owns the three access conditions. |
+| `meet.rs` | `/v1/meet/{pins,me,consent,requests,invites}` — Meet&Greet. Owns pin coarsening and invitations. |
 | `stream/` (`mod`, `hub`) | `/v1/stream` — the WebSocket |
 | `health.rs` | `/v1/health` |
 | `db.rs`, `state.rs`, `storage.rs`, `limits.rs` | Pool, `AppState`, object storage, rate limits. No routes. |
@@ -124,16 +125,16 @@ without a regenerated `.sqlx` breaks an offline build — see
 
 ### Desktop shell (`apps/desktop/src-tauri/src`)
 
-81 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
+91 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
 crosses into the WebView is already decrypted, and nothing else does.
 
 | File | Commands | Owns |
 |---|---|---|
 | `feed.rs` (750 ln) | 23 | Posts, comments, votes, reactions. |
-| `conversations.rs` (1169 ln) | 22 | Messaging, attachments, `attachment_data_url`. |
+| `conversations.rs` | 26 | Messaging, attachments, reactions, pinning, local delete, edit and retract. |
 | `commands.rs` | 15 | Profile, settings, misc. |
 | `auth.rs` (665 ln) | 11 | Register, login, lock, PIN, delete the account. |
-| `meet.rs` | 10 | Meet&Greet: the map, the pin, intros, reporting. |
+| `meet.rs` | 16 | Meet&Greet: the map, the pin, intros, reporting, search, invitations, stories. |
 | `client.rs` | — | Builds and holds the `nexo-client` instance. |
 | `windows.rs` (502 ln) | — | Window creation, DWM backdrop, the acrylic path. |
 | `preview.rs` (534 ln) | — | Link previews. Off by default, on purpose. |

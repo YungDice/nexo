@@ -90,6 +90,33 @@ pub struct MessageView {
     /// reads them from there -- but this build must not pretend the sender
     /// typed the JSON it could not parse.
     pub unsupported: Option<String>,
+    /// Pinned **on this device**.
+    ///
+    /// Local, and the UI must say so. See the schema-12 migration in
+    /// `crates/store`: a shared pin has no enforceable cap, because the server
+    /// may not read the payload and so cannot count.
+    pub pinned: bool,
+    /// Set when the sender took the message back.
+    ///
+    /// The row survives, so this is how the bubble tells "taken back" from
+    /// "never said anything".
+    pub retracted_at_ms: Option<i64>,
+    /// Set when the sender last changed it. Shown as a quiet mark, not judged.
+    pub edited_at_ms: Option<i64>,
+    /// Reactions on this message, most-used first.
+    ///
+    /// The same shape the feed already draws pills from, so the pill component
+    /// is reused rather than reimplemented for conversations.
+    pub reactions: Vec<ReactionView>,
+}
+
+/// One emoji on a message, and how many used it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReactionView {
+    pub emoji: String,
+    pub count: i64,
+    /// Whether this account is one of them.
+    pub mine: bool,
 }
 
 /// The visible facts about an attached file.
@@ -225,6 +252,95 @@ impl From<conversations::ConversationError> for ConversationErrorView {
             _ => failure("internal", "Something went wrong. Try again."),
         }
     }
+}
+
+/// Take back one of our own messages, or change what it says.
+///
+/// `body` absent is a retraction; present is an edit. One command, because
+/// they are the same act with different content and the checks are identical.
+///
+/// What goes out is a **request**. A well-behaved Nexo applies it; a modified
+/// one need not, and the UI must say so rather than claiming the message is
+/// gone.
+#[tauri::command]
+pub async fn revise_message(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    target: String,
+    body: Option<String>,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        let target = target
+            .parse::<nexo_protocol::MessageId>()
+            .map_err(|_| failure("invalid_request", "That message cannot be changed."))?;
+        conversations::revise(&client.context(), id, target, body.as_deref(), now_ms())?;
+        Ok(())
+    })
+    .await
+}
+
+/// React to a message, or take the reaction back.
+///
+/// Goes out as an encrypted payload like any message. There is no reaction
+/// endpoint on the server and there must not be one: an emoji is content.
+#[tauri::command]
+pub async fn react_to_message(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    target: String,
+    emoji: String,
+    on: bool,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        let target = target
+            .parse::<nexo_protocol::MessageId>()
+            .map_err(|_| failure("invalid_request", "That message cannot be reacted to."))?;
+        conversations::react(&client.context(), id, target, &emoji, on)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Pin or unpin a message, on this device only.
+///
+/// Nothing is sent and nobody else sees it. The name of the command says
+/// "this device" because the UI has to as well.
+#[tauri::command]
+pub async fn set_message_pinned(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    envelope_id: i64,
+    pinned: bool,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        client
+            .store
+            .set_pinned(&conversation_id, envelope_id, pinned, now_ms())
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))
+    })
+    .await
+}
+
+/// Remove a message from this device.
+///
+/// Everyone else keeps their copy, and the UI must say exactly that. Taking a
+/// message back from other people is a different act with a different name and
+/// a much weaker promise.
+#[tauri::command]
+pub async fn delete_message_for_me(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    envelope_id: i64,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        client
+            .store
+            .delete_message(&conversation_id, envelope_id)
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))
+    })
+    .await
 }
 
 /// Runs a blocking closure against the signed-in client.
@@ -671,6 +787,12 @@ pub async fn send_message(
             client_id: sent.client_id().map(str::to_string),
             // We wrote it, so this build understands it by construction.
             unsupported: None,
+            // Nothing is pinned, reacted to, edited or taken back the moment
+            // it is sent.
+            pinned: false,
+            retracted_at_ms: None,
+            edited_at_ms: None,
+            reactions: Vec::new(),
         })
     })
     .await
@@ -786,6 +908,19 @@ pub async fn conversation_messages(
             .messages(&conversation_id)
             .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
 
+        // One lookup for the whole conversation rather than one per message.
+        // "Mine" is decided against this device's id, not against a NULL --
+        // see the schema-13 migration in `crates/store`.
+        let me = client
+            .store
+            .account()
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?
+            .map(|a| a.device_id);
+        let reactions = client
+            .store
+            .reactions(&conversation_id, me.as_deref())
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
+
         // Queued messages, appended after the delivered ones. They belong in
         // the conversation -- someone wrote them and expects to see them --
         // and they are marked so the UI can draw them as not-yet-sent.
@@ -805,24 +940,55 @@ pub async fn conversation_messages(
                 attachment: AttachmentView::from_payload(item.payload.as_deref()),
                 client_id: item.client_id.clone(),
                 unsupported: None,
+                // A queued message has no envelope id yet, and that is what a
+                // pin is keyed by. Nothing to pin until the server has it.
+                pinned: false,
+                retracted_at_ms: None,
+                edited_at_ms: None,
+                // It has a name, so it *could* carry reactions -- but nobody
+                // has seen it to react to.
+                reactions: Vec::new(),
             })
             .collect();
 
         Ok(stored
             .into_iter()
-            .map(|m| MessageView {
-                envelope_id: m.envelope_id,
-                outgoing: m.sender_device_id.is_none(),
-                sender_device_id: m.sender_device_id,
-                attachment: AttachmentView::from_payload(m.payload.as_deref()),
-                client_id: m.client_id,
-                unsupported: unsupported_kind(m.payload.as_deref()),
-                body: bubble_body(&m.body, m.payload.as_deref()),
-                sent_at_ms: m.sent_at_ms,
-                // Everything in `messages` was accepted by the server before
-                // it was written there. What is still waiting lives in the
-                // outbox, and is appended below.
-                pending: false,
+            .map(|m| {
+                // Read before the row is consumed: the name is both the view's
+                // own field and the key its reactions are filed under.
+                let reactions = m
+                    .client_id
+                    .as_deref()
+                    .and_then(|name| reactions.get(name))
+                    .map(|list| {
+                        list.iter()
+                            .map(|r| ReactionView {
+                                emoji: r.emoji.clone(),
+                                count: r.count,
+                                mine: r.mine,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                MessageView {
+                    envelope_id: m.envelope_id,
+                    outgoing: m.sender_device_id.is_none(),
+                    sender_device_id: m.sender_device_id,
+                    attachment: AttachmentView::from_payload(m.payload.as_deref()),
+                    unsupported: unsupported_kind(m.payload.as_deref()),
+                    pinned: m.pinned,
+                    retracted_at_ms: m.retracted_at_ms,
+                    edited_at_ms: m.edited_at_ms,
+                    reactions,
+                    body: bubble_body(&m.body, m.payload.as_deref()),
+                    sent_at_ms: m.sent_at_ms,
+                    client_id: m.client_id,
+                    // Everything in `messages` was accepted by the server
+                    // before it was written there. What is still waiting lives
+                    // in the outbox, and is appended below.
+                    pending: false,
+                }
             })
             .chain(queued)
             .collect())
@@ -924,11 +1090,14 @@ pub async fn send_attachment(
         let body = body.as_deref().map(str::trim).filter(|b| !b.is_empty());
         let size = contents.len() as u64;
 
-        let envelope_id =
+        let sent =
             conversations::send_attachment(&client.context(), id, &name, mime, &contents, body)?;
 
         Ok(MessageView {
-            envelope_id,
+            // An attachment always goes straight to the server -- it has no
+            // outbox path -- so there is an envelope id here. `unwrap_or(0)`
+            // is the shape of the type, not an expected case.
+            envelope_id: sent.envelope_id().unwrap_or(0),
             sender_device_id: None,
             body: body.unwrap_or(&name).to_string(),
             sent_at_ms: now_ms(),
@@ -939,6 +1108,15 @@ pub async fn send_attachment(
                 mime: mime.to_string(),
                 size,
             }),
+            // The name the payload was given, so the bubble can be reacted to
+            // and taken back without waiting for a reload.
+            client_id: sent.client_id().map(str::to_string),
+            // It parsed: this build wrote it.
+            unsupported: None,
+            pinned: false,
+            retracted_at_ms: None,
+            edited_at_ms: None,
+            reactions: Vec::new(),
         })
     })
     .await
@@ -1074,6 +1252,12 @@ mod tests {
             outgoing: false,
             pending: false,
             attachment: None,
+            client_id: Some("11111111-1111-1111-1111-111111111111".into()),
+            unsupported: None,
+            pinned: false,
+            retracted_at_ms: None,
+            edited_at_ms: None,
+            reactions: Vec::new(),
         };
         let json = serde_json::to_string(&view).unwrap();
         for forbidden in ["ciphertext", "epoch", "key", "secret", "token"] {
@@ -1099,6 +1283,9 @@ mod tests {
             mime: "application/pdf".into(),
             size: 1234,
             body: Some("here".into()),
+            // Deliberately unnamed: this is the shape a message sent before
+            // names existed still has, and it must still produce a view.
+            id: None,
         };
         let view = AttachmentView::from_payload(Some(&payload.encode_string()))
             .expect("an attachment payload should produce a view");
@@ -1131,6 +1318,7 @@ mod tests {
             mime: "application/octet-stream".into(),
             size: 1,
             body: None,
+            id: None,
         };
         let view = AttachmentView::from_payload(Some(&payload.encode_string())).unwrap();
         assert_eq!(view.name, "evil.exe");
@@ -1171,6 +1359,12 @@ mod tests {
             outgoing: true,
             pending: false,
             attachment: None,
+            client_id: None,
+            unsupported: None,
+            pinned: false,
+            retracted_at_ms: None,
+            edited_at_ms: None,
+            reactions: Vec::new(),
         };
         assert!(mine.outgoing);
         assert!(mine.sender_device_id.is_none());

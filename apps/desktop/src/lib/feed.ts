@@ -125,9 +125,23 @@ export type VisibilityField = "bio" | "location" | "links" | "join_date";
 export interface MyProfile extends Profile {
   /** Every settable field, with the value actually in force. */
   visibility: Record<VisibilityField, Visibility>;
+  /**
+   * Whether this account is private. Only the owner is told.
+   *
+   * Private means absent from search *and* unreachable without an invitation,
+   * both enforced by the server.
+   */
+  is_private: boolean;
 }
 
 export interface ProfileEdit {
+  /**
+   * Whether the account is private.
+   *
+   * Two enforced things, not one cosmetic one: absent from search, and
+   * unreachable without an invitation. Both are checked on the server.
+   */
+  is_private?: boolean;
   display_name?: string;
   bio?: string;
   location?: string;
@@ -168,7 +182,10 @@ export function asFeedError(error: unknown): FeedError {
  * those orders are not monotonic in id, so an id cannot express a page
  * boundary in them. Pass back whatever `next_cursor` gave you.
  */
-export function feed(before?: number, sort: FeedSort = "new"): Promise<FeedPage> {
+export function feed(
+  before?: number,
+  sort: FeedSort = "new",
+): Promise<FeedPage> {
   return invoke<FeedPage>("feed", { before: before ?? null, sort });
 }
 
@@ -230,7 +247,11 @@ export function addComment(
   body: string,
   parentId?: number | null,
 ): Promise<Comment> {
-  return invoke<Comment>("add_comment", { postId, body, parentId: parentId ?? null });
+  return invoke<Comment>("add_comment", {
+    postId,
+    body,
+    parentId: parentId ?? null,
+  });
 }
 
 export function deleteComment(id: number): Promise<void> {

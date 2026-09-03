@@ -1078,6 +1078,80 @@ pub fn sync<T: Transport>(
                                 ctx.store.set_conversation_title(&id, title)?;
                                 continue;
                             }
+                            if let Payload::Story {
+                                s3_key,
+                                key,
+                                nonce,
+                                sha256,
+                                mime,
+                                size,
+                                expires_at_ms,
+                            } = &payload
+                            {
+                                // Already expired by the time it arrived. Do
+                                // not write the key down at all -- the point of
+                                // the expiry is that the key stops existing.
+                                if *expires_at_ms > envelope.server_timestamp_ms {
+                                    ctx.store.insert_story(&nexo_store::StoredStory {
+                                        // The server's id is not on the
+                                        // envelope, so the object key stands in
+                                        // as the identity until a listing
+                                        // reconciles it.
+                                        id: story_id_from(s3_key),
+                                        author_handle: envelope.sender_device_id.clone(),
+                                        s3_key: s3_key.clone(),
+                                        enc_key: key.clone(),
+                                        nonce: nonce.clone(),
+                                        sha256: sha256.clone(),
+                                        mime: mime.clone(),
+                                        size: *size as i64,
+                                        created_at_ms: envelope.server_timestamp_ms,
+                                        expires_at_ms: *expires_at_ms,
+                                    })?;
+                                }
+                                // Like `Rename`: state elsewhere, no bubble.
+                                continue;
+                            }
+                            if let Payload::Retract { target } | Payload::Edit { target, .. } =
+                                &payload
+                            {
+                                apply_revision(
+                                    ctx,
+                                    &id,
+                                    *target,
+                                    &payload,
+                                    &envelope.sender_device_id,
+                                    envelope.server_timestamp_ms,
+                                )?;
+                                // Like `Rename`: shared state, no bubble.
+                                continue;
+                            }
+                            if let Payload::Reaction { target, emoji, on } = &payload {
+                                // Checked here because nothing else can: the
+                                // server never read this payload, so the
+                                // receiver is the only place the rule can be
+                                // applied. An unacceptable emoji is dropped
+                                // rather than stored -- it would be rendered
+                                // as-is in a pill.
+                                if nexo_protocol::is_reaction_emoji(emoji) {
+                                    ctx.store.set_reaction(
+                                        &id,
+                                        &target.to_string(),
+                                        // Whoever sent the envelope is the
+                                        // reactor, and MLS authenticated them.
+                                        &envelope.sender_device_id,
+                                        emoji,
+                                        *on,
+                                        envelope.server_timestamp_ms,
+                                    )?;
+                                }
+                                // Like `Rename`: it changes shared state and
+                                // draws no bubble. A reaction to a message
+                                // this device never received is kept anyway --
+                                // there is no foreign key, and it lights up if
+                                // the message turns up later.
+                                continue;
+                            }
                             if matches!(payload, Payload::GroupAvatar { .. }) {
                                 // The payload is kept, not the picture: it
                                 // holds the key, and the bytes are fetched when
@@ -1230,6 +1304,231 @@ pub fn rename<T: Transport>(
     Ok(())
 }
 
+/// React to a message, or take the reaction back.
+///
+/// Sent as an ordinary encrypted payload, the way `rename` is, and applied
+/// locally only after the delivery service has accepted it — the same ordering
+/// rule as everywhere else in this module. There is no reaction endpoint and
+/// there must not be one: an emoji is content, and rule 4 says the server
+/// never holds content.
+///
+/// The target is the name inside the message's own ciphertext, not its
+/// envelope id, so a reaction can address a message that is still in an
+/// outbox.
+pub fn react<T: Transport>(
+    ctx: &Context<'_, T>,
+    conversation_id: ConversationId,
+    target: uuid::Uuid,
+    emoji: &str,
+    on: bool,
+) -> Result<(), ConversationError> {
+    // Checked before it is sent as well as when it arrives. The server cannot
+    // do it for us -- it never reads the payload -- so both ends check, and
+    // this end is the one that can tell the person why.
+    if !nexo_protocol::is_reaction_emoji(emoji) {
+        return Err(ConversationError::Transport(TransportError::Rejected(
+            "That is not an emoji.".into(),
+        )));
+    }
+
+    let id = conversation_id.to_string();
+    let payload = Payload::Reaction {
+        target,
+        emoji: emoji.to_string(),
+        on,
+    };
+
+    let mut conversation = Conversation::load(ctx.provider, conversation_id, now_ms())?
+        .ok_or(ConversationError::NotAMember)?;
+    let ciphertext = conversation.encrypt(ctx.provider, ctx.signer, &payload.encode())?;
+
+    ctx.transport.send(
+        &id,
+        &to_hex(&ciphertext),
+        conversation.epoch() as i64,
+        false,
+        &outbox::new_message_id(),
+    )?;
+
+    // Ours carries this device's real id, not NULL -- see the schema-13
+    // migration for why that matters to `ON CONFLICT`.
+    let me = ctx
+        .store
+        .account()?
+        .map(|a| a.device_id)
+        .unwrap_or_default();
+    ctx.store
+        .set_reaction(&id, &target.to_string(), &me, emoji, on, now_ms())?;
+    mls_state::save(ctx.provider, ctx.store)?;
+    Ok(())
+}
+
+/// Send a payload that changes state and draws no bubble.
+///
+/// `Rename`, `Reaction`, `Retract`, `Edit` and `Story` all do the same three
+/// things: load the group, encrypt, send. Extracted so a fifth one does not
+/// mean a fifth copy of the ordering.
+pub fn send_payload<T: Transport>(
+    ctx: &Context<'_, T>,
+    conversation_id: ConversationId,
+    payload: &Payload,
+    now_ms_value: i64,
+) -> Result<(), ConversationError> {
+    let _ = now_ms_value;
+    let mut conversation = Conversation::load(ctx.provider, conversation_id, now_ms())?
+        .ok_or(ConversationError::NotAMember)?;
+    let ciphertext = conversation.encrypt(ctx.provider, ctx.signer, &payload.encode())?;
+    ctx.transport.send(
+        &conversation_id.to_string(),
+        &to_hex(&ciphertext),
+        conversation.epoch() as i64,
+        false,
+        &outbox::new_message_id(),
+    )?;
+    mls_state::save(ctx.provider, ctx.store)?;
+    Ok(())
+}
+
+/// Apply an arriving edit or retraction, if it is allowed to be applied.
+///
+/// Two checks, and the order is deliberate.
+///
+/// **Who.** The envelope carrying the change must come from the same device
+/// that sent the message being changed. MLS authenticates the sender, so this
+/// is enforceable rather than advisory — and without it any member of a group
+/// could empty anybody else's messages. This is the security check; the window
+/// below is not.
+///
+/// **When.** Both timestamps are the server's — the one on the target and the
+/// one on this envelope — so neither is a clock the sender controls. The
+/// receiver allows a minute more than the sender takes, for the reason set out
+/// in `nexo_protocol::window`.
+///
+/// A change that fails either check is dropped silently. There is nobody to
+/// report it to: the sender is not listening for a refusal, and a warning in
+/// the conversation would tell everyone that somebody tried something.
+fn apply_revision<T: Transport>(
+    ctx: &Context<'_, T>,
+    conversation_id: &str,
+    target: uuid::Uuid,
+    payload: &Payload,
+    from_device: &str,
+    change_sent_at_ms: i64,
+) -> Result<(), ConversationError> {
+    let name = target.to_string();
+    let Some((_, sender, target_sent_at_ms)) =
+        ctx.store.message_by_client_id(conversation_id, &name)?
+    else {
+        // A message this device never received. Nothing to change, and nothing
+        // to remember: unlike a reaction, an edit to an unknown message has no
+        // meaning to hold on to.
+        return Ok(());
+    };
+
+    // `None` means the message is ours. Nobody else may change it, and an
+    // arriving change never can be ours -- our own envelopes are skipped
+    // before this point.
+    let Some(owner) = sender else {
+        tracing::warn!(
+            conversation_id,
+            "a device tried to change one of our own messages"
+        );
+        return Ok(());
+    };
+    if owner != from_device {
+        tracing::warn!(
+            conversation_id,
+            "a device tried to change a message it did not send"
+        );
+        return Ok(());
+    }
+
+    if !nexo_protocol::window::receiver_may_apply(target_sent_at_ms, change_sent_at_ms) {
+        return Ok(());
+    }
+
+    match payload {
+        Payload::Retract { .. } => {
+            ctx.store
+                .retract_message(conversation_id, &name, change_sent_at_ms)?
+        }
+        Payload::Edit {
+            body, edited_at_ms, ..
+        } => ctx
+            .store
+            .edit_message(conversation_id, &name, body, *edited_at_ms)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Take back one of our own messages, or change what it says.
+///
+/// Both are the same act with different content, so they share a path. What
+/// goes out is a request: a well-behaved Nexo applies it, and a modified one
+/// need not. `docs/THREAT-MODEL.md` says so, and so must the UI.
+///
+/// The ten minutes checked here are a courtesy — a modified client sends
+/// whenever it likes. The check that has teeth is on the receiving side, and
+/// it is about *who*, not *when*.
+pub fn revise<T: Transport>(
+    ctx: &Context<'_, T>,
+    conversation_id: ConversationId,
+    target: uuid::Uuid,
+    body: Option<&str>,
+    now_ms_value: i64,
+) -> Result<(), ConversationError> {
+    let id = conversation_id.to_string();
+    let name = target.to_string();
+
+    let (_, sender, sent_at_ms) = ctx
+        .store
+        .message_by_client_id(&id, &name)?
+        .ok_or(ConversationError::NotAMember)?;
+
+    // Ours are stored with no sender: MLS will not let a sender decrypt its
+    // own ciphertext, so that absence is the signal. Anything else is somebody
+    // else's message and not ours to change.
+    if sender.is_some() {
+        return Err(ConversationError::Transport(TransportError::Rejected(
+            "That is not your message.".into(),
+        )));
+    }
+    if !nexo_protocol::window::sender_may_change(sent_at_ms, now_ms_value) {
+        return Err(ConversationError::Transport(TransportError::Rejected(
+            "That message is too old to change.".into(),
+        )));
+    }
+
+    let payload = match body {
+        Some(text) => Payload::Edit {
+            target,
+            body: text.to_string(),
+            edited_at_ms: now_ms_value,
+        },
+        None => Payload::Retract { target },
+    };
+
+    let mut conversation = Conversation::load(ctx.provider, conversation_id, now_ms())?
+        .ok_or(ConversationError::NotAMember)?;
+    let ciphertext = conversation.encrypt(ctx.provider, ctx.signer, &payload.encode())?;
+
+    ctx.transport.send(
+        &id,
+        &to_hex(&ciphertext),
+        conversation.epoch() as i64,
+        false,
+        &outbox::new_message_id(),
+    )?;
+
+    match body {
+        Some(text) => ctx.store.edit_message(&id, &name, text, now_ms_value)?,
+        None => ctx.store.retract_message(&id, &name, now_ms_value)?,
+    }
+    mls_state::save(ctx.provider, ctx.store)?;
+    Ok(())
+}
+
 /// Sets the conversation's picture, for everyone in it.
 ///
 /// The bytes are encrypted before they are uploaded and the key travels inside
@@ -1318,7 +1617,7 @@ pub fn send_attachment<T: Transport>(
     mime: &str,
     contents: &[u8],
     body: Option<&str>,
-) -> Result<i64, ConversationError> {
+) -> Result<Sent, ConversationError> {
     let sealed = nexo_crypto::attachment::encrypt(contents)?;
 
     let id = conversation_id.to_string();
@@ -1368,7 +1667,15 @@ pub fn send_attachment<T: Transport>(
     })?;
     mls_state::save(ctx.provider, ctx.store)?;
 
-    Ok(accepted.envelope_id)
+    // The same shape `send_message` returns, and for the same reason: the
+    // payload was given a name a moment ago, and a caller that only got the
+    // envelope id would have to report `None` for a message that plainly has
+    // one -- which would quietly withhold reacting, editing and taking back
+    // from every attachment until the next reload.
+    Ok(Sent::Delivered {
+        envelope_id: accepted.envelope_id,
+        client_id,
+    })
 }
 
 /// Downloads and decrypts the attachment on a stored message.
@@ -1467,6 +1774,23 @@ pub fn safety_number(
     }
     let number = nexo_crypto::identity::SafetyNumber::new(&keys[0], &keys[1])?;
     Ok(Some(number.to_display_string()))
+}
+
+/// A stable local id for a story, from its object key.
+///
+/// The envelope does not carry the server's id — the author had it, the
+/// recipients do not — so the key stands in. It is unique by construction
+/// (`upload_url` mints it) and stable, which is all the local table needs to
+/// avoid storing the same story twice when it arrives down two conversations.
+fn story_id_from(s3_key: &str) -> i64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in s3_key.as_bytes() {
+        h ^= *byte as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    // Positive, because the column is a rowid alias and negative ids are legal
+    // but confusing to read in a log.
+    (h >> 1) as i64
 }
 
 fn now_ms() -> i64 {

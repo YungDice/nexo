@@ -299,6 +299,12 @@ pub struct CreateConversationRequest {
     pub conversation_id: Uuid,
     /// Handles of the other members. The caller is added automatically.
     pub members: Vec<String>,
+    /// An invitation secret, when reaching somebody private.
+    ///
+    /// Absent for a public account and for somebody already in touch. Checked
+    /// against a hash — the secret itself is never stored.
+    #[serde(default)]
+    pub invite: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -369,6 +375,21 @@ async fn create_conversation(
             .await?
             .ok_or(DeliveryError::NotFound("user"))?;
         if crate::blocks::blocked_between(&state.db, caller.user_id, other.id).await? {
+            return Err(DeliveryError::Refused);
+        }
+        // The other half of "private". Hiding an account from search while
+        // leaving it writable would be the switch `profiles.rs` refused to
+        // add: one that promises privacy it cannot keep. The same answer is
+        // given whether the account is private or the invitation is spent, so
+        // this does not become a way to learn who is private.
+        if !crate::meet::may_reach(
+            &state.db,
+            caller.user_id,
+            other.id,
+            request.invite.as_deref(),
+        )
+        .await?
+        {
             return Err(DeliveryError::Refused);
         }
         member_ids.push(other.id);

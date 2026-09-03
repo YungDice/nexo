@@ -3,7 +3,7 @@ import { fileSize, relativeTime, safetyNumber } from "../../lib/format";
 import { confirm, notify, pickSavePath } from "../../lib/native";
 import { asConversationError, saveAttachmentTo } from "../../lib/conversations";
 import { fieldFor, fileTone } from "../../lib/palette";
-import type { Attachment, Conversation } from "../../lib/types";
+import type { Attachment, Conversation, Message } from "../../lib/types";
 import { IconButton } from "../../components/ui/Button";
 import { Icon } from "../../components/ui/Icon";
 import { Panel } from "../../components/ui/Surface";
@@ -22,12 +22,19 @@ export function ContextPanel({
   conversation,
   now,
   onRefresh,
+  messages = [],
 }: {
   conversation: Conversation;
   now: Date;
   /// Re-reads conversations after something changed their stored state.
   onRefresh: () => Promise<void>;
+  /// The open conversation, so pinned messages can be listed from it.
+  messages?: Message[];
 }) {
+  // Pinned on this device, newest first. Read from what is already loaded
+  // rather than fetched: the list is the same messages, and a second source
+  // would be a second thing to keep in step.
+  const pinned = messages.filter((m) => m.pinned).reverse();
   // Attachments live inside the messages in the encrypted store and nothing
   // indexes them per conversation yet, so there is nothing to list. Empty is
   // the honest showing; the sections below already say so.
@@ -42,6 +49,28 @@ export function ContextPanel({
       className="flex w-[280px] shrink-0 flex-col border-l border-[var(--hairline)]"
     >
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-4 py-5">
+        {pinned.length > 0 ? (
+          <section className="space-y-3">
+            {/* "on this device" is not a nicety. A shared pin has no
+                enforceable cap -- the server may not read a payload, so it
+                cannot count -- so claiming everyone sees this would be a
+                promise nothing here can keep. */}
+            <SectionHead label="Pinned on this device" onSeeAll={false} />
+            <ul className="space-y-2">
+              {pinned.map((message) => (
+                <li
+                  key={message.id}
+                  className="rounded-control bg-surface-2 px-3 py-2"
+                >
+                  <p className="text-text-body line-clamp-3 text-[12px]">
+                    {message.body || "(no text)"}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
         <section className="space-y-3">
           <SectionHead
             label="Shared media"

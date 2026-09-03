@@ -35,7 +35,7 @@ pub type StoredIdentity = (Zeroizing<Vec<u8>>, Vec<u8>);
 /// The schema version this build writes and expects.
 ///
 /// One constant, so a migration and the test that checks it cannot disagree.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// The file name the store always uses, under the app data directory.
 pub const STORE_FILE_NAME: &str = "store.db";
@@ -492,15 +492,176 @@ impl EncryptedStore {
             //
             // The outbox carries it too, so a queued message can be named
             // before the server has ever seen it.
+            self.add_column("messages", "client_id", "TEXT")?;
+            self.add_column("outbox", "client_id", "TEXT")?;
             self.connection.execute_batch(
                 "BEGIN;
-                 ALTER TABLE messages ADD COLUMN client_id TEXT;
-                 ALTER TABLE outbox   ADD COLUMN client_id TEXT;
                  CREATE UNIQUE INDEX IF NOT EXISTS messages_client_id_idx
                      ON messages (client_id) WHERE client_id IS NOT NULL;
                  PRAGMA user_version = 11;
                  COMMIT;",
             )?;
+        }
+
+        if version < 12 {
+            // Pinned messages, and they are pinned **on this device only**.
+            //
+            // Sharing them was the first design and it was wrong. The cap is
+            // what breaks: the feed can hold `MAX_PINNED = 3` because it counts
+            // inside one transaction against one database, and a conversation
+            // has no such place -- the server may not read the payload, so it
+            // cannot count. Two people pinning three each make six, with no
+            // rule saying which three win. `Rename` gets away with "the later
+            // one wins" because it settles a single value; a bounded *set* has
+            // no such answer.
+            //
+            // And a shared pin outlives whoever made it. Somebody removed from
+            // a group could never unpin theirs, and nobody else would be
+            // allowed to.
+            //
+            // Keyed by `envelope_id`, not by the payload's name: this table
+            // never leaves the machine, and a message still in the outbox has
+            // nothing worth pinning yet.
+            //
+            // The seam stays open. `Payload` is `#[non_exhaustive]`, so a
+            // shared variant later is purely additive -- and an older build
+            // meeting it now says "this needs a newer version of Nexo" rather
+            // than drawing JSON, which is what wave 1 bought.
+            self.connection.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS pinned_messages (
+                     conversation_id TEXT    NOT NULL,
+                     envelope_id     INTEGER NOT NULL,
+                     pinned_at_ms    INTEGER NOT NULL,
+                     PRIMARY KEY (conversation_id, envelope_id)
+                 );
+                 PRAGMA user_version = 12;
+                 COMMIT;",
+            )?;
+        }
+
+        if version < 13 {
+            // Reactions, keyed by the name inside the ciphertext.
+            //
+            // Two choices here are deliberate and neither is obvious.
+            //
+            // **`reactor_device_id` is NOT NULL and carries the real device id
+            // even for our own reactions** — against the convention in
+            // `messages`, where NULL means "ours". SQLite permits NULL in a
+            // primary-key column of a rowid table and treats every NULL as
+            // distinct, so `ON CONFLICT DO NOTHING` would quietly fail to
+            // match on our own rows and a second tap of the same emoji would
+            // insert a second one. "Mine" is decided against `account()`
+            // instead, which costs a lookup and cannot silently duplicate.
+            //
+            // **No foreign key to `messages`.** `PRAGMA foreign_keys = ON` is
+            // set, so a declared reference would be enforced — and would
+            // refuse a reaction whose target this installation never received,
+            // which happens whenever somebody reacts to a message that arrived
+            // before this device joined. An orphaned reaction costs a row and
+            // lights up if the message turns up later.
+            self.connection.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS message_reactions (
+                     message_client_id TEXT    NOT NULL,
+                     conversation_id   TEXT    NOT NULL,
+                     reactor_device_id TEXT    NOT NULL,
+                     emoji             TEXT    NOT NULL,
+                     reacted_at_ms     INTEGER NOT NULL,
+                     PRIMARY KEY (message_client_id, reactor_device_id, emoji)
+                 );
+                 CREATE INDEX IF NOT EXISTS message_reactions_conversation_idx
+                     ON message_reactions (conversation_id);
+                 PRAGMA user_version = 13;
+                 COMMIT;",
+            )?;
+        }
+
+        if version < 14 {
+            // Taking a message back, and changing one.
+            //
+            // A retracted message is **emptied, not deleted**, and the
+            // difference matters twice. `envelope_id` is the sync cursor's key
+            // and the FTS rowid, so a hole in the sequence is indistinguishable
+            // from a message that never arrived — the next sync would try to
+            // fetch it again. And the row is what the conversation is ordered
+            // by: removing it would silently close the gap where something
+            // used to be, which is not what "taken back" looks like to the
+            // people who saw it.
+            //
+            // Emptying `body` is what withdraws the terms from the search
+            // index: the existing UPDATE trigger does it, so nothing here has
+            // to know that FTS exists.
+            //
+            // `edited_at_ms` is the sender's clock and is shown, not judged.
+            // What decides whether a change is in time is the pair of server
+            // timestamps -- see `nexo_protocol::window`.
+            self.add_column("messages", "retracted_at_ms", "INTEGER")?;
+            self.add_column("messages", "edited_at_ms", "INTEGER")?;
+            self.connection.execute_batch("PRAGMA user_version = 14;")?;
+        }
+
+        if version < 15 {
+            // Stories, and the keys that open them.
+            //
+            // This table is the layer that actually makes a story disappear.
+            // The server refuses to serve an expired one and the object store
+            // eventually drops the bytes, but **the key lives here**, and
+            // ciphertext without its key is nothing. So every read purges what
+            // has expired rather than filtering it: filtering would leave the
+            // key on the disk of somebody who was promised it would go.
+            //
+            // The rate limiter tidies up the same way -- as a side effect of
+            // being asked something, never on a timer. There is no background
+            // work in this app either.
+            self.connection.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS stories (
+                     id            INTEGER PRIMARY KEY,
+                     author_handle TEXT    NOT NULL,
+                     s3_key        TEXT    NOT NULL,
+                     enc_key       TEXT    NOT NULL,
+                     nonce         TEXT    NOT NULL,
+                     sha256        TEXT    NOT NULL,
+                     mime          TEXT    NOT NULL,
+                     size          INTEGER NOT NULL,
+                     created_at_ms INTEGER NOT NULL,
+                     expires_at_ms INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS stories_expiry_idx
+                     ON stories (expires_at_ms);
+                 PRAGMA user_version = 15;
+                 COMMIT;",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Whether a column already exists.
+    ///
+    /// SQLite has no `ADD COLUMN IF NOT EXISTS`, and every other step in the
+    /// ladder is written to be safe to re-run. This gives the `ALTER`s the same
+    /// property: a database that already has the column is left alone instead
+    /// of failing the whole migration with `duplicate column name`.
+    fn has_column(&self, table: &str, column: &str) -> Result<bool, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Adds a column unless it is already there.
+    fn add_column(&self, table: &str, column: &str, decl: &str) -> Result<(), StoreError> {
+        if !self.has_column(table, column)? {
+            self.connection
+                .execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
         }
         Ok(())
     }
@@ -852,9 +1013,19 @@ impl EncryptedStore {
 
     /// Messages in a conversation, oldest first.
     pub fn messages(&self, conversation_id: &str) -> Result<Vec<StoredMessage>, StoreError> {
+        // The pin is joined in rather than fetched separately: a second query
+        // and a merge in the caller would be one more place for the two to
+        // disagree about what is pinned.
         let mut statement = self.connection.prepare(
-            "SELECT envelope_id, sender_device_id, body, payload, sent_at_ms, client_id
-             FROM messages WHERE conversation_id = ?1 ORDER BY envelope_id",
+            "SELECT m.envelope_id, m.sender_device_id, m.body, m.payload, m.sent_at_ms,
+                    m.client_id, m.retracted_at_ms, m.edited_at_ms,
+                    p.envelope_id IS NOT NULL AS pinned
+             FROM messages m
+             LEFT JOIN pinned_messages p
+                 ON p.conversation_id = m.conversation_id
+                AND p.envelope_id = m.envelope_id
+             WHERE m.conversation_id = ?1
+             ORDER BY m.envelope_id",
         )?;
         let rows = statement.query_map([conversation_id], |row| {
             Ok(StoredMessage {
@@ -864,6 +1035,317 @@ impl EncryptedStore {
                 payload: row.get(3)?,
                 sent_at_ms: row.get(4)?,
                 client_id: row.get(5)?,
+                retracted_at_ms: row.get(6)?,
+                edited_at_ms: row.get(7)?,
+                pinned: row.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Remember a story and the key that opens it.
+    ///
+    /// Keyed by the server's id, so the same story arriving down two
+    /// conversations is one row rather than two.
+    pub fn insert_story(&self, story: &StoredStory) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO stories
+                 (id, author_handle, s3_key, enc_key, nonce, sha256, mime, size,
+                  created_at_ms, expires_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (id) DO NOTHING",
+            rusqlite::params![
+                story.id,
+                story.author_handle,
+                story.s3_key,
+                story.enc_key,
+                story.nonce,
+                story.sha256,
+                story.mime,
+                story.size,
+                story.created_at_ms,
+                story.expires_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Live stories, and — as a side effect — the end of the expired ones.
+    ///
+    /// The purge is the point, not housekeeping. Filtering expired stories out
+    /// of a read would leave their keys on disk, and a key is the whole of what
+    /// somebody was promised would go: the ciphertext is meaningless without
+    /// it. Doing it here means it happens whenever anybody looks, offline
+    /// included, with no scheduled work anywhere.
+    pub fn live_stories(&self, now_ms: i64) -> Result<Vec<StoredStory>, StoreError> {
+        self.connection
+            .execute("DELETE FROM stories WHERE expires_at_ms <= ?1", [now_ms])?;
+
+        let mut statement = self.connection.prepare(
+            "SELECT id, author_handle, s3_key, enc_key, nonce, sha256, mime, size,
+                    created_at_ms, expires_at_ms
+             FROM stories
+             ORDER BY created_at_ms DESC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(StoredStory {
+                id: row.get(0)?,
+                author_handle: row.get(1)?,
+                s3_key: row.get(2)?,
+                enc_key: row.get(3)?,
+                nonce: row.get(4)?,
+                sha256: row.get(5)?,
+                mime: row.get(6)?,
+                size: row.get(7)?,
+                created_at_ms: row.get(8)?,
+                expires_at_ms: row.get(9)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The message a name refers to, if this device has it.
+    ///
+    /// Returns the sender and the send time, which is exactly what deciding an
+    /// edit or a retraction needs: who is allowed, and whether it is in time.
+    pub fn message_by_client_id(
+        &self,
+        conversation_id: &str,
+        client_id: &str,
+    ) -> Result<Option<(i64, Option<String>, i64)>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT envelope_id, sender_device_id, sent_at_ms
+                 FROM messages WHERE conversation_id = ?1 AND client_id = ?2",
+                rusqlite::params![conversation_id, client_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?)
+    }
+
+    /// Empty a message in place, leaving the row where it was.
+    ///
+    /// Not a delete — see the schema-14 migration. The row stays because
+    /// `envelope_id` is the sync cursor's key and the FTS rowid, and because
+    /// the gap is part of what happened. Emptying `body` is what takes the
+    /// message out of the search index, through the trigger that already
+    /// exists.
+    pub fn retract_message(
+        &self,
+        conversation_id: &str,
+        client_id: &str,
+        retracted_at_ms: i64,
+    ) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE messages
+             SET body = '', payload = NULL, retracted_at_ms = ?3
+             WHERE conversation_id = ?1 AND client_id = ?2",
+            rusqlite::params![conversation_id, client_id, retracted_at_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Replace what a message says.
+    ///
+    /// `edited_at_ms` is the sender's own clock, kept so the bubble can carry a
+    /// quiet mark. Nothing decides anything by it.
+    pub fn edit_message(
+        &self,
+        conversation_id: &str,
+        client_id: &str,
+        body: &str,
+        edited_at_ms: i64,
+    ) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE messages
+             SET body = ?3, edited_at_ms = ?4
+             WHERE conversation_id = ?1 AND client_id = ?2
+               AND retracted_at_ms IS NULL",
+            rusqlite::params![conversation_id, client_id, body, edited_at_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Record or withdraw a reaction.
+    ///
+    /// Idempotent in both directions: reacting twice with the same emoji is
+    /// one reaction, and withdrawing one that was never there is not an error.
+    /// Both are things a double tap produces.
+    pub fn set_reaction(
+        &self,
+        conversation_id: &str,
+        message_client_id: &str,
+        reactor_device_id: &str,
+        emoji: &str,
+        on: bool,
+        now_ms: i64,
+    ) -> Result<(), StoreError> {
+        if on {
+            self.connection.execute(
+                "INSERT INTO message_reactions
+                     (message_client_id, conversation_id, reactor_device_id, emoji, reacted_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (message_client_id, reactor_device_id, emoji) DO NOTHING",
+                rusqlite::params![
+                    message_client_id,
+                    conversation_id,
+                    reactor_device_id,
+                    emoji,
+                    now_ms
+                ],
+            )?;
+        } else {
+            self.connection.execute(
+                "DELETE FROM message_reactions
+                 WHERE message_client_id = ?1 AND reactor_device_id = ?2 AND emoji = ?3",
+                rusqlite::params![message_client_id, reactor_device_id, emoji],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Every reaction in a conversation, grouped per message.
+    ///
+    /// The shape is `posts.rs`'s — emoji, count, and whether it is ours — so
+    /// the reaction pills the feed already draws are reusable unchanged.
+    /// `mine` is decided against this account's device id rather than against
+    /// a NULL, for the reason in the schema-13 migration.
+    pub fn reactions(
+        &self,
+        conversation_id: &str,
+        my_device_id: Option<&str>,
+    ) -> Result<HashMap<String, Vec<StoredReaction>>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT message_client_id, emoji, COUNT(*) AS n,
+                    MAX(reactor_device_id = ?2) AS mine
+             FROM message_reactions
+             WHERE conversation_id = ?1
+             GROUP BY message_client_id, emoji
+             ORDER BY n DESC, emoji",
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![conversation_id, my_device_id.unwrap_or("")],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    StoredReaction {
+                        emoji: row.get(1)?,
+                        count: row.get(2)?,
+                        mine: row.get::<_, i64>(3)? != 0,
+                    },
+                ))
+            },
+        )?;
+        let mut out: HashMap<String, Vec<StoredReaction>> = HashMap::new();
+        for row in rows {
+            let (target, reaction) = row?;
+            out.entry(target).or_default().push(reaction);
+        }
+        Ok(out)
+    }
+
+    /// Remove a message from this device, for good.
+    ///
+    /// The row goes, rather than gaining a hidden flag, and that single choice
+    /// answers four questions at once: it leaves [`messages`](Self::messages),
+    /// it leaves the FTS index through the existing delete trigger, it leaves
+    /// the conversation list's preview, and it leaves the attachment strip. A
+    /// flag would have to be taught to each of those separately, and the first
+    /// one anybody forgot would surface a message the person believed gone.
+    ///
+    /// It cannot come back, either: `set_conversation_cursor` never moves a
+    /// cursor backwards, so the sync that would re-fetch it never asks.
+    ///
+    /// If the message is still queued it is dropped from the outbox in the
+    /// same transaction and never sent at all — which is the one case where
+    /// "delete for me" and "delete for everyone" are the same act.
+    pub fn delete_message(
+        &self,
+        conversation_id: &str,
+        envelope_id: i64,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        // The name first, while the row still exists, so the outbox can be
+        // cleared by the same name the message answers to.
+        let client_id: Option<String> = transaction
+            .query_row(
+                "SELECT client_id FROM messages WHERE conversation_id = ?1 AND envelope_id = ?2",
+                rusqlite::params![conversation_id, envelope_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+
+        transaction.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1 AND envelope_id = ?2",
+            rusqlite::params![conversation_id, envelope_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM pinned_messages WHERE conversation_id = ?1 AND envelope_id = ?2",
+            rusqlite::params![conversation_id, envelope_id],
+        )?;
+        if let Some(name) = client_id {
+            transaction.execute(
+                "DELETE FROM outbox WHERE conversation_id = ?1 AND client_id = ?2",
+                rusqlite::params![conversation_id, name],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Pin or unpin a message, on this device.
+    ///
+    /// Nothing is sent. See the schema-12 migration for why a shared pin was
+    /// rejected: the cap cannot be enforced where no single party may count.
+    pub fn set_pinned(
+        &self,
+        conversation_id: &str,
+        envelope_id: i64,
+        pinned: bool,
+        now_ms: i64,
+    ) -> Result<(), StoreError> {
+        if pinned {
+            self.connection.execute(
+                "INSERT INTO pinned_messages (conversation_id, envelope_id, pinned_at_ms)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT (conversation_id, envelope_id) DO NOTHING",
+                rusqlite::params![conversation_id, envelope_id, now_ms],
+            )?;
+        } else {
+            self.connection.execute(
+                "DELETE FROM pinned_messages
+                 WHERE conversation_id = ?1 AND envelope_id = ?2",
+                rusqlite::params![conversation_id, envelope_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// What is pinned in a conversation, newest pin first.
+    pub fn pinned_messages(&self, conversation_id: &str) -> Result<Vec<StoredMessage>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT m.envelope_id, m.sender_device_id, m.body, m.payload, m.sent_at_ms,
+                    m.client_id, m.retracted_at_ms, m.edited_at_ms
+             FROM pinned_messages p
+             JOIN messages m
+                 ON m.conversation_id = p.conversation_id
+                AND m.envelope_id = p.envelope_id
+             WHERE p.conversation_id = ?1
+             ORDER BY p.pinned_at_ms DESC",
+        )?;
+        let rows = statement.query_map([conversation_id], |row| {
+            Ok(StoredMessage {
+                envelope_id: row.get(0)?,
+                sender_device_id: row.get(1)?,
+                body: row.get(2)?,
+                payload: row.get(3)?,
+                sent_at_ms: row.get(4)?,
+                client_id: row.get(5)?,
+                retracted_at_ms: row.get(6)?,
+                edited_at_ms: row.get(7)?,
+                pinned: true,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1295,6 +1777,48 @@ pub struct SearchHit {
     pub outgoing: bool,
 }
 
+/// A story this device was given, and the key that opens it.
+///
+/// The key is here rather than anywhere else because it is the thing that has
+/// to be destroyed when the story expires — see `live_stories`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredStory {
+    /// The server's id.
+    pub id: i64,
+    /// Who posted it.
+    pub author_handle: String,
+    /// Where the ciphertext is, in the encrypted bucket.
+    pub s3_key: String,
+    /// The AES-256-GCM key, hex.
+    pub enc_key: String,
+    /// The nonce, hex.
+    pub nonce: String,
+    /// SHA-256 of the plaintext, hex.
+    pub sha256: String,
+    /// MIME type, sniffed from the bytes.
+    pub mime: String,
+    /// Plaintext size.
+    pub size: i64,
+    /// When it was posted.
+    pub created_at_ms: i64,
+    /// When it stops being available.
+    pub expires_at_ms: i64,
+}
+
+/// One emoji on a message, and how many used it.
+///
+/// The same shape `posts.rs` returns for a post, deliberately: the pills in
+/// the feed already render it and should not need a second version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredReaction {
+    /// The emoji itself.
+    pub emoji: String,
+    /// How many people used it.
+    pub count: i64,
+    /// Whether this account is one of them.
+    pub mine: bool,
+}
+
 /// One pin on the Meet&Greet map, as this device last fetched it.
 ///
 /// A cached copy of what the server returned, kept only so the tab opens on a
@@ -1399,6 +1923,19 @@ pub struct StoredMessage {
     /// `None` for everything sent before names existed. Nothing can refer to
     /// such a message, and the UI offers no action that would try.
     pub client_id: Option<String>,
+    /// When the sender took it back, if they did.
+    ///
+    /// The row survives a retraction — see the schema-14 migration — so this
+    /// is how a reader tells "emptied" from "never said anything".
+    pub retracted_at_ms: Option<i64>,
+    /// When the sender last changed it, by their own clock. Shown, not judged.
+    pub edited_at_ms: Option<i64>,
+    /// Pinned **on this device**.
+    ///
+    /// Local by design, not by omission — see the schema-12 migration. The UI
+    /// says "Pinned on this device" for the same reason: claiming it was
+    /// pinned for everyone would be a promise nothing here can keep.
+    pub pinned: bool,
 }
 
 /// One message waiting to be sent.
@@ -2003,6 +2540,411 @@ mod tests {
         let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
         assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
         assert!(store.cached_meet_pins().unwrap().is_empty());
+    }
+
+    /// Pinning is local, and the flag has to survive the join in `messages`.
+    #[test]
+    fn a_pin_is_visible_on_the_message_it_pins() {
+        let dir = TempDir::new("pin");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_message(&store, 1, "keep this");
+        a_message(&store, 2, "and this");
+
+        assert!(store.messages("c1").unwrap().iter().all(|m| !m.pinned));
+
+        store.set_pinned("c1", 2, true, 500).unwrap();
+
+        let rows = store.messages("c1").unwrap();
+        assert!(!rows[0].pinned, "1 was not pinned");
+        assert!(rows[1].pinned, "2 was");
+        assert_eq!(store.pinned_messages("c1").unwrap().len(), 1);
+
+        store.set_pinned("c1", 2, false, 600).unwrap();
+        assert!(store.pinned_messages("c1").unwrap().is_empty());
+    }
+
+    /// Pinning twice is not two pins, and unpinning what was never pinned is
+    /// not an error. Both are things a double tap produces.
+    #[test]
+    fn pinning_is_idempotent_in_both_directions() {
+        let dir = TempDir::new("pin-twice");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_message(&store, 1, "once");
+
+        store.set_pinned("c1", 1, true, 1).unwrap();
+        store.set_pinned("c1", 1, true, 2).unwrap();
+        assert_eq!(store.pinned_messages("c1").unwrap().len(), 1);
+
+        store.set_pinned("c1", 1, false, 3).unwrap();
+        store.set_pinned("c1", 1, false, 4).unwrap();
+        assert!(store.pinned_messages("c1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_deleted_message_is_gone_from_the_conversation() {
+        let dir = TempDir::new("delete");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_message(&store, 1, "keep");
+        a_message(&store, 2, "remove");
+
+        store.delete_message("c1", 2).unwrap();
+
+        let rows = store.messages("c1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].envelope_id, 1);
+    }
+
+    /// The reason the row is deleted rather than flagged.
+    ///
+    /// An external-content FTS table keeps no copy of the body, so the terms
+    /// are withdrawn by the delete trigger and by nothing else. A `hidden`
+    /// column would leave them in the index, and the message would go on
+    /// answering searches after the person believed it gone — which is the
+    /// quietest possible way to be wrong.
+    #[test]
+    fn a_deleted_message_leaves_the_search_index_too() {
+        let dir = TempDir::new("delete-fts");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_message(&store, 1, "pemmican");
+        assert_eq!(store.search_messages("pemmican", 10).unwrap().len(), 1);
+
+        store.delete_message("c1", 1).unwrap();
+
+        assert!(
+            store.search_messages("pemmican", 10).unwrap().is_empty(),
+            "a flag instead of a delete would have left this findable"
+        );
+    }
+
+    /// Deleting a pinned message must not leave the pin behind, pointing at
+    /// nothing.
+    #[test]
+    fn deleting_a_pinned_message_takes_the_pin_with_it() {
+        let dir = TempDir::new("delete-pinned");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_message(&store, 1, "pinned then deleted");
+        store.set_pinned("c1", 1, true, 1).unwrap();
+
+        store.delete_message("c1", 1).unwrap();
+
+        assert!(store.pinned_messages("c1").unwrap().is_empty());
+    }
+
+    /// Upgrading an existing store must gain the table without losing anything.
+    #[test]
+    fn a_store_from_before_pinning_gains_the_table() {
+        let dir = TempDir::new("pin-upgrade");
+        {
+            let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+            a_message(&store, 1, "written before pinning existed");
+            store
+                .connection()
+                .execute_batch("DROP TABLE pinned_messages; PRAGMA user_version = 11;")
+                .unwrap();
+        }
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        assert!(store.pinned_messages("c1").unwrap().is_empty());
+        assert_eq!(store.messages("c1").unwrap().len(), 1, "history survived");
+    }
+
+    #[test]
+    fn a_reaction_is_counted_and_marked_as_mine() {
+        let dir = TempDir::new("react");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+
+        store
+            .set_reaction("c1", "m1", "me", "\u{1F44D}", true, 1)
+            .unwrap();
+        store
+            .set_reaction("c1", "m1", "them", "\u{1F44D}", true, 2)
+            .unwrap();
+        store
+            .set_reaction("c1", "m1", "them", "\u{2764}", true, 3)
+            .unwrap();
+
+        let all = store.reactions("c1", Some("me")).unwrap();
+        let on_m1 = all.get("m1").expect("m1 has reactions");
+
+        let thumb = on_m1.iter().find(|r| r.emoji == "\u{1F44D}").unwrap();
+        assert_eq!(thumb.count, 2);
+        assert!(thumb.mine, "we used this one");
+
+        let heart = on_m1.iter().find(|r| r.emoji == "\u{2764}").unwrap();
+        assert_eq!(heart.count, 1);
+        assert!(!heart.mine, "we did not");
+    }
+
+    /// The reason `reactor_device_id` is NOT NULL and carries a real id.
+    ///
+    /// SQLite treats NULLs in a primary key as distinct, so if our own
+    /// reactions were stored with NULL the conflict clause would never match
+    /// and every repeated tap would add a row.
+    #[test]
+    fn reacting_twice_with_the_same_emoji_is_one_reaction() {
+        let dir = TempDir::new("react-twice");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+
+        store
+            .set_reaction("c1", "m1", "me", "\u{1F44D}", true, 1)
+            .unwrap();
+        store
+            .set_reaction("c1", "m1", "me", "\u{1F44D}", true, 2)
+            .unwrap();
+
+        let all = store.reactions("c1", Some("me")).unwrap();
+        assert_eq!(all["m1"][0].count, 1);
+    }
+
+    #[test]
+    fn a_reaction_can_be_taken_back_and_taking_back_nothing_is_fine() {
+        let dir = TempDir::new("react-off");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+
+        store
+            .set_reaction("c1", "m1", "me", "\u{1F44D}", true, 1)
+            .unwrap();
+        store
+            .set_reaction("c1", "m1", "me", "\u{1F44D}", false, 2)
+            .unwrap();
+        assert!(store.reactions("c1", Some("me")).unwrap().is_empty());
+
+        // Withdrawing one that was never there is a double tap, not an error.
+        store
+            .set_reaction("c1", "m1", "me", "\u{1F44D}", false, 3)
+            .unwrap();
+    }
+
+    /// A reaction whose target this installation never received is kept.
+    ///
+    /// This is why there is no foreign key: `PRAGMA foreign_keys = ON` is set,
+    /// so a declared reference would refuse the row outright — and somebody
+    /// reacting to a message that predates this device joining is ordinary.
+    #[test]
+    fn a_reaction_to_an_unknown_message_is_kept_rather_than_refused() {
+        let dir = TempDir::new("react-orphan");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+
+        store
+            .set_reaction("c1", "never-arrived", "them", "\u{1F44D}", true, 1)
+            .expect("an orphan reaction must be storable");
+
+        let all = store.reactions("c1", Some("me")).unwrap();
+        assert_eq!(all["never-arrived"][0].count, 1);
+    }
+
+    #[test]
+    fn a_store_from_before_reactions_gains_the_table() {
+        let dir = TempDir::new("react-upgrade");
+        {
+            let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+            a_message(&store, 1, "written before reactions existed");
+            store
+                .connection()
+                .execute_batch("DROP TABLE message_reactions; PRAGMA user_version = 12;")
+                .unwrap();
+        }
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        assert!(store.reactions("c1", None).unwrap().is_empty());
+        assert_eq!(store.messages("c1").unwrap().len(), 1, "history survived");
+    }
+
+    fn a_named_message(store: &EncryptedStore, id: i64, name: &str, body: &str) {
+        store
+            .insert(&NewMessage {
+                envelope_id: id,
+                conversation_id: "c1",
+                sender_device_id: None,
+                body,
+                payload: None,
+                sent_at_ms: 1_000 + id,
+                client_id: Some(name),
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_retracted_message_keeps_its_row_and_loses_its_words() {
+        let dir = TempDir::new("retract");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_named_message(&store, 1, "m1", "something regrettable");
+
+        store.retract_message("c1", "m1", 9_000).unwrap();
+
+        let rows = store.messages("c1").unwrap();
+        assert_eq!(rows.len(), 1, "the row stays: it is the cursor's key");
+        assert_eq!(rows[0].body, "");
+        assert_eq!(rows[0].retracted_at_ms, Some(9_000));
+    }
+
+    /// Emptying the body is what withdraws the terms, through the existing
+    /// UPDATE trigger. If it did not, a retracted message would still answer
+    /// searches — which is the same quiet wrongness a `hidden` flag would have
+    /// caused for deletion.
+    #[test]
+    fn a_retracted_message_leaves_the_search_index() {
+        let dir = TempDir::new("retract-fts");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_named_message(&store, 1, "m1", "quinoa");
+        assert_eq!(store.search_messages("quinoa", 10).unwrap().len(), 1);
+
+        store.retract_message("c1", "m1", 9_000).unwrap();
+
+        assert!(store.search_messages("quinoa", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_edit_replaces_the_words_and_is_findable_by_the_new_ones() {
+        let dir = TempDir::new("edit");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_named_message(&store, 1, "m1", "teh meeting is at five");
+
+        store
+            .edit_message("c1", "m1", "the meeting is at six", 9_000)
+            .unwrap();
+
+        let rows = store.messages("c1").unwrap();
+        assert_eq!(rows[0].body, "the meeting is at six");
+        assert_eq!(rows[0].edited_at_ms, Some(9_000));
+
+        assert_eq!(store.search_messages("six", 10).unwrap().len(), 1);
+        assert!(
+            store.search_messages("five", 10).unwrap().is_empty(),
+            "the old words go with the old body"
+        );
+    }
+
+    /// Editing something already taken back would put words back into a
+    /// message whose author withdrew it.
+    #[test]
+    fn a_retracted_message_cannot_be_edited_back_into_existence() {
+        let dir = TempDir::new("edit-retracted");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_named_message(&store, 1, "m1", "original");
+        store.retract_message("c1", "m1", 9_000).unwrap();
+
+        store
+            .edit_message("c1", "m1", "put it back", 9_500)
+            .unwrap();
+
+        assert_eq!(store.messages("c1").unwrap()[0].body, "");
+    }
+
+    #[test]
+    fn a_message_can_be_found_by_its_name() {
+        let dir = TempDir::new("by-name");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        a_named_message(&store, 7, "m7", "hello");
+
+        let (envelope_id, sender, sent_at) =
+            store.message_by_client_id("c1", "m7").unwrap().unwrap();
+        assert_eq!(envelope_id, 7);
+        assert!(sender.is_none(), "ours are stored with no sender");
+        assert_eq!(sent_at, 1_007);
+
+        assert!(store.message_by_client_id("c1", "nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_store_from_before_retraction_gains_the_columns() {
+        let dir = TempDir::new("retract-upgrade");
+        {
+            let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+            a_named_message(&store, 1, "m1", "written before retraction existed");
+        }
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        let rows = store.messages("c1").unwrap();
+        assert_eq!(rows.len(), 1, "history survived");
+        assert!(rows[0].retracted_at_ms.is_none());
+        assert!(rows[0].edited_at_ms.is_none());
+    }
+
+    fn a_story(id: i64, expires_at_ms: i64) -> StoredStory {
+        StoredStory {
+            id,
+            author_handle: "dice".into(),
+            s3_key: format!("enc/x/{id}"),
+            enc_key: "aa".repeat(32),
+            nonce: "bb".repeat(12),
+            sha256: "cc".repeat(32),
+            mime: "image/jpeg".into(),
+            size: 4096,
+            created_at_ms: 1_000,
+            expires_at_ms,
+        }
+    }
+
+    #[test]
+    fn a_story_round_trips_with_its_key() {
+        let dir = TempDir::new("story");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        store.insert_story(&a_story(1, 100_000)).unwrap();
+
+        let live = store.live_stories(50_000).unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].enc_key, "aa".repeat(32));
+    }
+
+    /// The same story arriving down two conversations is one story.
+    #[test]
+    fn a_story_delivered_twice_is_stored_once() {
+        let dir = TempDir::new("story-dup");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        store.insert_story(&a_story(1, 100_000)).unwrap();
+        store.insert_story(&a_story(1, 100_000)).unwrap();
+        assert_eq!(store.live_stories(50_000).unwrap().len(), 1);
+    }
+
+    /// The property the whole design rests on: reading removes the key, not
+    /// merely hides the story. Ciphertext without its key is nothing, and a
+    /// key left on disk is a promise broken quietly.
+    #[test]
+    fn reading_destroys_the_key_of_an_expired_story() {
+        let dir = TempDir::new("story-expire");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        store.insert_story(&a_story(1, 100_000)).unwrap();
+        store.insert_story(&a_story(2, 400_000)).unwrap();
+
+        let live = store.live_stories(200_000).unwrap();
+        assert_eq!(live.len(), 1, "the expired one is not returned");
+        assert_eq!(live[0].id, 2);
+
+        // And it is gone from the table, not merely filtered out of a read.
+        let left: i64 = store
+            .connection()
+            .query_row("SELECT count(*) FROM stories", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 1, "the expired row and its key were deleted");
+    }
+
+    #[test]
+    fn a_story_expires_at_its_boundary() {
+        let dir = TempDir::new("story-boundary");
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        store.insert_story(&a_story(1, 100_000)).unwrap();
+        assert!(
+            store.live_stories(100_000).unwrap().is_empty(),
+            "at the instant it expires it is over"
+        );
+    }
+
+    #[test]
+    fn a_store_from_before_stories_gains_the_table() {
+        let dir = TempDir::new("story-upgrade");
+        {
+            let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+            a_message(&store, 1, "written before stories existed");
+            store
+                .connection()
+                .execute_batch("DROP TABLE stories; PRAGMA user_version = 14;")
+                .unwrap();
+        }
+        let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        assert!(store.live_stories(1).unwrap().is_empty());
+        assert_eq!(store.messages("c1").unwrap().len(), 1, "history survived");
     }
 
     #[test]

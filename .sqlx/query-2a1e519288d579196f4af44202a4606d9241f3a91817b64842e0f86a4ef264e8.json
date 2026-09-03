@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.id, u.handle::TEXT AS \"handle!\",\n                (EXTRACT(EPOCH FROM s.created_at) * 1000)::BIGINT AS created_at_ms,\n                (EXTRACT(EPOCH FROM s.expires_at) * 1000)::BIGINT AS expires_at_ms\n         FROM stories s\n         JOIN users u ON u.id = s.author_id\n         WHERE s.expires_at > now()\n           AND NOT (s.author_id = ANY($2))\n           AND (\n             s.author_id = $1\n             OR EXISTS (\n               SELECT 1 FROM conversation_members m1\n               JOIN conversation_members m2 ON m1.conversation_id = m2.conversation_id\n               WHERE m1.user_id = $1 AND m2.user_id = s.author_id\n             )\n           )\n         ORDER BY s.created_at DESC\n         LIMIT 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "handle!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at_ms",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "expires_at_ms",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "2a1e519288d579196f4af44202a4606d9241f3a91817b64842e0f86a4ef264e8"
+}

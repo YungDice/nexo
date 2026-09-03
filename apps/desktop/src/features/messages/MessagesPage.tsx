@@ -85,7 +85,10 @@ export function MessagesPage({ now }: { now: Date }) {
             onClick={() => setDrawer(false)}
             aria-hidden="true"
           />
-          <div className="absolute inset-y-0 left-0 flex" style={{ zIndex: 200 }}>
+          <div
+            className="absolute inset-y-0 left-0 flex"
+            style={{ zIndex: 200 }}
+          >
             {list}
           </div>
         </>
@@ -109,13 +112,18 @@ export function MessagesPage({ now }: { now: Date }) {
           onSend={live.send}
           onSendFile={live.sendFile}
           onCompare={openContextPanel}
+          onChanged={() => void live.refresh()}
           onDismissKeyChange={async () => {
             await acknowledgeKeyChange(conversation.id);
             await live.refresh();
           }}
         />
       ) : (
-        <Panel tone="content" edge={false} className="flex flex-1 items-center justify-center">
+        <Panel
+          tone="content"
+          edge={false}
+          className="flex flex-1 items-center justify-center"
+        >
           <EmptyState
             icon="messages"
             title={live.loading ? "Loading" : "No conversation selected"}
@@ -129,7 +137,12 @@ export function MessagesPage({ now }: { now: Date }) {
       )}
 
       {showContext && conversation && !starting ? (
-        <ContextPanel conversation={conversation} now={now} onRefresh={live.refresh} />
+        <ContextPanel
+          conversation={conversation}
+          now={now}
+          onRefresh={live.refresh}
+          messages={live.messages}
+        />
       ) : null}
     </div>
   );
@@ -158,7 +171,8 @@ function StartConversation({
   const [error, setError] = useState<string | null>(null);
 
   const pending = handle.trim().toLowerCase();
-  const everyone = pending && !invited.includes(pending) ? [...invited, pending] : invited;
+  const everyone =
+    pending && !invited.includes(pending) ? [...invited, pending] : invited;
   const isGroup = everyone.length > 1;
 
   function addPending() {
@@ -192,7 +206,11 @@ function StartConversation({
   }
 
   return (
-    <Panel tone="content" edge={false} className="flex flex-1 items-center justify-center p-8">
+    <Panel
+      tone="content"
+      edge={false}
+      className="flex flex-1 items-center justify-center p-8"
+    >
       <form onSubmit={submit} className="w-full max-w-[340px]">
         <h2 className="text-text-hi font-display text-[19px] font-medium">
           {isGroup ? "Start a group" : "Start a conversation"}
@@ -266,8 +284,16 @@ function StartConversation({
         ) : null}
 
         <div className="mt-4 flex gap-2">
-          <Button type="submit" variant="primary" disabled={everyone.length === 0 || busy}>
-            {busy ? "Starting…" : isGroup ? `Start group (${everyone.length})` : "Start"}
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={everyone.length === 0 || busy}
+          >
+            {busy
+              ? "Starting…"
+              : isGroup
+                ? `Start group (${everyone.length})`
+                : "Start"}
           </Button>
           <Button type="button" onClick={onCancel}>
             Cancel
@@ -287,6 +313,7 @@ function ChatPane({
   onSendFile,
   onCompare,
   onDismissKeyChange,
+  onChanged,
 }: {
   conversation: Conversation;
   messages: Message[];
@@ -298,6 +325,8 @@ function ChatPane({
   onCompare: () => void;
   /// Clears the warning without claiming anything was verified.
   onDismissKeyChange: () => Promise<void>;
+  /// Pinning or a local delete changed the store; reload from it.
+  onChanged: () => void;
 }) {
   return (
     <Panel tone="content" edge={false} className="flex min-w-0 flex-1 flex-col">
@@ -355,7 +384,12 @@ function ChatPane({
         </div>
       ) : (
         <>
-          <MessageList messages={messages} now={now} conversation={conversation} />
+          <MessageList
+            messages={messages}
+            now={now}
+            conversation={conversation}
+            onChanged={onChanged}
+          />
           <Composer
             onSend={(body, attachment) => {
               if (attachment) void onSendFile(attachment.path, body);

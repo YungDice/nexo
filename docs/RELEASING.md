@@ -15,6 +15,24 @@ new builds to every existing install. The updater checks minisign only —
 `plugins.updater.pubkey` in `tauri.conf.json` is the trust anchor, so the
 update *server* is untrusted by design.
 
+
+## Release order: wave 1 before the first new payload
+
+`Payload::decode` learned to fail closed on a `kind` it does not know, and that
+release has to reach people **before** any build sends one of the newer kinds —
+reactions, edits, retractions.
+
+An installation without it does not merely ignore what it cannot read: it
+renders the raw JSON as a chat bubble, as though somebody had typed it. That is
+a broken conversation on every machine that has not updated, caused by a message
+somebody else sent correctly.
+
+So: ship the build carrying the `Unsupported` variant, let it land, and only
+then ship one that sends a new variant. This is a property of the order, not of
+either release on its own, which is why it is written here rather than left in
+a commit message.
+
+
 ## One-time setup
 
 ### 1. The updater keypair

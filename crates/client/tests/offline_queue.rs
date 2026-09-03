@@ -257,6 +257,37 @@ impl Transport for CutNetwork {
 
     // Delegated like everything else: this file cuts the network for `send`
     // and nothing more, so the map behaves normally through it.
+    fn create_story(
+        &self,
+        key: &str,
+        size: i64,
+    ) -> Result<nexo_client::transport::StorySummary, TransportError> {
+        self.inner.create_story(key, size)
+    }
+    fn story_url(&self, id: i64) -> Result<String, TransportError> {
+        self.inner.story_url(id)
+    }
+
+    fn search_users(
+        &self,
+        term: &str,
+    ) -> Result<Vec<nexo_client::transport::SearchResult>, TransportError> {
+        self.inner.search_users(term)
+    }
+    fn create_invite(
+        &self,
+        label: Option<&str>,
+        days: i64,
+    ) -> Result<nexo_client::transport::MintedInvite, TransportError> {
+        self.inner.create_invite(label, days)
+    }
+    fn list_invites(&self) -> Result<Vec<nexo_client::transport::InviteSummary>, TransportError> {
+        self.inner.list_invites()
+    }
+    fn revoke_invite(&self, id: i64) -> Result<(), TransportError> {
+        self.inner.revoke_invite(id)
+    }
+
     fn report(
         &self,
         kind: &str,

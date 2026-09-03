@@ -31,6 +31,7 @@ pub mod profiles;
 pub mod reports;
 pub mod state;
 pub mod storage;
+pub mod stories;
 pub mod stream;
 
 pub use auth::TokenKeys;
@@ -56,6 +57,7 @@ pub fn router(state: AppState) -> Router {
         .merge(profiles::router())
         .merge(posts::router())
         .merge(reports::router())
+        .merge(stories::router())
         .merge(stream::router())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

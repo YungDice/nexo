@@ -11,7 +11,7 @@
 //! never by the client choosing what to render. A client-side filter over a
 //! full payload is not a privacy control, it is a suggestion.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, routing::get, routing::patch};
@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/users/{handle}", get(public_profile))
         .route("/v1/me", get(my_profile).patch(update_me))
         .route("/v1/me/visibility", patch(update_visibility))
+        .route("/v1/users", get(search_users))
 }
 
 /// Why a profile request was refused.
@@ -306,7 +307,7 @@ async fn my_profile(
 ) -> Result<Json<MyProfileView>, ProfileError> {
     let row = sqlx::query!(
         "SELECT id, handle::TEXT AS \"handle!\", display_name, bio, location,
-                avatar_key, banner_key,
+                avatar_key, banner_key, is_private,
                 (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS \"created_at_ms!\"
          FROM users WHERE id = $1",
         caller.user_id
@@ -315,6 +316,7 @@ async fn my_profile(
     .await?
     .ok_or(ProfileError::NotFound)?;
 
+    let is_private = row.is_private;
     let stored = visibility_settings(&state, caller.user_id).await?;
     // Every field, with the effective value — so the Settings screen shows what
     // is actually in force rather than blanks for the ones never touched.
@@ -344,6 +346,7 @@ async fn my_profile(
             is_me: true,
         },
         visibility,
+        is_private,
     }))
 }
 
@@ -354,6 +357,9 @@ pub struct MyProfileView {
     pub profile: ProfileView,
     /// Field name to visibility, every field present.
     pub visibility: std::collections::BTreeMap<String, Visibility>,
+    /// Whether the account is private: absent from search, and unreachable
+    /// without an invitation. Only the owner is told.
+    pub is_private: bool,
 }
 
 #[derive(Deserialize)]
@@ -371,6 +377,12 @@ pub struct UpdateMeRequest {
     /// write-once) so a failed upload leaves the old picture in place rather
     /// than a profile pointing at an object that was never written.
     pub avatar_key: Option<String>,
+    /// Whether this account is private.
+    ///
+    /// Private means two enforced things, not one cosmetic one: absent from
+    /// search, and unreachable without an invitation. Both are checked on the
+    /// server — see `search_users` and `delivery::create_conversation`.
+    pub is_private: Option<bool>,
     /// Same, for the 3:1 banner.
     pub banner_key: Option<String>,
 }
@@ -463,14 +475,16 @@ async fn update_me(
              bio          = COALESCE($3, bio),
              location     = COALESCE($4, location),
              avatar_key   = COALESCE($5, avatar_key),
-             banner_key   = COALESCE($6, banner_key)
+             banner_key   = COALESCE($6, banner_key),
+             is_private   = COALESCE($7, is_private)
          WHERE id = $1",
         caller.user_id,
         display_name,
         bio,
         location,
         request.avatar_key,
-        request.banner_key
+        request.banner_key,
+        request.is_private
     )
     .execute(&mut *transaction)
     .await?;
@@ -561,7 +575,13 @@ async fn update_visibility(
 }
 
 /// Whether two accounts share a conversation, which is what "contact" means.
-async fn shares_a_conversation(state: &AppState, a: i64, b: i64) -> Result<bool, ProfileError> {
+/// Whether two accounts share at least one conversation.
+///
+/// This is the server's definition of *contact*, and it is public rather than
+/// private to this module because stories need exactly the same answer. Two
+/// definitions of "contact" drift apart eventually, and the one that drifts is
+/// always the one guarding something.
+pub async fn shares_a_conversation(state: &AppState, a: i64, b: i64) -> Result<bool, ProfileError> {
     let row = sqlx::query!(
         "SELECT 1 AS \"ok!\" FROM conversation_members m1
          JOIN conversation_members m2 ON m1.conversation_id = m2.conversation_id
@@ -573,6 +593,75 @@ async fn shares_a_conversation(state: &AppState, a: i64, b: i64) -> Result<bool,
     .fetch_optional(&state.db)
     .await?;
     Ok(row.is_some())
+}
+
+/// What a search returns. Deliberately thin: enough to recognise somebody and
+/// to start a conversation, and nothing that a directory should not hand out.
+#[derive(Debug, Serialize)]
+pub struct SearchResult {
+    pub handle: String,
+    pub display_name: String,
+    pub avatar_key: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    q: String,
+}
+
+/// Find people by handle or display name.
+///
+/// This route reverses `docs/PLAN.md`'s *"Discovery is by handle only"*, and
+/// the reversal is written down there rather than only here.
+///
+/// **Private accounts are absent**, and that is the whole meaning of the flag
+/// on this side. The other half — that they also cannot be written to — is in
+/// `delivery`, because a directory that merely hides somebody while leaving
+/// them reachable is the switch this module refused to add for handle and
+/// display name: one that says "private" without being able to keep it.
+///
+/// Blocks apply in both directions, as everywhere else.
+async fn search_users(
+    State(state): State<AppState>,
+    caller: Caller,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<Vec<SearchResult>>, ProfileError> {
+    if !state.limits.profile.check(&caller.user_id.to_string()) {
+        return Err(ProfileError::TooManyRequests);
+    }
+    let term = query.q.trim();
+    // Two characters is where a search stops being a search and becomes a
+    // download of the user table.
+    if term.chars().count() < 2 {
+        return Ok(Json(Vec::new()));
+    }
+    let hidden = crate::blocks::hidden_authors(&state.db, caller.user_id).await?;
+    let pattern = format!("%{}%", term.replace('%', r"\%").replace('_', r"\_"));
+
+    let rows = sqlx::query!(
+        "SELECT handle, display_name, avatar_key FROM users
+         WHERE NOT is_private
+           AND id <> $1
+           AND NOT (id = ANY($2))
+           AND (handle ILIKE $3 OR display_name ILIKE $3)
+         ORDER BY handle
+         LIMIT 25",
+        caller.user_id,
+        &hidden,
+        pattern
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| SearchResult {
+                handle: r.handle,
+                display_name: r.display_name,
+                avatar_key: r.avatar_key,
+            })
+            .collect(),
+    ))
 }
 
 /// A user's stored visibility choices. Fields never chosen are absent.

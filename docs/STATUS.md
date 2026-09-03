@@ -221,3 +221,104 @@ candidate fixes were identified and none has been confirmed.
   a conversation that cannot name anybody get no entry rather than a broken
   one. Not in the conversation header: that toolbar is for the things people
   do often, which is the rule it already applies to mute durations.
+
+### Messages: pinning and local delete (wave 5b/5c)
+
+- **Pin a message on this device.** Local by design: a shared pin would need a
+  cap nobody can enforce, because the server may not read the payload and so
+  cannot count. Pinned messages get a section in the conversation's details
+  panel, headed "Pinned on this device".
+- **Delete for me.** The row is deleted, not flagged — so the message leaves
+  the conversation, the search index, the list preview and the attachment strip
+  together. Everyone else keeps their copy and the confirmation says so. A
+  message still queued is dropped from the outbox and never sent.
+- Neither is offered on a message that is still sending: both are keyed by the
+  envelope id, which the server has not assigned yet.
+
+### Messages: reactions (wave 5d)
+
+- **React to a message with an emoji**, and take it back with the same tap.
+  Sent as an encrypted payload, not to an endpoint: an emoji is content, and
+  the server never holds content. There is no reaction route and there must
+  not be one.
+- The emoji rule now lives in `crates/protocol` as `is_reaction_emoji` and is
+  called by the feed on the server *and* by a conversation on the receiving
+  client — the server cannot check a payload it never reads, so the receiver
+  has to.
+- A reaction to a message this device never received is kept rather than
+  refused, and shows up if that message arrives later.
+- The pills are the feed's, unchanged: the reaction data was given the same
+  `{ emoji, count, mine }` shape so the component did not need a second
+  version.
+
+### Messages: edit and take back (wave 5e)
+
+- **Edit your own message** within ten minutes, in place in the bubble. A quiet
+  "edited" mark sits beside the time; nothing claims the original is gone.
+- **Delete for everyone**, within the same ten minutes. The confirmation says
+  what it really is: *"This asks every Nexo app that has this message to remove
+  it. Copies on a modified app can remain."*
+- Both entries **disappear** once the window closes rather than greying out —
+  an action that is gone was never offered.
+- A retracted message keeps its row and loses its words. The row is the sync
+  cursor's key and the FTS rowid; a hole there would look like a message that
+  never arrived.
+- **Only the sender's own device may do either**, checked on arrival against
+  the envelope's MLS-authenticated sender. Without that check any group member
+  could empty anybody's messages.
+- The receiver allows one minute more than the sender takes, deliberately: a
+  slightly fast clock would otherwise leave the group permanently disagreeing
+  about what a message says, with every side behaving correctly by its own
+  lights.
+
+### Also in this round
+
+- The store's `ALTER TABLE` steps are now re-runnable, like the rest of the
+  ladder. SQLite has no `ADD COLUMN IF NOT EXISTS`, and without this a
+  migration re-run failed the whole upgrade with `duplicate column name`.
+
+### Public and private accounts, invitations, requests (wave 6)
+
+- **An account can be private.** Private means two enforced things: absent from
+  search, and unreachable by somebody new without a live invitation. Both are
+  checked on the server, in `search_users` and in `create_conversation` beside
+  the block rule that was already there. Existing accounts stay public.
+- **People search** — `GET /v1/users?q=` — reversing `PLAN.md`'s "discovery is
+  by handle only". Public accounts only, blocks applied in both directions, and
+  a two-character floor so it cannot be used to download the user table.
+- **Invitations**, at most seven days, enforced by the handler *and* by a CHECK
+  on the table. The secret is stored as a SHA-256 and shown exactly once; a
+  lost one is withdrawn and replaced. Expiry is decided in the query, never by
+  a cleanup job — there is no scheduled work in this server, and an invitation
+  that stops working only when a sweeper runs is one that still works.
+- **A withdrawn invitation keeps its row**, so a request can still say which
+  invitation it came through.
+- **Requests are answerable from the profile** as well as from the Meet&Greet
+  card — the same data and the same endpoints, not a second mechanism.
+
+### Stories, 24 hours, end-to-end (wave 7)
+
+- **A story is encrypted once**, like an attachment — a fresh AES-256-GCM key,
+  ciphertext in the encrypted bucket — and the key is then sent down every
+  conversation the author already has. It is *not* an MLS group per author.
+- **Blocking therefore works with no story-specific code.** That is the reason
+  for the shape: `blocked_between` applies only to two-member conversations, so
+  a story group would have kept reaching somebody who blocked its author.
+- **Contacts** means what the server already meant by it — sharing a
+  conversation. `shares_a_conversation` moved out of `profiles.rs`'s privacy
+  for exactly that reason: two definitions of "contact" drift, and the one that
+  drifts is the one guarding something.
+- **The 24 hours come from three places, none of them a scheduled job:** the
+  reader purges expired stories *and their keys* whenever it looks (the layer
+  that matters, and the only one that reaches the reader's disk); the server
+  refuses a URL for an expired story; and an object-store lifecycle rule drops
+  the bytes.
+- A story that has already expired when it arrives is **not written down at
+  all** — the key is never put on disk.
+
+**Not done, and named rather than left implied:** the object-store lifecycle
+rule is configuration on the bucket, not code, and has not been applied. Until
+it is, layers 1 and 2 hold — nothing is served and no reader keeps a key — but
+expired ciphertext accumulates in the bucket. The same rule is what the
+never-built 30-day envelope cleanup in `BRIEF.md` needs, and it should be
+applied once for both.

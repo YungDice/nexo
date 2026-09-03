@@ -353,6 +353,25 @@ pub trait Transport {
         conversation_id: &str,
     ) -> Result<MeetRequest, TransportError>;
 
+    /// Record a story that has already been uploaded to the encrypted bucket.
+    fn create_story(&self, s3_key: &str, size: i64) -> Result<StorySummary, TransportError>;
+
+    /// A time-limited URL for a story's ciphertext.
+    fn story_url(&self, id: i64) -> Result<String, TransportError>;
+
+    /// Find people by handle or display name. Public accounts only.
+    fn search_users(&self, term: &str) -> Result<Vec<SearchResult>, TransportError>;
+
+    /// Mint an invitation. The secret comes back once and is never stored.
+    fn create_invite(&self, label: Option<&str>, days: i64)
+    -> Result<MintedInvite, TransportError>;
+
+    /// My invitations, live and spent.
+    fn list_invites(&self) -> Result<Vec<InviteSummary>, TransportError>;
+
+    /// Withdraw one.
+    fn revoke_invite(&self, id: i64) -> Result<(), TransportError>;
+
     /// File a report about a post, a comment or a person.
     ///
     /// Here rather than beside the map because reporting is not a Meet&Greet
@@ -371,4 +390,61 @@ pub trait Transport {
 
     /// Refuse an intro. Also lifts the cap — see the server's `resolve`.
     fn meet_decline(&self, id: i64) -> Result<(), TransportError>;
+}
+
+/// Somebody a search turned up.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchResult {
+    /// Their handle.
+    pub handle: String,
+    /// What to call them.
+    pub display_name: String,
+    /// Their picture, if they have one.
+    pub avatar_key: Option<String>,
+}
+
+/// A freshly minted invitation.
+///
+/// The one and only time the secret is readable: the server keeps a hash, so a
+/// lost secret cannot be looked up — it is revoked and replaced.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MintedInvite {
+    /// The server's id for it, for revoking later.
+    pub id: i64,
+    /// The secret itself. Show it once; it cannot be recovered.
+    pub secret: String,
+    /// When it stops working.
+    pub expires_at_ms: i64,
+}
+
+/// One invitation, as its owner sees it afterwards.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InviteSummary {
+    /// The server's id.
+    pub id: i64,
+    /// What the owner called it.
+    pub label: Option<String>,
+    /// When it was made.
+    pub created_at_ms: i64,
+    /// When it stops working.
+    pub expires_at_ms: i64,
+    /// Whether it was withdrawn.
+    pub revoked: bool,
+    /// Whether it works right now — expiry is by the clock, not by a job.
+    pub live: bool,
+    /// How many people reached the owner through it.
+    pub used: i64,
+}
+
+/// A story the server has recorded.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorySummary {
+    /// The server's id.
+    pub id: i64,
+    /// Who posted it.
+    pub author_handle: String,
+    /// When.
+    pub created_at_ms: i64,
+    /// When it stops being served. At most 24 hours out.
+    pub expires_at_ms: i64,
 }

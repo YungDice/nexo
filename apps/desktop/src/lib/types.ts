@@ -51,6 +51,13 @@ export interface LinkPreview {
   source: string;
 }
 
+/** One emoji on a message, and how many used it. */
+export interface MessageReaction {
+  emoji: string;
+  count: number;
+  mine: boolean;
+}
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -73,6 +80,20 @@ export interface Message {
    * reacting, editing, taking back — are simply not offered on those.
    */
   clientId?: string;
+  /**
+   * Pinned **on this device**.
+   *
+   * Local by design — the server may not read a payload, so it cannot count
+   * pins and a shared cap could not be enforced. Anything drawing this says
+   * "on this device"; "Pinned" alone would claim something untrue.
+   */
+  pinned?: boolean;
+  /** Reactions on this message, most-used first. */
+  reactions?: MessageReaction[];
+  /** The sender took it back. The bubble says so; it does not vanish. */
+  retracted?: boolean;
+  /** The sender changed it. A quiet mark beside the time, nothing louder. */
+  edited?: boolean;
   /**
    * Set when the payload decrypted but this build does not know its shape.
    *

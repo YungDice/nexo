@@ -149,6 +149,37 @@ impl Transport for Listing {
     }
 
     // Meet&Greet is not what this file is about.
+    fn create_story(
+        &self,
+        _key: &str,
+        _size: i64,
+    ) -> Result<nexo_client::transport::StorySummary, TransportError> {
+        unimplemented!("not a story test")
+    }
+    fn story_url(&self, _id: i64) -> Result<String, TransportError> {
+        unimplemented!("not a story test")
+    }
+
+    fn search_users(
+        &self,
+        _term: &str,
+    ) -> Result<Vec<nexo_client::transport::SearchResult>, TransportError> {
+        unimplemented!("not a directory test")
+    }
+    fn create_invite(
+        &self,
+        _label: Option<&str>,
+        _days: i64,
+    ) -> Result<nexo_client::transport::MintedInvite, TransportError> {
+        unimplemented!("not a directory test")
+    }
+    fn list_invites(&self) -> Result<Vec<nexo_client::transport::InviteSummary>, TransportError> {
+        unimplemented!("not a directory test")
+    }
+    fn revoke_invite(&self, _id: i64) -> Result<(), TransportError> {
+        unimplemented!("not a directory test")
+    }
+
     fn report(
         &self,
         _kind: &str,

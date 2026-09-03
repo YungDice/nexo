@@ -13,6 +13,24 @@ because the client is a Windows binary and needs a Windows runner).
 
 ---
 
+
+## Object-store lifecycle rules
+
+Two things in this product expire, and neither has a job to make it happen —
+this server runs no background work, and the first one would drag in the
+leader-election question `PLAN.md` parked behind Redis. Both are therefore
+lifecycle rules on the bucket:
+
+| Prefix | Rule | Why |
+|---|---|---|
+| the story prefix in `NEXO_S3_ENC_BUCKET` | delete after 2 days | Stories are refused after 24 hours by the server and their keys are destroyed by every reader that looks. This is the third layer, for the case where the server does nothing for a week. Two days rather than one, so a clock difference cannot delete something still inside its own lifetime. |
+| envelope attachments in the same bucket | delete after 30 days | `BRIEF.md` describes this cleanup and it was never built: the index for it exists and nothing reads it. The lifecycle rule is the mechanism it was missing. |
+
+Neither is applied yet. Until they are, nothing is *served* past its lifetime
+and no reader keeps a key — but the ciphertext accumulates, and the bill with
+it.
+
+
 ## Phase 0 — Decisions to make before you click anything
 
 ### 0.1 Do you control `dice.fit`?

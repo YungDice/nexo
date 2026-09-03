@@ -34,6 +34,21 @@ pub enum MeetError {
     Store(#[from] nexo_store::StoreError),
 }
 
+impl From<crate::conversations::ConversationError> for MeetError {
+    /// Stories go out through the conversation layer, so its failures surface
+    /// here. Only the two that a caller can act on are distinguished; the rest
+    /// become a transport rejection carrying the detail, which is what the
+    /// shell already knows how to show.
+    fn from(error: crate::conversations::ConversationError) -> Self {
+        use crate::conversations::ConversationError as E;
+        match error {
+            E::Transport(inner) => MeetError::Transport(inner),
+            E::Store(inner) => MeetError::Store(inner),
+            other => MeetError::Transport(TransportError::Rejected(other.to_string())),
+        }
+    }
+}
+
 /// The map, and how old it is.
 #[derive(Debug, Clone)]
 pub struct Map {
@@ -177,6 +192,45 @@ pub fn open_request<T: Transport>(
     conversation_id: &str,
 ) -> Result<MeetRequest, MeetError> {
     Ok(ctx.transport.meet_open_request(handle, conversation_id)?)
+}
+
+/// Find people. Public accounts only, and never yourself.
+///
+/// A private account is absent from this, and that absence is enforced by the
+/// server rather than filtered here — a directory the client trims is one
+/// anybody can untrim.
+pub fn search<T: Transport>(
+    ctx: &Context<'_, T>,
+    term: &str,
+) -> Result<Vec<crate::transport::SearchResult>, MeetError> {
+    Ok(ctx.transport.search_users(term)?)
+}
+
+/// Mint an invitation.
+///
+/// The secret comes back once. It is stored as a hash, so a lost one cannot be
+/// recovered — it is revoked and replaced, the same answer a password reset
+/// gives and for the same reason.
+pub fn create_invite<T: Transport>(
+    ctx: &Context<'_, T>,
+    label: Option<&str>,
+    days: i64,
+) -> Result<crate::transport::MintedInvite, MeetError> {
+    Ok(ctx.transport.create_invite(label, days)?)
+}
+
+/// My invitations, live and spent.
+pub fn invites<T: Transport>(
+    ctx: &Context<'_, T>,
+) -> Result<Vec<crate::transport::InviteSummary>, MeetError> {
+    Ok(ctx.transport.list_invites()?)
+}
+
+/// Withdraw an invitation. The row stays, so requests can still say where they
+/// came from.
+pub fn revoke_invite<T: Transport>(ctx: &Context<'_, T>, id: i64) -> Result<(), MeetError> {
+    ctx.transport.revoke_invite(id)?;
+    Ok(())
 }
 
 /// File a report about somebody.

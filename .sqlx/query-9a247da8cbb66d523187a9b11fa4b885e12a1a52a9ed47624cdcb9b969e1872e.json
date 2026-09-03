@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s3_key, author_id,\n                (EXTRACT(EPOCH FROM expires_at) * 1000)::BIGINT AS expires_at_ms\n         FROM stories WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "s3_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "author_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "expires_at_ms",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "9a247da8cbb66d523187a9b11fa4b885e12a1a52a9ed47624cdcb9b969e1872e"
+}

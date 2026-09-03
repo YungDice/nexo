@@ -62,7 +62,16 @@ pub fn router() -> Router<AppState> {
         .route("/v1/meet/requests", get(inbox).post(open_request))
         .route("/v1/meet/requests/{id}/accept", post(accept))
         .route("/v1/meet/requests/{id}/decline", post(decline))
+        .route("/v1/meet/invites", get(list_invites).post(create_invite))
+        .route(
+            "/v1/meet/invites/{id}",
+            axum::routing::delete(revoke_invite),
+        )
 }
+
+/// The longest an invitation may last. Also a CHECK on the table, so no future
+/// writer can mint one that outlives this.
+const INVITE_MAX_DAYS: i64 = 7;
 
 // ------------------------------------------------------------ coarsening ---
 
@@ -103,6 +112,82 @@ fn coarsen(user_id: i64, lat: f64, lon: f64) -> (f64, f64) {
     let lat = (snap(lat) + spread(0x1)).clamp(-85.0, 85.0);
     let lon = (snap(lon) + spread(0x2)).clamp(-180.0, 180.0);
     (lat, lon)
+}
+
+// ------------------------------------------------------------- reachable ---
+
+/// Whether `caller` may open a conversation with `target`.
+///
+/// Public accounts: always. A private one, only if the caller already shares a
+/// conversation with them — the definition of "contact" this server already
+/// uses — or presents a live invitation belonging to them.
+///
+/// This lives on the server for the reason `blocks.rs` gives about itself: a
+/// rule the client applies is a promise the product cannot keep. Hiding a
+/// private account from search while letting anybody write to it would be
+/// exactly the switch `profiles.rs` refused to add — one that says "private"
+/// and does not mean it.
+pub async fn may_reach(
+    db: &sqlx::PgPool,
+    caller: i64,
+    target: i64,
+    invite_secret: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let private = sqlx::query!("SELECT is_private FROM users WHERE id = $1", target)
+        .fetch_optional(db)
+        .await?
+        .map(|r| r.is_private)
+        .unwrap_or(false);
+    if !private {
+        return Ok(true);
+    }
+
+    // Already in touch. Blocking is checked separately and takes precedence:
+    // this only asks whether the door was ever open.
+    let known = sqlx::query!(
+        "SELECT 1 AS \"ok!\" FROM conversation_members m1
+         JOIN conversation_members m2 ON m1.conversation_id = m2.conversation_id
+         WHERE m1.user_id = $1 AND m2.user_id = $2
+         LIMIT 1",
+        caller,
+        target
+    )
+    .fetch_optional(db)
+    .await?
+    .is_some();
+    if known {
+        return Ok(true);
+    }
+
+    let Some(secret) = invite_secret else {
+        return Ok(false);
+    };
+    // Liveness is decided in the query, never by a cleanup job: this server
+    // runs no scheduled work, and an invitation that only stops working once a
+    // sweeper runs is one that still works.
+    let ok = sqlx::query!(
+        "SELECT 1 AS \"ok!\" FROM meet_invites
+         WHERE owner_id = $1 AND secret_hash = $2
+           AND revoked_at IS NULL AND expires_at > now()
+         LIMIT 1",
+        target,
+        hash_secret(secret)
+    )
+    .fetch_optional(db)
+    .await?
+    .is_some();
+    Ok(ok)
+}
+
+/// SHA-256 of an invite secret, hex.
+///
+/// The secret itself is never stored, for the reason a password is not: a
+/// leaked table should not hand out working invitations. Lookup is by exact
+/// hash, so nothing is lost by it.
+pub fn hash_secret(secret: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(secret.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ---------------------------------------------------------------- errors ---
@@ -403,6 +488,146 @@ async fn require_consent(state: &AppState, user_id: i64) -> Result<(), MeetError
     } else {
         Err(MeetError::ConsentRequired)
     }
+}
+
+// --------------------------------------------------------------- invites ---
+
+/// One invitation, as its owner sees it.
+#[derive(Debug, Serialize)]
+pub struct InviteView {
+    pub id: i64,
+    pub label: Option<String>,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub revoked: bool,
+    /// Whether it can be used right now. Computed, never stored: an invitation
+    /// expires by the clock, not by anybody running a job.
+    pub live: bool,
+    /// How many people have reached the owner through it.
+    pub used: i64,
+}
+
+#[derive(Deserialize)]
+struct NewInvite {
+    label: Option<String>,
+    /// How long it should last, in days. At most seven.
+    days: Option<i64>,
+}
+
+/// What a freshly minted invitation returns.
+///
+/// The **only** time the secret is readable. It is stored as a hash, so if the
+/// owner loses it there is nothing to look up — they revoke it and make
+/// another, which is the same answer a password reset gives and for the same
+/// reason.
+#[derive(Debug, Serialize)]
+pub struct MintedInvite {
+    pub id: i64,
+    pub secret: String,
+    pub expires_at_ms: i64,
+}
+
+async fn create_invite(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(request): Json<NewInvite>,
+) -> Result<Json<MintedInvite>, MeetError> {
+    if !state.limits.meet.check(&caller.user_id.to_string()) {
+        return Err(MeetError::TooManyRequests);
+    }
+    let days = request.days.unwrap_or(INVITE_MAX_DAYS);
+    if !(1..=INVITE_MAX_DAYS).contains(&days) {
+        return Err(MeetError::Invalid(format!(
+            "An invitation lasts between 1 and {INVITE_MAX_DAYS} days."
+        )));
+    }
+    if let Some(label) = &request.label
+        && label.chars().count() > 40
+    {
+        return Err(MeetError::Invalid("That label is too long.".into()));
+    }
+
+    // 256 bits from the OS. The secret leaves in the response and is never
+    // stored, so it has to be unguessable rather than merely unique.
+    let secret: String = {
+        use rand::RngCore as _;
+        let mut bytes = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    };
+
+    let row = sqlx::query!(
+        "INSERT INTO meet_invites (owner_id, secret_hash, label, expires_at)
+         VALUES ($1, $2, $3, now() + make_interval(days => $4::int))
+         RETURNING id, (EXTRACT(EPOCH FROM expires_at) * 1000)::BIGINT AS expires_at_ms",
+        caller.user_id,
+        hash_secret(&secret),
+        request.label,
+        days as i32
+    )
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(MintedInvite {
+        id: row.id,
+        secret,
+        expires_at_ms: row.expires_at_ms.unwrap_or(0),
+    }))
+}
+
+async fn list_invites(
+    State(state): State<AppState>,
+    caller: Caller,
+) -> Result<Json<Vec<InviteView>>, MeetError> {
+    let rows = sqlx::query!(
+        "SELECT i.id, i.label, (i.revoked_at IS NOT NULL) AS revoked,
+                (EXTRACT(EPOCH FROM i.created_at) * 1000)::BIGINT AS created_at_ms,
+                (EXTRACT(EPOCH FROM i.expires_at) * 1000)::BIGINT AS expires_at_ms,
+                (i.revoked_at IS NULL AND i.expires_at > now()) AS live,
+                (SELECT count(*) FROM meet_requests r WHERE r.invite_id = i.id) AS used
+         FROM meet_invites i
+         WHERE i.owner_id = $1
+         ORDER BY i.created_at DESC
+         LIMIT $2",
+        caller.user_id,
+        PAGE
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| InviteView {
+                id: r.id,
+                label: r.label,
+                created_at_ms: r.created_at_ms.unwrap_or(0),
+                expires_at_ms: r.expires_at_ms.unwrap_or(0),
+                revoked: r.revoked.unwrap_or(false),
+                live: r.live.unwrap_or(false),
+                used: r.used.unwrap_or(0),
+            })
+            .collect(),
+    ))
+}
+
+/// Withdraw an invitation. The row stays, so requests can still say where they
+/// came from.
+async fn revoke_invite(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, MeetError> {
+    let updated = sqlx::query!(
+        "UPDATE meet_invites SET revoked_at = now()
+         WHERE id = $1 AND owner_id = $2 AND revoked_at IS NULL
+         RETURNING id",
+        id,
+        caller.user_id
+    )
+    .fetch_optional(&state.db)
+    .await?;
+    updated.ok_or(MeetError::NotFound)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // -------------------------------------------------------------- requests ---

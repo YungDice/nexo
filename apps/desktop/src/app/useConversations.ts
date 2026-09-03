@@ -78,6 +78,10 @@ function toMessage(wire: WireMessage, conversationId: string): Message {
     state: wire.pending ? "sending" : "sent",
     ...(wire.client_id ? { clientId: wire.client_id } : {}),
     ...(wire.unsupported ? { unsupported: wire.unsupported } : {}),
+    ...(wire.pinned ? { pinned: true } : {}),
+    ...(wire.reactions.length > 0 ? { reactions: wire.reactions } : {}),
+    ...(wire.retracted_at_ms !== null ? { retracted: true } : {}),
+    ...(wire.edited_at_ms !== null ? { edited: true } : {}),
     // `exactOptionalPropertyTypes` is on, so an optional property is either
     // absent or a value -- never explicitly undefined. Spreading is how you
     // say "absent" without turning the field into `T | undefined`.

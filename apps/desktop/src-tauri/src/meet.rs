@@ -337,6 +337,186 @@ pub async fn meet_accept_request(
     .await
 }
 
+/// Somebody a search turned up.
+#[derive(Debug, Serialize)]
+pub struct SearchResultView {
+    pub handle: String,
+    pub display_name: String,
+    pub avatar_key: Option<String>,
+}
+
+/// Find people. Public accounts only — the server decides that, not this.
+#[tauri::command]
+pub async fn meet_search(
+    state: State<'_, ClientState>,
+    term: String,
+) -> Result<Vec<SearchResultView>, MeetErrorView> {
+    with_client(&state, move |client| {
+        let found = meet::search(
+            &Context {
+                transport: &client.transport,
+                store: &client.store,
+            },
+            &term,
+        )?;
+        Ok(found
+            .into_iter()
+            .map(|r| SearchResultView {
+                handle: r.handle,
+                display_name: r.display_name,
+                avatar_key: r.avatar_key,
+            })
+            .collect())
+    })
+    .await
+}
+
+/// A freshly minted invitation. The secret is readable exactly once.
+#[derive(Debug, Serialize)]
+pub struct MintedInviteView {
+    pub id: i64,
+    pub secret: String,
+    pub expires_at_ms: i64,
+}
+
+/// One invitation afterwards.
+#[derive(Debug, Serialize)]
+pub struct InviteView {
+    pub id: i64,
+    pub label: Option<String>,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub revoked: bool,
+    pub live: bool,
+    pub used: i64,
+}
+
+/// Mint an invitation, at most seven days.
+#[tauri::command]
+pub async fn meet_create_invite(
+    state: State<'_, ClientState>,
+    label: Option<String>,
+    days: i64,
+) -> Result<MintedInviteView, MeetErrorView> {
+    with_client(&state, move |client| {
+        let minted = meet::create_invite(
+            &Context {
+                transport: &client.transport,
+                store: &client.store,
+            },
+            label.as_deref(),
+            days,
+        )?;
+        Ok(MintedInviteView {
+            id: minted.id,
+            secret: minted.secret,
+            expires_at_ms: minted.expires_at_ms,
+        })
+    })
+    .await
+}
+
+/// My invitations.
+#[tauri::command]
+pub async fn meet_invites(state: State<'_, ClientState>) -> Result<Vec<InviteView>, MeetErrorView> {
+    with_client(&state, |client| {
+        let list = meet::invites(&Context {
+            transport: &client.transport,
+            store: &client.store,
+        })?;
+        Ok(list
+            .into_iter()
+            .map(|i| InviteView {
+                id: i.id,
+                label: i.label,
+                created_at_ms: i.created_at_ms,
+                expires_at_ms: i.expires_at_ms,
+                revoked: i.revoked,
+                live: i.live,
+                used: i.used,
+            })
+            .collect())
+    })
+    .await
+}
+
+/// Withdraw an invitation.
+#[tauri::command]
+pub async fn meet_revoke_invite(
+    state: State<'_, ClientState>,
+    id: i64,
+) -> Result<(), MeetErrorView> {
+    with_client(&state, move |client| {
+        meet::revoke_invite(
+            &Context {
+                transport: &client.transport,
+                store: &client.store,
+            },
+            id,
+        )?;
+        Ok(())
+    })
+    .await
+}
+
+/// One story this device holds.
+///
+/// The key is **not** here. It stays in Rust, exactly as an attachment's does
+/// (rule 2): the page asks for a story by id and gets bytes, never what opens
+/// them.
+#[derive(Debug, Serialize)]
+pub struct StoryView {
+    pub id: i64,
+    pub author_handle: String,
+    pub mime: String,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+
+/// Post a story from a file on disk.
+#[tauri::command]
+pub async fn story_post(state: State<'_, ClientState>, path: String) -> Result<i64, MeetErrorView> {
+    with_client(&state, move |client| {
+        let contents = std::fs::read(&path).map_err(|e| {
+            failure(
+                "unreadable_file",
+                format!("That file could not be read: {e}"),
+            )
+        })?;
+        let mime = crate::feed::sniff_mime(&contents);
+        if mime == "application/octet-stream" {
+            return Err(failure(
+                "not_an_image",
+                "That file is not an image or video.",
+            ));
+        }
+        let id = nexo_client::stories::post(&client.context(), &contents, mime, now_ms())
+            .map_err(|e| MeetErrorView::from(nexo_client::meet::MeetError::from(e)))?;
+        Ok(id)
+    })
+    .await
+}
+
+/// Stories this device holds. Reading them ends the expired ones.
+#[tauri::command]
+pub async fn story_list(state: State<'_, ClientState>) -> Result<Vec<StoryView>, MeetErrorView> {
+    with_client(&state, |client| {
+        let live = nexo_client::stories::live(&client.context(), now_ms())
+            .map_err(|e| MeetErrorView::from(nexo_client::meet::MeetError::from(e)))?;
+        Ok(live
+            .into_iter()
+            .map(|s| StoryView {
+                id: s.id,
+                author_handle: s.author_handle,
+                mime: s.mime,
+                created_at_ms: s.created_at_ms,
+                expires_at_ms: s.expires_at_ms,
+            })
+            .collect())
+    })
+    .await
+}
+
 /// Report somebody.
 ///
 /// `subject_kind` and `subject_id` rather than a handle, because the server's

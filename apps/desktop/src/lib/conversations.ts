@@ -71,6 +71,20 @@ export interface Message {
    * whatever the bytes happen to look like.
    */
   unsupported: string | null;
+  /**
+   * Pinned **on this device**.
+   *
+   * Local by design. The server may not read a payload, so it cannot count
+   * pins, so a shared cap could not be enforced — see the schema-12 migration
+   * in `crates/store`. Anything drawing this must say "on this device".
+   */
+  pinned: boolean;
+  /** Reactions on this message, most-used first. */
+  reactions: MessageReaction[];
+  /** Set when the sender took it back. The row stays; the words go. */
+  retracted_at_ms: number | null;
+  /** Set when the sender last changed it. A quiet mark, nothing more. */
+  edited_at_ms: number | null;
 }
 
 /**
@@ -236,7 +250,10 @@ export function startGroup(handles: string[], title: string): Promise<string> {
  * Sent as an encrypted message, not written to the server: what people call
  * their group is content, and the server has no title to leak.
  */
-export function renameConversation(conversationId: string, title: string): Promise<void> {
+export function renameConversation(
+  conversationId: string,
+  title: string,
+): Promise<void> {
   return invoke<void>("rename_conversation", { conversationId, title });
 }
 
@@ -247,12 +264,17 @@ export function renameConversation(conversationId: string, title: string): Promi
  * uploads them, and the key that opens the object travels inside an MLS
  * message — so every member sees it and the server does not.
  */
-export function setConversationAvatar(conversationId: string, path: string): Promise<void> {
+export function setConversationAvatar(
+  conversationId: string,
+  path: string,
+): Promise<void> {
   return invoke<void>("set_conversation_avatar", { conversationId, path });
 }
 
 /** The conversation's picture as a `data:` URL, or `null` if it has none. */
-export function conversationAvatar(conversationId: string): Promise<string | null> {
+export function conversationAvatar(
+  conversationId: string,
+): Promise<string | null> {
   return invoke<string | null>("conversation_avatar", { conversationId });
 }
 
@@ -275,8 +297,12 @@ export interface AttachmentEntry {
  * payloads come back — they hold decryption keys; the bytes are fetched one at
  * a time by envelope id.
  */
-export function conversationAttachments(conversationId: string): Promise<AttachmentEntry[]> {
-  return invoke<AttachmentEntry[]>("conversation_attachments", { conversationId });
+export function conversationAttachments(
+  conversationId: string,
+): Promise<AttachmentEntry[]> {
+  return invoke<AttachmentEntry[]>("conversation_attachments", {
+    conversationId,
+  });
 }
 
 /**
@@ -299,6 +325,14 @@ export function acknowledgeKeyChange(conversationId: string): Promise<void> {
   return invoke<void>("acknowledge_key_change", { conversationId });
 }
 
+/** One emoji on a message, and how many used it. */
+export interface MessageReaction {
+  emoji: string;
+  count: number;
+  /** Whether this account is one of them. */
+  mine: boolean;
+}
+
 /** One message that matched a search. */
 export interface SearchHit {
   envelope_id: number;
@@ -315,12 +349,18 @@ export interface SearchHit {
  * leaves the machine — a server-side search would need the plaintext, and the
  * server has none.
  */
-export function searchMessages(term: string, limit?: number): Promise<SearchHit[]> {
+export function searchMessages(
+  term: string,
+  limit?: number,
+): Promise<SearchHit[]> {
   return invoke<SearchHit[]>("search_messages", { term, limit: limit ?? null });
 }
 
 /** Adds someone to a conversation that already exists. */
-export function addToConversation(conversationId: string, handle: string): Promise<void> {
+export function addToConversation(
+  conversationId: string,
+  handle: string,
+): Promise<void> {
   return invoke<void>("add_to_conversation", { conversationId, handle });
 }
 
@@ -370,4 +410,78 @@ export function saveAttachmentTo(
   path: string,
 ): Promise<number> {
   return invoke<number>("save_attachment", { envelopeId, path });
+}
+
+/**
+ * Pin or unpin a message, on this device.
+ *
+ * Nothing is sent and nobody else sees it.
+ */
+export function setMessagePinned(
+  conversationId: string,
+  envelopeId: number,
+  pinned: boolean,
+): Promise<void> {
+  return invoke<void>("set_message_pinned", {
+    conversationId,
+    envelopeId,
+    pinned,
+  });
+}
+
+/**
+ * Remove a message from this device.
+ *
+ * Everyone else keeps their copy. The UI has to say that in those words —
+ * "deleted" on its own is the claim this cannot make.
+ */
+export function deleteMessageForMe(
+  conversationId: string,
+  envelopeId: number,
+): Promise<void> {
+  return invoke<void>("delete_message_for_me", { conversationId, envelopeId });
+}
+
+/**
+ * React to a message, or take the reaction back.
+ *
+ * Goes out as an encrypted payload like any message — there is no reaction
+ * endpoint on the server, because an emoji is content.
+ *
+ * `target` is the name inside the message's own ciphertext, not its envelope
+ * id, so a message that is still sending can still be reacted to.
+ */
+export function reactToMessage(
+  conversationId: string,
+  target: string,
+  emoji: string,
+  on: boolean,
+): Promise<void> {
+  return invoke<void>("react_to_message", {
+    conversationId,
+    target,
+    emoji,
+    on,
+  });
+}
+
+/**
+ * Take back one of your own messages, or change what it says.
+ *
+ * `body` omitted takes it back; `body` given changes it.
+ *
+ * This is a **request**, not a deletion. Every Nexo that has the message and
+ * behaves itself will apply it; a modified one can keep its copy, and the UI
+ * must say "asks" rather than "deletes". Ten minutes, and only your own.
+ */
+export function reviseMessage(
+  conversationId: string,
+  target: string,
+  body?: string,
+): Promise<void> {
+  return invoke<void>("revise_message", {
+    conversationId,
+    target,
+    body: body ?? null,
+  });
 }

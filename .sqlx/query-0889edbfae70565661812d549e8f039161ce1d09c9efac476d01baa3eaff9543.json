@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, handle::TEXT AS \"handle!\", display_name, bio, location,\n                avatar_key, banner_key,\n                (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS \"created_at_ms!\"\n         FROM users WHERE id = $1",
+  "query": "SELECT id, handle::TEXT AS \"handle!\", display_name, bio, location,\n                avatar_key, banner_key, is_private,\n                (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS \"created_at_ms!\"\n         FROM users WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -40,6 +40,11 @@
       },
       {
         "ordinal": 7,
+        "name": "is_private",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
         "name": "created_at_ms!",
         "type_info": "Int8"
       }
@@ -57,8 +62,9 @@
       true,
       true,
       true,
+      false,
       null
     ]
   },
-  "hash": "4e342fed8b1a1ac22490ace3d9bd40b16e487968df79793f6de3f2af7d82b998"
+  "hash": "0889edbfae70565661812d549e8f039161ce1d09c9efac476d01baa3eaff9543"
 }

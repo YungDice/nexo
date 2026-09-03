@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT i.id, i.label, (i.revoked_at IS NOT NULL) AS revoked,\n                (EXTRACT(EPOCH FROM i.created_at) * 1000)::BIGINT AS created_at_ms,\n                (EXTRACT(EPOCH FROM i.expires_at) * 1000)::BIGINT AS expires_at_ms,\n                (i.revoked_at IS NULL AND i.expires_at > now()) AS live,\n                (SELECT count(*) FROM meet_requests r WHERE r.invite_id = i.id) AS used\n         FROM meet_invites i\n         WHERE i.owner_id = $1\n         ORDER BY i.created_at DESC\n         LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "label",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "revoked",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at_ms",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "expires_at_ms",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "live",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "used",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "4225b872d10cac8a5722f82d0f62198fd7269a238305aa4d741cb074b2288cea"
+}

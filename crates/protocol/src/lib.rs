@@ -11,6 +11,13 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub mod window;
+
+// Re-exported so the shell can parse a message name without taking its own
+// dependency on `uuid`. The type is already this crate's vocabulary: every id
+// on the wire is one.
+pub use uuid::Uuid as MessageId;
+
 /// Wire protocol version. Bump on any breaking change to the types below.
 ///
 /// 2 adds the Meet&Greet types at the end of this file. 3 gives a message a
@@ -147,6 +154,95 @@ pub enum Payload {
         /// Plaintext size in bytes.
         size: u64,
     },
+    /// A reaction to a message, added or taken away.
+    ///
+    /// Inside the ciphertext, and it has to be: an emoji is content, and a
+    /// server-side reaction endpoint would hand the server exactly what rule 4
+    /// says it may never have. `Rename` is the shape this follows — a payload
+    /// that changes shared state, draws no bubble of its own, and ends the
+    /// receive branch with `continue`.
+    ///
+    /// One variant with a toggle rather than two, for the reason `posts.rs`
+    /// gives for having a single endpoint: adding and removing are the same
+    /// act with opposite sign, and splitting them doubles what a receiver has
+    /// to keep in step.
+    Reaction {
+        /// The message being reacted to, by the name inside its ciphertext.
+        ///
+        /// Not the envelope id: that is the server's number, and a reaction
+        /// can be sent to a message that is still in an outbox.
+        target: Uuid,
+        /// The emoji. Checked with [`is_reaction_emoji`] on both sides.
+        emoji: String,
+        /// True to add, false to take it back.
+        ///
+        /// Defaulted so that an older sender that only ever adds is read
+        /// correctly rather than as a removal.
+        #[serde(default = "yes")]
+        on: bool,
+    },
+    /// Take a message back.
+    ///
+    /// A **request**, not a deletion. It asks every Nexo installation that has
+    /// the message to empty it, and a well-behaved one does. A modified client
+    /// keeps its copy, and the UI must never say otherwise — see
+    /// `docs/THREAT-MODEL.md`.
+    Retract {
+        /// The message being taken back, by the name inside its ciphertext.
+        target: Uuid,
+    },
+    /// Change what a message says.
+    ///
+    /// The same request, with a replacement. Only the sender's own device may
+    /// do either; that is checked on arrival against the envelope's
+    /// authenticated sender, not asserted here.
+    Edit {
+        /// The message being changed.
+        target: Uuid,
+        /// What it says now.
+        body: String,
+        /// The sender's clock when they changed it.
+        ///
+        /// Advisory. It is shown beside the message, and it is *not* what the
+        /// window is judged against — the receiver uses the server's timestamps
+        /// on both envelopes, so a wrong clock on one device cannot buy time
+        /// or lose it.
+        edited_at_ms: i64,
+    },
+    /// A story, and the key that opens it.
+    ///
+    /// The object is encrypted exactly once, like an attachment, and this
+    /// payload is sent down every conversation the author already has. That is
+    /// the whole design, and the reason for it is blocking: the delivery
+    /// service checks `blocked_between` only for two-member conversations, so a
+    /// story *group* would keep reaching somebody who blocked its author until
+    /// an explicit removal commit landed. Sending down existing conversations
+    /// inherits the check that already works — a blocked person has no
+    /// deliverable conversation left.
+    ///
+    /// It draws no bubble. Like `Rename`, it changes state elsewhere and ends
+    /// the receive branch with `continue`.
+    Story {
+        /// Where the ciphertext is, in the **encrypted** bucket.
+        s3_key: String,
+        /// The AES-256-GCM key, hex. Fresh for this story and nothing else.
+        key: String,
+        /// The nonce, hex.
+        nonce: String,
+        /// SHA-256 of the *plaintext*, hex.
+        sha256: String,
+        /// MIME type, sniffed from the bytes rather than a file name.
+        mime: String,
+        /// Plaintext size in bytes.
+        size: u64,
+        /// When it stops being available, by the server's clock.
+        ///
+        /// Carried so a reader can drop it without asking anybody. The server
+        /// refuses the bytes after this too — the two are independent, and
+        /// both are needed: the reader's copy of the key is what actually has
+        /// to go, and only the reader can remove that.
+        expires_at_ms: i64,
+    },
     /// A payload this build cannot read.
     ///
     /// Produced only by [`Payload::decode`] and never sent — it is what a
@@ -165,6 +261,11 @@ pub enum Payload {
         /// The `kind` the sender used.
         kind: String,
     },
+}
+
+/// `serde` needs a function, not a literal, for a default of `true`.
+fn yes() -> bool {
+    true
 }
 
 impl Payload {
@@ -206,9 +307,16 @@ impl Payload {
                 Some(body) if !body.is_empty() => body,
                 _ => name,
             },
-            // Neither is something anyone said, so neither is a preview of the
-            // conversation. The row keeps whatever came before it.
-            Payload::Rename { .. } | Payload::GroupAvatar { .. } => "",
+            // None of these is something anyone said, so none is a preview of
+            // the conversation. The row keeps whatever came before it. A
+            // reaction especially: a conversation whose list entry changed to
+            // an emoji every time somebody tapped one would be unreadable.
+            Payload::Rename { .. }
+            | Payload::GroupAvatar { .. }
+            | Payload::Reaction { .. }
+            | Payload::Retract { .. }
+            | Payload::Edit { .. }
+            | Payload::Story { .. } => "",
             // Nor is this. Whatever it says, this build cannot read it, and
             // guessing at a preview would be the same mistake in a smaller
             // place.
@@ -444,6 +552,25 @@ mod serde_bytes_vec {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
         Vec::<u8>::deserialize(d)
     }
+}
+
+/// Whether a string is acceptable as a reaction.
+///
+/// Here rather than in `posts.rs`, where it started, because both sides now
+/// need the same answer and two copies of a validation rule are one of them
+/// being wrong later. The feed calls it on the server; a conversation has to
+/// call it on the **receiver**, because the server never sees a message
+/// payload and so cannot refuse anything about it (rule 4). A rule the server
+/// cannot enforce has to be enforced where the bytes are read.
+///
+/// The limits are the feed's, unchanged: a length in characters *and* in
+/// bytes, and nothing with whitespace or control characters. The string is
+/// rendered as-is in a pill, so it has to be a thing you can render.
+pub fn is_reaction_emoji(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= 4
+        && value.len() <= 16
+        && !value.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 // ------------------------------------------------------------- Meet&Greet ---
@@ -861,6 +988,61 @@ mod tests {
             safe_file_name("\u{4f1a}\u{8b70}\u{8a18}\u{9332}.docx"),
             "\u{4f1a}\u{8b70}\u{8a18}\u{9332}.docx"
         );
+    }
+
+    /// The same cases `posts.rs` checked before the rule moved here — the
+    /// point of moving it was that both ends give the same answer.
+    #[test]
+    fn a_reaction_emoji_is_short_visible_and_unbroken() {
+        for good in ["\u{1F44D}", "\u{2764}\u{FE0F}", "!"] {
+            assert!(is_reaction_emoji(good), "{good:?} should be allowed");
+        }
+        for bad in [
+            "",                                                             // nothing to render
+            "abcde",       // more than four characters
+            "a b",         // whitespace
+            "\u{1F44D}\n", // a control character
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}", // over the byte ceiling
+        ] {
+            assert!(!is_reaction_emoji(bad), "{bad:?} should be refused");
+        }
+    }
+
+    #[test]
+    fn a_reaction_round_trips() {
+        let payload = Payload::Reaction {
+            target: Uuid::from_u128(7),
+            emoji: "\u{1F44D}".into(),
+            on: false,
+        };
+        assert_eq!(Payload::decode(&payload.encode()), payload);
+    }
+
+    /// An older sender only ever added, and said so by omitting the field.
+    /// Reading that as a removal would take reactions off as they arrived.
+    #[test]
+    fn a_reaction_without_the_toggle_is_an_addition() {
+        let wire =
+            br#"{"kind":"reaction","target":"00000000-0000-0000-0000-000000000007","emoji":"x"}"#;
+        match Payload::decode(wire) {
+            Payload::Reaction { on, emoji, .. } => {
+                assert!(on, "an absent toggle means added, not removed");
+                assert_eq!(emoji, "x");
+            }
+            other => panic!("expected a reaction, got {other:?}"),
+        }
+    }
+
+    /// A reaction changes shared state and draws no bubble, so it must not
+    /// become the conversation list's preview.
+    #[test]
+    fn a_reaction_is_not_a_preview() {
+        let payload = Payload::Reaction {
+            target: Uuid::from_u128(1),
+            emoji: "\u{1F44D}".into(),
+            on: true,
+        };
+        assert_eq!(payload.preview(), "");
     }
 
     #[test]

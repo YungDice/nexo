@@ -6,7 +6,12 @@ import { relativeTime, safetyNumber } from "../../lib/format";
 import { copyText, notify, openUrl, pickFile } from "../../lib/native";
 import { fieldFor, hashString } from "../../lib/palette";
 import { useProfile } from "../../app/useProfile";
-import { asFeedError, pinPost, readImageForCrop, unpinPost } from "../../lib/feed";
+import {
+  asFeedError,
+  pinPost,
+  readImageForCrop,
+  unpinPost,
+} from "../../lib/feed";
 import { deviceFingerprint } from "../../lib/auth";
 import { RemoteImage } from "../../components/ui/RemoteImage";
 import { ImageCropper } from "../../components/ui/ImageCropper";
@@ -21,13 +26,19 @@ import { VisibilityControls } from "./VisibilityControls";
 import { Avatar } from "../../components/ui/Avatar";
 import { Button, IconButton } from "../../components/ui/Button";
 import { FactRow, Field, Tabs, TextArea } from "../../components/ui/Controls";
-import { Callout, EmptyState, Pill, Skeleton } from "../../components/ui/Feedback";
+import { PrivacyPanel } from "./PrivacyPanel";
+import {
+  Callout,
+  EmptyState,
+  Pill,
+  Skeleton,
+} from "../../components/ui/Feedback";
 import { Icon } from "../../components/ui/Icon";
 import { Panel, SectionHeader } from "../../components/ui/Surface";
 import { useSignOut } from "../auth/useSignOut";
 import { PrivacyTable } from "../settings/PrivacyTable";
 
-type Tab = "posts" | "media" | "identity";
+type Tab = "posts" | "media" | "identity" | "privacy";
 
 export interface ProfileEdits {
   displayName: string;
@@ -78,14 +89,21 @@ export function ProfilePage({ now }: { now: Date }) {
 
   if (live.loading || !me) {
     return (
-      <Panel tone="content" edge={false} className="flex min-w-0 flex-1 flex-col">
+      <Panel
+        tone="content"
+        edge={false}
+        className="flex min-w-0 flex-1 flex-col"
+      >
         <div className="mx-auto w-full max-w-[840px] px-6 pt-4">
           {live.problem ? (
             <Callout tone="warning" icon="alert">
               {live.problem}
             </Callout>
           ) : (
-            <div className="flex flex-col gap-4" aria-label="Loading your profile">
+            <div
+              className="flex flex-col gap-4"
+              aria-label="Loading your profile"
+            >
               <Skeleton className="rounded-panel aspect-[3/1] max-h-[240px] w-full" />
               <Skeleton className="h-6 w-48" />
               <Skeleton className="h-4 w-32" />
@@ -237,6 +255,7 @@ export function ProfilePage({ now }: { now: Date }) {
                 { id: "posts", label: "Posts", icon: "home" },
                 { id: "media", label: "Media", icon: "image" },
                 { id: "identity", label: "Identity", icon: "key" },
+                { id: "privacy", label: "Privacy", icon: "shield" },
               ]}
               active={tab}
               onChange={setTab}
@@ -245,7 +264,11 @@ export function ProfilePage({ now }: { now: Date }) {
 
           <div className="py-5">
             {tab === "posts" ? (
-              <PostsTab now={now} posts={live.posts} onChanged={() => void live.refresh()} />
+              <PostsTab
+                now={now}
+                posts={live.posts}
+                onChanged={() => void live.refresh()}
+              />
             ) : null}
             {tab === "media" ? <MediaTab posts={live.posts} /> : null}
             {tab === "identity" ? (
@@ -254,6 +277,12 @@ export function ProfilePage({ now }: { now: Date }) {
                 onVisibilityChange={(field, value) =>
                   void live.setVisibility(field, value)
                 }
+              />
+            ) : null}
+            {tab === "privacy" ? (
+              <PrivacyPanel
+                isPrivate={me.is_private}
+                onChanged={() => void live.refresh()}
               />
             ) : null}
           </div>
@@ -265,7 +294,11 @@ export function ProfilePage({ now }: { now: Date }) {
           // A 3:1 banner and a square avatar, matching where each is drawn.
           aspect={cropping.which === "banner" ? 3 : 1}
           round={cropping.which === "avatar"}
-          title={cropping.which === "banner" ? "Position your banner" : "Position your picture"}
+          title={
+            cropping.which === "banner"
+              ? "Position your banner"
+              : "Position your picture"
+          }
           onCancel={() => setCropping(null)}
           onDone={async (dataUrl) => {
             const which = cropping.which;
@@ -274,7 +307,6 @@ export function ProfilePage({ now }: { now: Date }) {
           }}
         />
       ) : null}
-
     </Panel>
   );
 }
@@ -346,7 +378,9 @@ function EditProfile({
           rows={3}
           maxLength={280}
           hint="Up to 280 characters. Who can see it is set on the Security tab."
-          onChange={(event) => setDraft((d) => ({ ...d, bio: event.target.value }))}
+          onChange={(event) =>
+            setDraft((d) => ({ ...d, bio: event.target.value }))
+          }
         />
       </div>
       <div className="mt-4 grid gap-4 sm:grid-cols-[1fr_2fr]">
@@ -383,7 +417,11 @@ function EditProfile({
           <Button onClick={onCancel}>Cancel</Button>
           <Button
             variant="primary"
-            disabled={saving || draft.displayName.trim().length === 0 || linkProblem !== null}
+            disabled={
+              saving ||
+              draft.displayName.trim().length === 0 ||
+              linkProblem !== null
+            }
             onClick={() =>
               onSave({
                 display_name: draft.displayName.trim(),
@@ -392,9 +430,7 @@ function EditProfile({
                 // An empty URL clears the list, which is how a link is
                 // removed -- there is no separate delete for something with
                 // one slot.
-                links: url
-                  ? [{ label: draft.linkLabel.trim(), url }]
-                  : [],
+                links: url ? [{ label: draft.linkLabel.trim(), url }] : [],
               })
             }
           >
@@ -446,14 +482,21 @@ function PostsTab({
   return (
     <ul className="flex flex-col gap-3">
       {posts.map((post) => (
-        <li key={post.id} className="rounded-panel border border-line bg-fill p-4">
+        <li
+          key={post.id}
+          className="rounded-panel border border-line bg-fill p-4"
+        >
           <div className="flex items-start gap-3">
             <p className="text-text-hi flex-1 text-body leading-relaxed whitespace-pre-wrap">
               {post.body}
             </p>
             <IconButton
               name="pin"
-              label={post.pinned ? "Unpin from your profile" : "Pin to the top of your profile"}
+              label={
+                post.pinned
+                  ? "Unpin from your profile"
+                  : "Pin to the top of your profile"
+              }
               size={16}
               active={post.pinned ?? false}
               onClick={() => void togglePin(post)}
@@ -560,18 +603,18 @@ function IdentityTab({
       <section className="flex flex-col gap-3">
         <SectionHeader>This device</SectionHeader>
         <p className="text-text-mid max-w-[70ch] text-body leading-relaxed">
-          Your identity key never leaves this machine. The digits below are derived from its
-          public half — compare them with someone in person or over a channel you already
-          trust, and you know you are talking to them and not to whoever is carrying the
-          message.
+          Your identity key never leaves this machine. The digits below are
+          derived from its public half — compare them with someone in person or
+          over a channel you already trust, and you know you are talking to them
+          and not to whoever is carrying the message.
         </p>
 
         {!checked ? (
           <Skeleton className="h-[120px] w-full max-w-[520px]" />
         ) : !fingerprint ? (
           <Callout icon="info">
-            This device has no identity key yet. One is generated when you register, and
-            its fingerprint appears here then.
+            This device has no identity key yet. One is generated when you
+            register, and its fingerprint appears here then.
           </Callout>
         ) : (
           <div className="flex flex-wrap items-start gap-5">
@@ -617,14 +660,19 @@ function IdentityTab({
       <section className="flex flex-col gap-3">
         <SectionHeader>Sessions</SectionHeader>
         <Callout icon="info">
-          One device per account in v0.1. Signing in somewhere else signs this machine out,
-          and the local message store is wiped when it happens.
+          One device per account in v0.1. Signing in somewhere else signs this
+          machine out, and the local message store is wiped when it happens.
         </Callout>
         {/* One device per account in v0.1, as the callout says, and there is no
             session list to read from. A second row here was invented data
             contradicting the sentence directly above it. */}
         <div className="rounded-panel divide-y divide-[var(--hairline)] border border-line">
-          <SessionRow name="This device" detail="Signed in now" when="Active now" current />
+          <SessionRow
+            name="This device"
+            detail="Signed in now"
+            when="Active now"
+            current
+          />
         </div>
         <div>
           <SignOutRow />
@@ -693,13 +741,17 @@ function FingerprintPattern({ seed }: { seed: string }) {
         {cells.map((filled, index) => (
           <span
             key={index}
-            className={cn("aspect-square rounded-[3px]", filled ? "bg-accent-soft" : "bg-fill-hover")}
+            className={cn(
+              "aspect-square rounded-[3px]",
+              filled ? "bg-accent-soft" : "bg-fill-hover",
+            )}
             style={{ "--stagger": `${index * 4}ms` } as CSSProperties}
           />
         ))}
       </div>
       <figcaption className="text-text-lo text-[11px] leading-relaxed">
-        Derived from the same digits. A scannable code arrives with the real identity key.
+        Derived from the same digits. A scannable code arrives with the real
+        identity key.
       </figcaption>
     </figure>
   );
@@ -715,7 +767,12 @@ function FingerprintPattern({ seed }: { seed: string }) {
 function SignOutRow() {
   const { signOut, busy } = useSignOut();
   return (
-    <Button variant="danger" icon="logout" disabled={busy} onClick={() => void signOut()}>
+    <Button
+      variant="danger"
+      icon="logout"
+      disabled={busy}
+      onClick={() => void signOut()}
+    >
       Sign out
     </Button>
   );

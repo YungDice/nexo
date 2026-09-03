@@ -32,8 +32,8 @@ use crate::feed::{
     VoteResult,
 };
 use crate::transport::{
-    Accepted, ClaimedKeyPackage, ConversationSummary, Envelope, SaltResponse, SessionTokens,
-    Transport, TransportError,
+    Accepted, ClaimedKeyPackage, ConversationSummary, Envelope, InviteSummary, MintedInvite,
+    SaltResponse, SearchResult, SessionTokens, StorySummary, Transport, TransportError,
 };
 use nexo_protocol::{MeetProfile, MeetProfileUpdate, MeetRequest};
 
@@ -737,6 +737,45 @@ impl Transport for HttpTransport {
             "/v1/meet/requests",
             &serde_json::json!({ "handle": handle, "conversation_id": conversation_id }),
         )
+    }
+
+    fn create_story(&self, s3_key: &str, size: i64) -> Result<StorySummary, TransportError> {
+        self.post_auth(
+            "/v1/stories",
+            &serde_json::json!({ "s3_key": s3_key, "size": size }),
+        )
+    }
+
+    fn story_url(&self, id: i64) -> Result<String, TransportError> {
+        #[derive(serde::Deserialize)]
+        struct Url {
+            url: String,
+        }
+        let answer: Url = self.post_auth(&format!("/v1/stories/{id}/url"), &())?;
+        Ok(answer.url)
+    }
+
+    fn search_users(&self, term: &str) -> Result<Vec<SearchResult>, TransportError> {
+        self.get_auth(&format!("/v1/users?q={}", query_escape(term)))
+    }
+
+    fn create_invite(
+        &self,
+        label: Option<&str>,
+        days: i64,
+    ) -> Result<MintedInvite, TransportError> {
+        self.post_auth(
+            "/v1/meet/invites",
+            &serde_json::json!({ "label": label, "days": days }),
+        )
+    }
+
+    fn list_invites(&self) -> Result<Vec<InviteSummary>, TransportError> {
+        self.get_auth("/v1/meet/invites")
+    }
+
+    fn revoke_invite(&self, id: i64) -> Result<(), TransportError> {
+        self.delete_auth(&format!("/v1/meet/invites/{id}"))
     }
 
     fn report(

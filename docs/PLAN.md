@@ -135,6 +135,35 @@ but it is a different product and a different security posture from the one the
 prompt described. If the feed should be contacts-scoped, that decision has to
 change before M7, because M6 and M7 both build on it.
 
+## Changes to the brief, taken after M10
+
+Four, and they are product decisions rather than technical corrections — which
+is exactly why they are written down. `BRIEF.md` is untouched, because other
+documents cite its section numbers.
+
+**Message editing ships.** §11 lists it as out of scope for v0.1. It is now a
+`Payload::Edit` inside the ciphertext, within ten minutes, and only for one's
+own messages. Nothing about it reaches the server, which is what made it cheap
+enough to reverse: no route, no migration, no `.sqlx`.
+
+**Reactions on direct messages ship.** §11 lists them as out of scope. Same
+reasoning and the same shape — `Payload::Reaction`, inside the encryption. A
+server-side reaction endpoint was never on the table: an emoji is content, and
+rule 4 says the server never holds content.
+
+**Taking a message back ships**, in two forms that are named differently
+because they promise differently: *Delete for me* is local and absolute,
+*Delete for everyone* is a request that a modified client need not honour. The
+UI says which is which; `THREAT-MODEL.md` §2.9 and §2.10 say why.
+
+**Discovery is no longer by handle only.** This file recorded *"Discovery is by
+handle only"* as a decision taken. A public account is now findable by search.
+The reversal is only defensible because the other half was built with it: an
+account can be private, and private is enforced on the server in both places it
+could be evaded — absent from search, and unreachable without a live invitation.
+Had only the search half shipped, this would have been the switch `profiles.rs`
+refused to add, one that offers privacy it cannot keep.
+
 ## Changes to the brief, taken during M1
 
 Two, both in §7 and neither structural. They are recorded here rather than

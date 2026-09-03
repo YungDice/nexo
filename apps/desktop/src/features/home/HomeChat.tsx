@@ -104,7 +104,8 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
   // The fallback covers one frame: the list arrives before the effect below
   // has named anything, and without it the panel would flash "no conversations
   // yet" beside a feed that plainly has some.
-  const conversation = live.conversations.find((c) => c.id === shownId) ?? newest;
+  const conversation =
+    live.conversations.find((c) => c.id === shownId) ?? newest;
 
   const openInMessages = () => {
     if (!conversation) return;
@@ -115,7 +116,9 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
   // Anchored under the header rather than at the pointer: this menu belongs to
   // a control, so it opens where that control is and can be found there again.
   const trigger = useRef<HTMLButtonElement>(null);
-  const [pickerAt, setPickerAt] = useState<{ x: number; y: number } | null>(null);
+  const [pickerAt, setPickerAt] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   // `ContextMenu` closes on any `pointerdown` outside itself, and the trigger
   // is outside itself. Without this, clicking it while open would close and
   // immediately reopen. Capture runs before the menu's document listener, so
@@ -200,19 +203,25 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
           </div>
 
           {pickerAt ? (
-            <ContextMenu items={pickerItems} at={pickerAt} onClose={closePicker} />
+            <ContextMenu
+              items={pickerItems}
+              at={pickerAt}
+              onClose={closePicker}
+            />
           ) : null}
 
           <MessageList
             messages={live.messages}
             now={now}
             conversation={{ ...conversation, ...overrides[conversation.id] }}
+            onChanged={() => void live.refresh()}
           />
 
           <Composer
             conversationTitle={conversation.title}
             onSend={(body, attachment) => {
-              if (attachment) void live.sendFile(attachment.path, body || undefined);
+              if (attachment)
+                void live.sendFile(attachment.path, body || undefined);
               else void live.send(body);
             }}
           />
@@ -224,7 +233,9 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
           icon="messages"
           title="No conversations yet"
           body="Once you are writing with someone, the most recent conversation appears here beside the feed."
-          action={<Button onClick={() => go("messages")}>Go to Messages</Button>}
+          action={
+            <Button onClick={() => go("messages")}>Go to Messages</Button>
+          }
         />
       )}
     </Panel>

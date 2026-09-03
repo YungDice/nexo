@@ -804,14 +804,11 @@ async fn react(
     }
 
     let emoji = request.emoji.trim();
-    // A length in characters, and a refusal of anything with whitespace or
-    // control characters in it: this string is rendered as-is in a reaction
-    // pill, and the column's CHECK counts bytes rather than graphemes.
-    if emoji.is_empty()
-        || emoji.chars().count() > 4
-        || emoji.len() > 16
-        || emoji.chars().any(|c| c.is_whitespace() || c.is_control())
-    {
+    // The rule lives in `nexo_protocol` now, because conversations need the
+    // same answer and have to reach it on the receiving client -- the server
+    // never sees a message payload, so it cannot refuse anything about one.
+    // Two copies of a validation rule is one of them being wrong later.
+    if !nexo_protocol::is_reaction_emoji(emoji) {
         return Err(PostError::Invalid("That is not an emoji.".into()));
     }
 

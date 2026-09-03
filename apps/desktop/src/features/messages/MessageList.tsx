@@ -4,7 +4,29 @@ import { useApp } from "../../app/store";
 import { firstLink, useLinkPreview } from "../../app/useLinkPreview";
 import { cn } from "../../lib/cn";
 import { clockTime, dayDivider, fileSize, isSameDay } from "../../lib/format";
-import { copyText, notify, openUrl, pickSavePath } from "../../lib/native";
+import {
+  confirm,
+  copyText,
+  notify,
+  openUrl,
+  pickSavePath,
+} from "../../lib/native";
+import {
+  deleteMessageForMe,
+  reactToMessage,
+  reviseMessage,
+  setMessagePinned,
+} from "../../lib/conversations";
+import { EmojiPicker } from "../../components/ui/EmojiPicker";
+
+/**
+ * How long a message stays editable, matching `nexo_protocol::window`.
+ *
+ * The UI's copy of a rule the sender is held to anyway. The receiver allows a
+ * minute more, which is not this number's business — see the Rust module for
+ * why the two differ.
+ */
+const EDIT_WINDOW_MS = 10 * 60 * 1000;
 import {
   asConversationError,
   attachmentDataUrl,
@@ -62,10 +84,13 @@ export function MessageList({
   messages,
   now,
   conversation,
+  onChanged,
 }: {
   messages: Message[];
   now: Date;
   conversation: Conversation;
+  /** Pinning or deleting changed the local store; reload from it. */
+  onChanged?: () => void;
 }) {
   const rows = buildRows(messages, now);
   const scroller = useRef<HTMLDivElement>(null);
@@ -92,7 +117,9 @@ export function MessageList({
     [conversation.id, media],
   );
 
-  const shownMedia = (media ?? []).filter((a) => a.kind === "image" || a.kind === "video");
+  const shownMedia = (media ?? []).filter(
+    (a) => a.kind === "image" || a.kind === "video",
+  );
 
   const [atBottom, setAtBottom] = useState(true);
   // How many arrived while they were reading back. Reset the moment the bottom
@@ -154,6 +181,29 @@ export function MessageList({
                 index={index}
                 conversation={conversation}
                 onOpenMedia={(id) => void openMedia(id)}
+                onRevise={async (target, body) => {
+                  await reviseMessage(conversation.id, target, body);
+                  onChanged?.();
+                }}
+                onReact={async (target, emoji, on) => {
+                  await reactToMessage(conversation.id, target, emoji, on);
+                  onChanged?.();
+                }}
+                onPinnedChange={async (envelopeId, pinned) => {
+                  await setMessagePinned(conversation.id, envelopeId, pinned);
+                  onChanged?.();
+                }}
+                onDeleteForMe={async (envelopeId) => {
+                  // Named in the confirmation, not just in the menu: this is
+                  // the difference the person is actually choosing.
+                  const ok = await confirm(
+                    "Delete for me",
+                    "This removes the message from this device. Everyone else keeps their copy.",
+                  );
+                  if (!ok) return;
+                  await deleteMessageForMe(conversation.id, envelopeId);
+                  onChanged?.();
+                }}
               />
             </li>
           ))}
@@ -173,7 +223,11 @@ export function MessageList({
         <button
           type="button"
           onClick={scrollToBottom}
-          aria-label={missed > 0 ? `${missed} new messages, jump to the latest` : "Jump to the latest"}
+          aria-label={
+            missed > 0
+              ? `${missed} new messages, jump to the latest`
+              : "Jump to the latest"
+          }
           className="rounded-full bg-surface-2 text-text-hi ring-line-strong absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5 px-3 py-2 shadow-lg ring-1 transition-colors duration-[var(--motion-fast)] hover:bg-fill-hover"
         >
           <Icon name="chevronLeft" size={14} className="-rotate-90" />
@@ -190,7 +244,11 @@ export function MessageList({
 
 function DayDivider({ label }: { label: string }) {
   return (
-    <div className="my-3 flex items-center gap-3" role="separator" aria-label={label}>
+    <div
+      className="my-3 flex items-center gap-3"
+      role="separator"
+      aria-label={label}
+    >
       <span className="h-px flex-1 bg-[var(--hairline)]" />
       <span className="text-text-lo text-[11px] font-medium tracking-[0.06em] uppercase">
         {label}
@@ -205,14 +263,40 @@ function Bubble({
   index,
   conversation,
   onOpenMedia,
+  onPinnedChange,
+  onDeleteForMe,
+  onReact,
+  onRevise,
 }: {
   row: Row;
   index: number;
   conversation: Conversation;
   onOpenMedia: (envelopeId: number) => void;
+  onPinnedChange: (envelopeId: number, pinned: boolean) => void | Promise<void>;
+  onReact: (target: string, emoji: string, on: boolean) => void | Promise<void>;
+  onRevise: (target: string, body?: string) => void | Promise<void>;
+  onDeleteForMe: (envelopeId: number) => void | Promise<void>;
 }) {
   const { message, startsRun, endsRun } = row;
   const account = useApp((s) => s.account);
+  const [picking, setPicking] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+
+  // Read at the moment the menu is built, from the message's own send time --
+  // never frozen when the conversation opened. A menu opened at 9:58 must stop
+  // offering these two minutes later, not stay valid for ever.
+  const withinWindow = Date.now() - message.at.getTime() <= EDIT_WINDOW_MS;
+
+  async function askToRetract() {
+    // The wording is the feature. "Deleted for everyone" is a claim this
+    // cannot make; what actually happens is a request that well-behaved
+    // clients honour.
+    const ok = await confirm(
+      "Delete for everyone",
+      "This asks every Nexo app that has this message to remove it. Copies on a modified app can remain.",
+    );
+    if (ok && message.clientId) await onRevise(message.clientId, undefined);
+  }
   // `useConversations` marks our own messages "me"; everything else is a
   // sender device id. There is no profile directory yet (M7), so an incoming
   // message is named from the conversation when that is unambiguous -- a DM
@@ -236,6 +320,54 @@ function Bubble({
         label: "Copy text",
         icon: "file",
         onSelect: () => void copyText(message.body),
+      });
+    }
+    // A queued message has no envelope id yet, and that is what a pin and a
+    // local delete are keyed by. Offering either would act on a number the
+    // server has not assigned.
+    // Only our own, only while the window is open, and only if the message has
+    // a name to refer to. The entries are **absent** past ten minutes rather
+    // than greyed out: an action that is gone was never offered, while a
+    // disabled one invites the question of how to get it back.
+    if (mine && message.clientId && !message.retracted && withinWindow) {
+      items.push({
+        label: "Edit",
+        icon: "file",
+        onSelect: () => setEditing(message.body),
+      });
+      items.push({
+        label: "Delete for everyone",
+        icon: "close",
+        danger: true,
+        onSelect: () => void askToRetract(),
+      });
+    }
+    // Reacting needs the name inside the ciphertext, which a message sent
+    // before names existed does not have. The entry is simply absent there
+    // rather than shown and refused.
+    if (message.clientId) {
+      items.push({
+        label: "React",
+        icon: "emoji",
+        onSelect: () => setPicking(true),
+      });
+    }
+    // A queued message has no envelope id yet -- the server assigns it, and
+    // that is what a pin and a local delete are keyed by. `state === "sending"`
+    // is how the UI already names that condition.
+    if (message.state !== "sending") {
+      const envelopeId = Number(message.id);
+      items.push({
+        // Named for what it is. "Pin" alone would imply everyone sees it.
+        label: message.pinned ? "Unpin from this device" : "Pin on this device",
+        icon: "shield",
+        onSelect: () => void onPinnedChange(envelopeId, !message.pinned),
+      });
+      items.push({
+        label: "Delete for me",
+        icon: "close",
+        danger: true,
+        onSelect: () => void onDeleteForMe(envelopeId),
       });
     }
     return items;
@@ -290,14 +422,58 @@ function Bubble({
           <>
             {message.attachments?.some((a) => a.kind === "image") ? (
               <ImageGrid
-                attachments={message.attachments.filter((a) => a.kind === "image")}
+                attachments={message.attachments.filter(
+                  (a) => a.kind === "image",
+                )}
                 onOpen={onOpenMedia}
               />
             ) : null}
 
             <LinkPreviewCard message={message} />
 
-            {message.body ? (
+            {message.retracted ? (
+              // The row is still here on purpose. Removing it would close the
+              // gap where something used to be, which is not what being taken
+              // back looks like to the people who saw it.
+              <div className="rounded-bubble border-line text-text-lo border border-dashed px-3.5 py-2 text-message italic">
+                {mine ? "You took this back" : "This message was taken back"}
+              </div>
+            ) : editing !== null ? (
+              <div className="rounded-bubble bg-surface-3 border-line flex flex-col gap-2 border p-2">
+                <textarea
+                  rows={3}
+                  value={editing}
+                  autoFocus
+                  onChange={(event) => setEditing(event.target.value)}
+                  aria-label="Edit this message"
+                  className="text-text-hi rounded-control bg-surface-2 resize-none px-2 py-1.5 text-message outline-none focus:ring-1 focus:ring-accent"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="text-accent-soft text-meta hover:underline"
+                    onClick={() => {
+                      const next = editing.trim();
+                      // An empty edit is a retraction wearing a disguise, and
+                      // it should be the deliberate one instead.
+                      if (next && message.clientId) {
+                        void onRevise(message.clientId, next);
+                      }
+                      setEditing(null);
+                    }}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="text-text-lo text-meta hover:underline"
+                    onClick={() => setEditing(null)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : message.body ? (
               <div
                 className={cn(
                   "rounded-bubble px-3.5 py-2 text-message leading-6 whitespace-pre-wrap",
@@ -322,6 +498,55 @@ function Bubble({
           </>
         )}
 
+        {/* The feed's pills, in a conversation. Same shape, same aria — the
+            component was written once and the reaction data was given the same
+            shape on purpose. */}
+        {message.reactions && message.reactions.length > 0 ? (
+          <div
+            className={cn(
+              "flex flex-wrap gap-1",
+              mine ? "justify-end" : "justify-start",
+            )}
+          >
+            {message.reactions.map((reaction) => (
+              <button
+                key={reaction.emoji}
+                type="button"
+                aria-label={`${reaction.count} reacted ${reaction.emoji}`}
+                aria-pressed={reaction.mine}
+                onClick={() =>
+                  message.clientId &&
+                  void onReact(message.clientId, reaction.emoji, !reaction.mine)
+                }
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-meta transition-colors duration-[var(--motion-fast)]",
+                  reaction.mine
+                    ? "bg-accent/18 text-accent-soft"
+                    : "text-text-mid bg-fill-hover hover:bg-fill-active",
+                )}
+              >
+                {/* User content, not chrome: somebody chose this. */}
+                <span aria-hidden="true">{reaction.emoji}</span>{" "}
+                <span className="font-mono text-[11px]">{reaction.count}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {picking && message.clientId ? (
+          <div className="rounded-panel bg-surface-2 ring-line-strong z-[300] overflow-hidden ring-1">
+            {/* Closed after one: a reaction is a single choice, unlike the
+                composer where two in a row is normal. */}
+            <EmojiPicker
+              onPick={(emoji) => {
+                if (message.clientId)
+                  void onReact(message.clientId, emoji, true);
+                setPicking(false);
+              }}
+            />
+          </div>
+        ) : null}
+
         {endsRun ? (
           <span
             className={cn(
@@ -330,7 +555,15 @@ function Bubble({
             )}
           >
             {clockTime(message.at)}
-            {mine && showReceipts ? <DeliveryTick state={message.state} /> : null}
+            {/* A quiet mark, and nothing that claims the original is gone --
+                it is, from this device's point of view, and saying more than
+                that would be a promise about other people's copies. */}
+            {message.edited && !message.retracted ? (
+              <span title="Edited by the sender">edited</span>
+            ) : null}
+            {mine && showReceipts ? (
+              <DeliveryTick state={message.state} />
+            ) : null}
             {message.state === "sending" && !showReceipts ? (
               <Icon name="clock" size={12} aria-label="Sending" />
             ) : null}
@@ -378,10 +611,12 @@ function UndecryptableBubble() {
     <div className="rounded-bubble border-danger/35 bg-danger/8 flex items-start gap-2.5 border px-3.5 py-2.5">
       <Icon name="lock" size={16} className="text-danger mt-0.5 shrink-0" />
       <span className="text-meta leading-relaxed">
-        <span className="text-danger block font-medium">Can't decrypt this message</span>
+        <span className="text-danger block font-medium">
+          Can't decrypt this message
+        </span>
         <span className="text-text-mid">
-          It was sent in an epoch this device has no key for. Ask the sender to send it
-          again.
+          It was sent in an epoch this device has no key for. Ask the sender to
+          send it again.
         </span>
       </span>
     </div>
@@ -403,7 +638,11 @@ function ImageGrid({
       )}
     >
       {attachments.map((attachment) => (
-        <AttachedImage key={attachment.id} attachment={attachment} onOpen={onOpen} />
+        <AttachedImage
+          key={attachment.id}
+          attachment={attachment}
+          onOpen={onOpen}
+        />
       ))}
     </div>
   );
@@ -512,7 +751,10 @@ function FileRow({ attachment }: { attachment: Attachment }) {
       // Rule 7: a file that failed to decrypt or failed to download says so.
       // Nothing partial is written -- Rust verifies before it writes -- and a
       // silent no-op here would look exactly like success.
-      await notify("Couldn't save that file", asConversationError(error).message);
+      await notify(
+        "Couldn't save that file",
+        asConversationError(error).message,
+      );
     } finally {
       setBusy(false);
     }
@@ -587,8 +829,16 @@ function LinkPreviewCard({ message }: { message: Message }) {
   const { onContextMenu, menu } = useContextMenu(() =>
     url
       ? [
-          { label: "Open link", icon: "external", onSelect: () => void openUrl(url) },
-          { label: "Copy address", icon: "link", onSelect: () => void copyText(url) },
+          {
+            label: "Open link",
+            icon: "external",
+            onSelect: () => void openUrl(url),
+          },
+          {
+            label: "Copy address",
+            icon: "link",
+            onSelect: () => void copyText(url),
+          },
         ]
       : [],
   );
@@ -598,47 +848,49 @@ function LinkPreviewCard({ message }: { message: Message }) {
   if (!preview) {
     return (
       <>
-      {menu}
-      <a
-        href={url}
-        onClick={openExternally(url)}
-        onContextMenu={onContextMenu}
-        className="text-accent-soft inline-flex items-center gap-1.5 text-meta underline decoration-line-strong underline-offset-2"
-      >
-        <Icon name="link" size={14} />
-        {url}
-      </a>
+        {menu}
+        <a
+          href={url}
+          onClick={openExternally(url)}
+          onContextMenu={onContextMenu}
+          className="text-accent-soft inline-flex items-center gap-1.5 text-meta underline decoration-line-strong underline-offset-2"
+        >
+          <Icon name="link" size={14} />
+          {url}
+        </a>
       </>
     );
   }
 
   return (
     <>
-    {menu}
-    <a
-      href={preview.url}
-      onClick={openExternally(preview.url)}
-      onContextMenu={onContextMenu}
-      className="rounded-panel bg-surface-3/70 block w-full max-w-[360px] border border-line p-2.5"
-    >
-      <span className="text-accent-soft block truncate text-[11px] underline decoration-line-strong underline-offset-2">
-        {preview.url}
-      </span>
-      <span className="text-accent-soft mt-2 block text-[11px] font-medium">
-        {preview.source}
-      </span>
-      <span className="text-text-hi block text-meta font-medium">{preview.title}</span>
-      {preview.description ? (
-        <span className="text-text-mid mt-0.5 block text-[11px] leading-relaxed">
-          {preview.description}
+      {menu}
+      <a
+        href={preview.url}
+        onClick={openExternally(preview.url)}
+        onContextMenu={onContextMenu}
+        className="rounded-panel bg-surface-3/70 block w-full max-w-[360px] border border-line p-2.5"
+      >
+        <span className="text-accent-soft block truncate text-[11px] underline decoration-line-strong underline-offset-2">
+          {preview.url}
         </span>
-      ) : null}
-      <span
-        className="rounded-control mt-2.5 block h-32 w-full"
-        style={{ background: fieldFor(preview.url) }}
-        aria-hidden="true"
-      />
-    </a>
+        <span className="text-accent-soft mt-2 block text-[11px] font-medium">
+          {preview.source}
+        </span>
+        <span className="text-text-hi block text-meta font-medium">
+          {preview.title}
+        </span>
+        {preview.description ? (
+          <span className="text-text-mid mt-0.5 block text-[11px] leading-relaxed">
+            {preview.description}
+          </span>
+        ) : null}
+        <span
+          className="rounded-control mt-2.5 block h-32 w-full"
+          style={{ background: fieldFor(preview.url) }}
+          aria-hidden="true"
+        />
+      </a>
     </>
   );
 }

@@ -406,3 +406,391 @@ async fn leaving_the_map_keeps_the_character() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(mine["char_config"]["topVariant"], "hoodie");
 }
+
+// ------------------------------------------------------ private accounts ---
+
+async fn go_private(app: &axum::Router, who: &Party) {
+    let (status, _) = call(
+        app,
+        "PATCH",
+        "/v1/me",
+        Some(&who.token),
+        Some(json!({ "is_private": true })),
+    )
+    .await;
+    assert!(status.is_success(), "going private returned {status}");
+}
+
+async fn mint_invite(app: &axum::Router, who: &Party, days: i64) -> (i64, String) {
+    let (status, body) = call(
+        app,
+        "POST",
+        "/v1/meet/invites",
+        Some(&who.token),
+        Some(json!({ "label": "a friend", "days": days })),
+    )
+    .await;
+    assert!(status.is_success(), "minting returned {status}");
+    (
+        body["id"].as_i64().unwrap(),
+        body["secret"].as_str().unwrap().to_string(),
+    )
+}
+
+async fn try_open(
+    app: &axum::Router,
+    from: &Party,
+    to: &Party,
+    invite: Option<&str>,
+) -> StatusCode {
+    let mut payload = json!({
+        "conversation_id": Uuid::new_v4(),
+        "members": [to.handle],
+    });
+    if let Some(secret) = invite {
+        payload["invite"] = json!(secret);
+    }
+    let (status, _) = call(
+        app,
+        "POST",
+        "/v1/conversations",
+        Some(&from.token),
+        Some(payload),
+    )
+    .await;
+    status
+}
+
+#[tokio::test]
+async fn a_public_account_is_findable_and_a_private_one_is_not() {
+    let app = app_or_skip!();
+    let seeker = register(&app).await;
+    let open = register(&app).await;
+    let shy = register(&app).await;
+    go_private(&app, &shy).await;
+
+    let found = |body: &Value, handle: &str| -> bool {
+        body.as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["handle"] == handle)
+    };
+
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/v1/users?q={}", open.handle),
+        Some(&seeker.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(found(&body, &open.handle), "a public account is findable");
+
+    let (_, body) = call(
+        &app,
+        "GET",
+        &format!("/v1/users?q={}", shy.handle),
+        Some(&seeker.token),
+        None,
+    )
+    .await;
+    assert!(
+        !found(&body, &shy.handle),
+        "a private account must not appear in search"
+    );
+}
+
+/// The half that makes the word mean something. Hiding somebody from search
+/// while leaving them writable would be the switch `profiles.rs` refused.
+#[tokio::test]
+async fn a_private_account_cannot_be_written_to_without_an_invite() {
+    let app = app_or_skip!();
+    let stranger = register(&app).await;
+    let shy = register(&app).await;
+    go_private(&app, &shy).await;
+
+    assert_eq!(
+        try_open(&app, &stranger, &shy, None).await,
+        StatusCode::FORBIDDEN,
+        "no invitation, no conversation"
+    );
+
+    let (_, secret) = mint_invite(&app, &shy, 7).await;
+    assert!(
+        try_open(&app, &stranger, &shy, Some(&secret))
+            .await
+            .is_success(),
+        "a live invitation opens the door"
+    );
+}
+
+#[tokio::test]
+async fn a_revoked_invite_is_refused() {
+    let app = app_or_skip!();
+    let stranger = register(&app).await;
+    let shy = register(&app).await;
+    go_private(&app, &shy).await;
+
+    let (id, secret) = mint_invite(&app, &shy, 7).await;
+    let (status, _) = call(
+        &app,
+        "DELETE",
+        &format!("/v1/meet/invites/{id}"),
+        Some(&shy.token),
+        None,
+    )
+    .await;
+    assert!(status.is_success(), "revoking returned {status}");
+
+    assert_eq!(
+        try_open(&app, &stranger, &shy, Some(&secret)).await,
+        StatusCode::FORBIDDEN,
+        "a withdrawn invitation is not an invitation"
+    );
+}
+
+/// Liveness is decided in the query, so an expired invite stops working the
+/// moment it expires — not when some job gets round to it.
+#[tokio::test]
+async fn an_expired_invite_is_refused() {
+    let app = app_or_skip!();
+    let stranger = register(&app).await;
+    let shy = register(&app).await;
+    go_private(&app, &shy).await;
+
+    let (id, secret) = mint_invite(&app, &shy, 1).await;
+
+    // Age it past its expiry. There is no clock to move, so the row moves --
+    // and both timestamps have to, because the table's own CHECK refuses an
+    // expiry that precedes its creation. (That refusal is the constraint
+    // working; it caught this test's first version.)
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let pool = db::create_pool(&url).await.unwrap();
+    sqlx::query(
+        "UPDATE meet_invites
+         SET created_at = now() - INTERVAL '2 days',
+             expires_at = now() - INTERVAL '1 minute'
+         WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        try_open(&app, &stranger, &shy, Some(&secret)).await,
+        StatusCode::FORBIDDEN,
+        "an expired invitation is not an invitation"
+    );
+}
+
+#[tokio::test]
+async fn an_invitation_cannot_outlast_a_week() {
+    let app = app_or_skip!();
+    let shy = register(&app).await;
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/meet/invites",
+        Some(&shy.token),
+        Some(json!({ "days": 30 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// Somebody already in touch does not need an invitation to write again.
+#[tokio::test]
+async fn going_private_does_not_cut_off_people_already_in_touch() {
+    let app = app_or_skip!();
+    let friend = register(&app).await;
+    let shy = register(&app).await;
+
+    assert!(
+        try_open(&app, &friend, &shy, None).await.is_success(),
+        "they talked while the account was public"
+    );
+
+    go_private(&app, &shy).await;
+
+    assert!(
+        try_open(&app, &friend, &shy, None).await.is_success(),
+        "an existing contact keeps its way in"
+    );
+}
+
+// ---------------------------------------------------------------- stories ---
+
+async fn post_story(app: &axum::Router, who: &Party) -> i64 {
+    let (status, body) = call(
+        app,
+        "POST",
+        "/v1/stories",
+        Some(&who.token),
+        Some(json!({
+            "s3_key": format!("enc/{}/{}", Uuid::new_v4(), Uuid::new_v4()),
+            "size": 4096,
+        })),
+    )
+    .await;
+    assert!(status.is_success(), "posting a story returned {status}");
+    body["id"].as_i64().unwrap()
+}
+
+async fn stories_for(app: &axum::Router, who: &Party) -> Value {
+    let (status, body) = call(app, "GET", "/v1/stories", Some(&who.token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    body
+}
+
+fn lists(body: &Value, id: i64) -> bool {
+    body.as_array().unwrap().iter().any(|s| s["id"] == id)
+}
+
+/// The audience is contacts, and "contact" here means exactly what the server
+/// already meant by it: sharing a conversation.
+#[tokio::test]
+async fn a_story_reaches_contacts_and_nobody_else() {
+    let app = app_or_skip!();
+    let author = register(&app).await;
+    let friend = register(&app).await;
+    let stranger = register(&app).await;
+
+    // A conversation is what makes somebody a contact.
+    assert!(try_open(&app, &author, &friend, None).await.is_success());
+
+    let id = post_story(&app, &author).await;
+
+    assert!(
+        lists(&stories_for(&app, &friend).await, id),
+        "a contact sees it"
+    );
+    assert!(
+        !lists(&stories_for(&app, &stranger).await, id),
+        "somebody with no conversation does not"
+    );
+    assert!(
+        lists(&stories_for(&app, &author).await, id),
+        "and so does the author"
+    );
+}
+
+/// Blocking works here without a line of story-specific code, which is the
+/// whole reason for not building a story group: `blocked_between` only ever
+/// applied to two-member conversations, and a group would have slipped past it.
+#[tokio::test]
+async fn blocking_takes_a_story_away_in_both_directions() {
+    let app = app_or_skip!();
+    let author = register(&app).await;
+    let reader = register(&app).await;
+    assert!(try_open(&app, &author, &reader, None).await.is_success());
+
+    let mine = post_story(&app, &author).await;
+    let theirs = post_story(&app, &reader).await;
+    assert!(lists(&stories_for(&app, &reader).await, mine));
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/blocks/{}", author.handle),
+        Some(&reader.token),
+        None,
+    )
+    .await;
+    assert!(status.is_success());
+
+    assert!(
+        !lists(&stories_for(&app, &reader).await, mine),
+        "a blocked author's story is gone"
+    );
+    assert!(
+        !lists(&stories_for(&app, &author).await, theirs),
+        "and the other direction too"
+    );
+}
+
+/// The layer that turns 24 hours from a courtesy into a property: past it,
+/// nobody gets the bytes, whatever client they use.
+#[tokio::test]
+async fn an_expired_story_is_neither_listed_nor_served() {
+    let app = app_or_skip!();
+    let author = register(&app).await;
+    let friend = register(&app).await;
+    assert!(try_open(&app, &author, &friend, None).await.is_success());
+
+    let id = post_story(&app, &author).await;
+    assert!(lists(&stories_for(&app, &friend).await, id));
+
+    // Age it. Both timestamps move, because the table refuses an expiry that
+    // precedes creation.
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let pool = db::create_pool(&url).await.unwrap();
+    sqlx::query(
+        "UPDATE stories
+         SET created_at = now() - INTERVAL '25 hours',
+             expires_at = now() - INTERVAL '1 hour'
+         WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert!(
+        !lists(&stories_for(&app, &friend).await, id),
+        "an expired story is not listed"
+    );
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/stories/{id}/url"),
+        Some(&friend.token),
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "and no URL is issued for it either");
+}
+
+/// A stranger cannot get a URL even knowing the id.
+#[tokio::test]
+async fn a_stranger_is_refused_a_story_url() {
+    let app = app_or_skip!();
+    let author = register(&app).await;
+    let stranger = register(&app).await;
+    let id = post_story(&app, &author).await;
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/stories/{id}/url"),
+        Some(&stranger.token),
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "not a contact, no bytes");
+}
+
+/// A story cannot be minted to outlive its promise.
+#[tokio::test]
+async fn a_story_expires_within_a_day() {
+    let app = app_or_skip!();
+    let author = register(&app).await;
+    let id = post_story(&app, &author).await;
+
+    let body = stories_for(&app, &author).await;
+    let story = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap();
+    let life = story["expires_at_ms"].as_i64().unwrap() - story["created_at_ms"].as_i64().unwrap();
+    assert!(
+        life <= 24 * 60 * 60 * 1000,
+        "at most 24 hours, got {life}ms"
+    );
+    assert!(life > 23 * 60 * 60 * 1000, "and not much less");
+}

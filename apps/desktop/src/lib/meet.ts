@@ -113,7 +113,10 @@ export function meetRequests(): Promise<MeetRequest[]> {
  * `startConversation`, send the one message through the ordinary path, then
  * call this. The other order leaves a request pointing at nothing.
  */
-export function sendIntro(handle: string, conversationId: string): Promise<MeetRequest> {
+export function sendIntro(
+  handle: string,
+  conversationId: string,
+): Promise<MeetRequest> {
   return invoke<MeetRequest>("meet_send_request", {
     handle,
     conversationId,
@@ -132,11 +135,7 @@ export function declineIntro(id: number): Promise<void> {
 
 /** Why something was reported. The server accepts exactly these. */
 export type ReportReason =
-  | "spam"
-  | "harassment"
-  | "illegal"
-  | "impersonation"
-  | "other";
+  "spam" | "harassment" | "illegal" | "impersonation" | "other";
 
 /**
  * Report a person.
@@ -183,4 +182,111 @@ export function asMeetError(error: unknown): MeetError {
     return error as MeetError;
   }
   return { kind: "internal", message: "Something went wrong. Try again." };
+}
+
+// ------------------------------------------------- public and private ---
+
+/** Somebody a search turned up. */
+export interface SearchResult {
+  handle: string;
+  display_name: string;
+  avatar_key: string | null;
+}
+
+/**
+ * A freshly minted invitation.
+ *
+ * `secret` is readable **once**. The server keeps only a hash, so a lost
+ * secret cannot be looked up — it is revoked and replaced, the same answer a
+ * password reset gives.
+ */
+export interface MintedInvite {
+  id: number;
+  secret: string;
+  expires_at_ms: number;
+}
+
+/** One invitation afterwards. */
+export interface Invite {
+  id: number;
+  label: string | null;
+  created_at_ms: number;
+  expires_at_ms: number;
+  revoked: boolean;
+  /** Usable right now. Expiry is by the clock, not by a cleanup job. */
+  live: boolean;
+  /** How many people reached you through it. */
+  used: number;
+}
+
+/**
+ * Find people by handle or display name.
+ *
+ * **Private accounts are absent**, and the server decides that — a directory
+ * the client trims is one anybody can untrim.
+ */
+export function searchUsers(term: string): Promise<SearchResult[]> {
+  return invoke<SearchResult[]>("meet_search", { term });
+}
+
+/** Mint an invitation. At most seven days. */
+export function createInvite(
+  label: string | undefined,
+  days: number,
+): Promise<MintedInvite> {
+  return invoke<MintedInvite>("meet_create_invite", {
+    label: label ?? null,
+    days,
+  });
+}
+
+/** My invitations, live and spent. */
+export function listInvites(): Promise<Invite[]> {
+  return invoke<Invite[]>("meet_invites");
+}
+
+/** Withdraw one. The record stays, so requests can still say where they came from. */
+export function revokeInvite(id: number): Promise<void> {
+  return invoke<void>("meet_revoke_invite", { id });
+}
+
+// ---------------------------------------------------------------- stories ---
+
+/**
+ * One story this device holds.
+ *
+ * The key that opens it is **not** here and never crosses the IPC seam — the
+ * page asks for a story by id and Rust hands back bytes, exactly as with an
+ * attachment (rule 2).
+ */
+export interface Story {
+  id: number;
+  author_handle: string;
+  mime: string;
+  created_at_ms: number;
+  /** When it stops being available. At most 24 hours after it was posted. */
+  expires_at_ms: number;
+}
+
+/**
+ * Post a story.
+ *
+ * Encrypted once and uploaded once; the key is then sent down every
+ * conversation you already have. Your contacts are whoever you share a
+ * conversation with, which is the same definition the server uses, and
+ * blocking therefore takes effect without any story-specific code.
+ */
+export function postStory(path: string): Promise<number> {
+  return invoke<number>("story_post", { path });
+}
+
+/**
+ * Stories this device holds.
+ *
+ * Reading is also what ends the expired ones: the call deletes them and their
+ * keys as it goes. That is the layer that actually makes a story disappear —
+ * ciphertext without its key is nothing — and it works offline.
+ */
+export function listStories(): Promise<Story[]> {
+  return invoke<Story[]>("story_list");
 }

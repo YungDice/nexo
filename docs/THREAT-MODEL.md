@@ -240,6 +240,136 @@ about itself in §4.1: a token is possession of an unlocked machine, not
 knowledge of the password. A wrong guess costs nothing here and a right one
 costs everything.
 
+### 2.9 "Delete for me" is local, and that is all it claims
+
+Removing a message from this device removes it from this device. Every other
+person in the conversation keeps their copy, and nothing is sent to ask them
+otherwise — the UI says so in those words, and the confirmation repeats it,
+because "Delete" on its own is the claim this cannot make.
+
+What it does do, it does completely. The row is deleted rather than flagged,
+which takes the message out of the conversation, out of the search index
+(`crates/store` withdraws its terms through the FTS delete trigger), out of the
+list's preview and out of the attachment strip in one act. A hidden flag would
+have to be taught to each of those separately, and the first one anybody forgot
+would surface a message somebody believed gone. It cannot come back either:
+`set_conversation_cursor` never moves a cursor backwards, so the sync that
+would re-fetch it never asks.
+
+The one case where local and universal coincide: a message still in the outbox
+is dropped there and never sent at all.
+
+**Pinning is local too**, for a different reason. A pin is shared state with a
+cap, and no party can enforce a cap here — the server may not read a payload,
+so it cannot count, and two people pinning three each would make six with no
+rule saying which win. So the UI says "Pinned on this device", and means it.
+
+### 2.10 "Delete for everyone" is a request, and the UI says so
+
+Taking a message back sends a payload asking every Nexo installation that has
+it to empty it. A well-behaved one does. **A modified one need not**, and there
+is no mechanism that could make it — the bytes were delivered, decrypted and
+written to somebody else's disk before the request existed. Editing is the same
+act with a replacement instead of nothing.
+
+So the confirmation says *"This asks every Nexo app that has this message to
+remove it. Copies on a modified app can remain."* It does not say "deleted for
+everyone", and `crates/store` says in as many words that no such thing exists
+here.
+
+**Who may do it is enforceable, and is enforced.** An arriving edit or
+retraction is applied only when the envelope carrying it comes from the same
+device that sent the message being changed. MLS authenticates the sender, so
+this is a real check rather than a convention — without it any member of a
+group could empty anybody else's messages. A change that fails it is dropped
+silently: there is nobody to report it to, and a notice in the conversation
+would tell everyone that somebody tried.
+
+**When is not enforceable, and is not pretended to be.** Ten minutes is a
+courtesy the sending app observes; a modified one sends whenever it likes. What
+the ten minutes actually buy is agreement between honest clients, which is why
+the receiver allows a minute more than the sender takes — see
+`crates/protocol/src/window.rs`. Both sides judge by the server's timestamps on
+the two envelopes, so neither is trusting a clock the other controls.
+
+**A retracted message keeps its row.** It is emptied, not deleted, because
+`envelope_id` is the sync cursor's key and the FTS rowid — a hole there is
+indistinguishable from a message that never arrived, and the next sync would
+fetch it again. Emptying the body is what withdraws it from the search index.
+
+### 2.11 What "private" covers, and what it does not
+
+A private account is absent from search and cannot be written to by somebody
+new without a live invitation. **Both halves are enforced on the server**, and
+that is the only reason the word is offered: `profiles.rs` refused a visibility
+switch for handle and display name precisely because it could not be kept, and
+a "private" that only hid you from a directory while leaving you writable would
+be the same empty switch.
+
+What it does not cover, and the panel says so rather than letting it be
+assumed:
+
+- **People already in touch stay in touch.** Sharing a conversation is this
+  server's definition of a contact, and going private does not revoke it.
+  Blocking is the tool for that, and it is separate on purpose.
+- **Anything already sent has been sent.** Privacy is about who can start
+  something, not about recalling what happened.
+- **Your handle still works if you are public.** Search is the thing being
+  switched off, not addressability.
+- **An invitation is bearer-shaped.** Whoever holds the secret can use it until
+  it expires or is withdrawn; it is not bound to a person, because binding it
+  would require knowing who the person was before they had a way to reach you.
+  It lasts at most seven days, and the ceiling is a CHECK on the table as well
+  as a rule in the handler.
+
+The secret is stored as a SHA-256 and never in the clear, so a leaked table
+hands out no working invitations — and a lost secret cannot be recovered, only
+withdrawn and replaced. The UI says that at the moment it shows one.
+
+### 2.12 Who can see a story, and what the server sees anyway
+
+A story is encrypted once, like an attachment: a fresh AES-256-GCM key, the
+ciphertext in the **encrypted** bucket, and the key only ever inside MLS
+messages. The server cannot read one.
+
+**Who gets the bytes** is three conditions on the download route, all made of
+checks that already existed: not expired, shares a conversation with the author
+(this server's one definition of *contact*), and not blocked in either
+direction. All three give the same refusal, because which one failed is a fact
+about somebody else's account.
+
+**Blocking works here without a line of story-specific code**, and that is why
+a story is not its own MLS group. `blocked_between` is applied only to
+two-member conversations — widening it to groups would break the group, and
+`delivery/mod.rs` explains why. A story group would therefore have kept
+reaching somebody who blocked its author until an explicit removal commit
+landed. Sending the key down conversations that already exist inherits the
+check that works.
+
+**The 24 hours are three layers, none of them a scheduled job.** The reader
+purges expired stories *and their keys* whenever it looks — that is the layer
+that matters, because ciphertext without its key is nothing, and it is the only
+one that reaches the reader's disk. The server refuses a URL for an expired
+story, which makes the limit a property rather than a courtesy. The object
+store drops the bytes on a lifecycle rule, for the case where the server does
+nothing for a week.
+
+**What a modified client can still do** is the same truth as "delete for
+everyone": somebody who was allowed to see a story, while they were allowed to,
+can keep it. Nothing can prevent that, and the UI says so rather than implying
+a story is recallable.
+
+**What the server sees regardless**, named rather than left implied:
+
+- that you posted, and when;
+- how large the ciphertext is;
+- who asked for a URL, and when;
+- **a burst of envelopes to every one of your conversations at the same
+  moment**. That is the shape of the fan-out, and it is the price of not having
+  built a story group. It is the same *kind* of metadata the server already has
+  for messages — who talks to whom, and when — but it arrives in a recognisable
+  pattern, and a pattern is information.
+
 ## 3. Adversaries in scope
 
 **A network attacker.** Defeated by TLS 1.3 for transport plus MLS for content.

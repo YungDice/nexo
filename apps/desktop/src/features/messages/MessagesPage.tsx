@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useApp } from "../../app/store";
 import { useConversations } from "../../app/useConversations";
 import { useLayout } from "../../app/useLayout";
+import { searchable, useUserSearch } from "../../app/useUserSearch";
 import type { Conversation, Message } from "../../lib/types";
 import {
   acknowledgeKeyChange,
@@ -9,10 +10,12 @@ import {
   startConversation,
   startGroup,
 } from "../../lib/conversations";
+import { Avatar } from "../../components/ui/Avatar";
 import { Button } from "../../components/ui/Button";
 import { Field } from "../../components/ui/Controls";
 import { Callout, EmptyState } from "../../components/ui/Feedback";
 import { Icon } from "../../components/ui/Icon";
+import { RemoteImage } from "../../components/ui/RemoteImage";
 import { Panel } from "../../components/ui/Surface";
 import { Composer } from "./Composer";
 import { ContextPanel } from "./ContextPanel";
@@ -149,10 +152,18 @@ export function MessagesPage({ now }: { now: Date }) {
 }
 
 /**
- * Starting a conversation needs a handle and nothing else.
+ * Starting a conversation: type, and pick from who turns up.
  *
- * Discovery is by handle only — no phone number is collected anywhere
- * (docs/PLAN.md) — so this is the whole flow.
+ * It used to be a box you typed an exact handle into, blind — no phone number
+ * is collected anywhere, so a handle was the only key, and getting one letter
+ * wrong told you nothing until the conversation failed to start. Public
+ * accounts are searchable now (wave 6 added the route), so the box filters as
+ * it is typed and the names underneath are the answer.
+ *
+ * Typing a handle by hand still works, and has to: a **private** account is
+ * absent from every search by design, and the server is what leaves it out, so
+ * somebody who has been given a handle directly must still be able to use it.
+ * The list is a convenience over the flow, not a gate in front of it.
  */
 function StartConversation({
   onCancel,
@@ -175,11 +186,21 @@ function StartConversation({
     pending && !invited.includes(pending) ? [...invited, pending] : invited;
   const isGroup = everyone.length > 1;
 
-  function addPending() {
-    if (!pending || invited.includes(pending)) return;
-    setInvited((current) => [...current, pending]);
+  const search = useUserSearch(handle);
+  // Somebody already added is not an answer to "who do you mean". Leaving them
+  // in the list would offer an entry that does nothing when it is clicked.
+  const suggestions = search.results.filter((r) => !invited.includes(r.handle));
+
+  function add(who: string) {
+    const one = who.trim().toLowerCase();
+    if (!one || invited.includes(one)) return;
+    setInvited((current) => [...current, one]);
     setHandle("");
     setError(null);
+  }
+
+  function addPending() {
+    add(pending);
   }
 
   async function submit(event: React.FormEvent) {
@@ -216,8 +237,10 @@ function StartConversation({
           {isGroup ? "Start a group" : "Start a conversation"}
         </h2>
         <p className="text-text-lo mt-1.5 text-meta">
-          By handle. Nexo collects no phone numbers, so this is the only way to
-          find someone. Add a second person to make it a group.
+          Start typing a name or a handle. Nexo collects no phone numbers, so a
+          handle is the only key — and a private account never appears here, so
+          one you were given can still be typed out in full. Add a second person
+          to make it a group.
         </p>
 
         {invited.length > 0 ? (
@@ -257,13 +280,69 @@ function StartConversation({
           }}
         />
 
+        {/* The answers, under the box, as it is typed. */}
+        {searchable(handle) ? (
+          <div className="mt-2">
+            {suggestions.length > 0 ? (
+              <ul
+                className="rounded-control border-line max-h-[220px] overflow-y-auto border"
+                aria-label="People matching what you typed"
+              >
+                {suggestions.map((person) => (
+                  <li key={person.handle}>
+                    <button
+                      type="button"
+                      onClick={() => add(person.handle)}
+                      className="hover:bg-fill-hover flex w-full items-center gap-2.5 px-2.5 py-2 text-left transition-colors duration-[var(--motion-fast)] ease-[var(--ease-state)]"
+                    >
+                      {person.avatar_key ? (
+                        <RemoteImage
+                          imageKey={person.avatar_key}
+                          alt={person.display_name}
+                          className="size-8 shrink-0 rounded-full"
+                        />
+                      ) : (
+                        <Avatar
+                          seed={person.handle}
+                          name={person.display_name}
+                          size={32}
+                        />
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className="text-text-hi block truncate text-meta font-medium">
+                          {person.display_name}
+                        </span>
+                        <span className="text-text-lo block truncate text-[11px]">
+                          @{person.handle}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : search.searching ? (
+              <p className="text-text-lo text-[11px]">Looking…</p>
+            ) : search.problem ? (
+              <p className="text-text-lo text-[11px]">{search.problem}</p>
+            ) : (
+              // Nobody found is not nobody there. A private account is absent
+              // from every search on purpose, and the server is what leaves it
+              // out -- so the honest line says the handle still works.
+              <p className="text-text-lo text-[11px]">
+                Nobody public matches that. A private account will not show up
+                here; type the whole handle and add it anyway.
+              </p>
+            )}
+          </div>
+        ) : null}
+
         {pending ? (
           <button
             type="button"
             onClick={addPending}
             className="text-accent-soft mt-2 text-[11px] underline decoration-line-strong underline-offset-2"
           >
-            Add another person
+            Add @{pending}
           </button>
         ) : null}
 

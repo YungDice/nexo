@@ -420,3 +420,11 @@ decision rather than configuration.
   either. Posting moves to the Stories tab rather than raising a toast; the
   story is a better confirmation than a sentence saying it worked, and it is
   where taking it back happens.
+- **Adding somebody filters as you type.** The box wanted an exact handle and
+  showed nothing at all while you typed it, so one wrong letter told you
+  nothing until the conversation failed to start. It now searches as you type —
+  debounced, and each request numbered so a slow answer for "al" cannot land
+  after a fast one for "alice" and replace the right list with a stale one.
+  Typing a handle out in full still works and has to: a private account is
+  absent from every search by design and the *server* is what leaves it out, so
+  the empty result says so rather than implying nobody is there.

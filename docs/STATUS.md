@@ -330,6 +330,46 @@ the `enc/<uuid>/<uuid>` key space, so any rule reaching stories would have
 deleted every attachment in every conversation. Stories now upload through
 their own route to their own prefix.
 
+**A received story now carries the server's id** (`Payload::Story::story_id`).
+It could not be opened before: MLS names a device, the envelope carries no
+story id, and the receive path filed the row under an FNV hash of the object
+key instead. Every later step then asked the server for that number —
+`POST /v1/stories/{id}/url` on open, and the id-matching that `stories::live`
+uses to put a name under somebody's circle — and no route has ever known it.
+A contact's story was listed as `—` and refused to open; the author's own
+worked, because that path had the real id all along. The field defaults to `0`
+for a story from an older build, which the reader reads as "unknown" and treats
+exactly as it did before, so no protocol version moved.
+
+**The strip and the gallery are two different questions.** The Stories tab on
+your own profile used to draw the Home strip, which is one circle per *person*
+— so under a heading saying "Your stories" it listed your contacts, and your
+own posts were a single circle however many of them there were. It is a gallery
+now (`profile/MyStories.tsx`): one tile per story, newest last, with what it
+looks like and how long it has left. Each tile fetches and decrypts, because
+nothing decrypted is written down and there is therefore no thumbnail to draw
+instead. The strip on Home is read-only; posting is the `+` on your picture.
+
+**A story circle wears the person's own picture.** The strip drew the generated
+gradient seeded from a handle, so somebody with a photograph had two different
+faces on one screen — the gradient in their story circle and the photograph on
+their post below it. It goes through `HandleAvatar` like every other avatar in
+the app, and the gradient stays for what it means: an account without a
+picture, or an author this device has not resolved yet.
+
+**And the ring is drawn around the picture again.** It is a `box-shadow`, and
+the wrapper it sat on was a bare `<span>` — `display: inline` — so it was drawn
+around the *line box*, a strip of text height across the middle of a 52px
+avatar, which the scroll container then clipped. That was the cropped frame.
+
+**The chat beside the feed has three controls in its header**, not one. The
+picture, the name, and the way out to Messages. The picture used to be part of
+the button that opened the conversation switcher, which made somebody's face
+mean "switch conversation" in this one pane and "open their profile"
+everywhere else; it opens the profile now, and the name beside it — with its
+chevron, and the panel that slides across the pane — is the switcher. A group's
+picture leads nowhere and is not a button at all.
+
 **Still not applied:** the 30-day `enc/` cleanup `BRIEF.md` describes. That one
 deletes attachments whose messages are still in people's conversations — those
 bubbles would keep their file name and lose their file — so it is a product

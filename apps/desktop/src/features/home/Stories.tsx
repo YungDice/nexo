@@ -1,9 +1,10 @@
 import { useState } from "react";
 
+import { useApp } from "../../app/store";
 import { Avatar } from "../../components/ui/Avatar";
 import { Callout } from "../../components/ui/Feedback";
+import { HandleAvatar } from "../../components/ui/HandleAvatar";
 import { StoryViewer } from "./StoryViewer";
-import { pickAndPostStory } from "./story";
 import { groupStories, type StoryGroup } from "./storyGroups";
 import { useStories } from "./useStories";
 
@@ -17,7 +18,8 @@ import { useStories } from "./useStories";
  * **Posting is not here.** It lives on your profile, with the other things
  * that are yours and that other people see: your picture, your banner, your
  * bio. A `+` sitting among other people's stories reads as "add to this row",
- * which is not what it does.
+ * which is not what it does. This strip is read-only, and what you posted is
+ * looked *through* rather than at, in `profile/MyStories.tsx`.
  *
  * **One circle per person, not per story.** `listStories()` is a flat list —
  * every live story this device holds, own and received mixed together — and
@@ -27,58 +29,51 @@ import { useStories } from "./useStories";
  * where somebody posted more than once; tapping opens that person's stories
  * (`StoryViewer`) in the order they happened, with Prev/Next between them.
  *
+ * **The picture is the person's own**, through `HandleAvatar`, not the
+ * generated gradient seeded from their handle. The gradient is what an account
+ * *without* a picture looks like and it stays that; drawing it for an account
+ * that has one made the same person two different faces on one screen -- their
+ * post below wore the photograph and their story circle above it did not.
+ *
  * The honesty point the UI has to carry, from `docs/THREAT-MODEL.md`: a story
  * is **public to your contacts and readable by nobody else**, but somebody who
  * was allowed to see it can keep it. The composer says so before anything is
  * posted, not afterwards.
  */
-export function Stories({ canPost = false }: { canPost?: boolean }) {
-  const { stories, refresh, problem: loadProblem } = useStories();
+export function Stories() {
+  // Only to give your own circle a handle to look a picture up by. A story
+  // this device posted carries no author -- `post` writes the handle the
+  // server returned, and `groupStories` marks the group `mine` from the empty
+  // device id -- so the row itself cannot say whose face belongs on it.
+  const myHandle = useApp((s) => s.account?.handle);
+  const { stories, problem: loadProblem } = useStories();
   const [viewing, setViewing] = useState<StoryGroup | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [postProblem, setPostProblem] = useState<string | null>(null);
-
-  async function add() {
-    setBusy(true);
-    try {
-      const result = await pickAndPostStory();
-      if (result.posted) await refresh();
-      else if (result.problem) setPostProblem(result.problem);
-    } finally {
-      setBusy(false);
-    }
-  }
 
   const groups = groupStories(stories ?? []);
 
   return (
     <section className="mb-4">
-      {/* `py-2 px-1` is not decoration: the ring below is drawn with
-          `ring-offset`, which extends past the avatar's own box. A scroll
-          container with no room around its content clips that overflow —
-          `overflow-x: auto` forces the vertical axis to clip too, per the CSS
-          overflow spec, so the top and bottom of the ring were cut off, and
-          the first and last circle lost their outer edge to the row's own
-          bounds. */}
-      <div className="flex items-center gap-3 overflow-x-auto px-1 py-2">
-        {canPost ? (
-          <button
-            type="button"
-            onClick={() => void add()}
-            disabled={busy}
-            className="border-line hover:border-accent flex h-14 w-14 shrink-0 items-center justify-center rounded-full border-2 border-dashed transition-colors"
-            aria-label="Post a story"
-            title="Post a story — your contacts can see it for 24 hours"
-          >
-            <span className="text-text-lo text-[20px] leading-none">+</span>
-          </button>
-        ) : null}
-
+      {/* The padding is not decoration: the ring below is drawn with
+          `ring-offset`, which extends 4px past the avatar's own box, and the
+          `×n` badge hangs past it too. A scroll container with no room around
+          its content clips that overflow — `overflow-x: auto` forces the
+          vertical axis to clip as well, per the CSS overflow spec — so the
+          top and bottom of the ring were cut off and the first and last
+          circle lost their outer edge to the row's own bounds. `px-1` was
+          exactly the 4px the ring needs and nothing for the badge, which is
+          flush rather than clear; `px-2` leaves both room. */}
+      <div className="flex items-start gap-3 overflow-x-auto px-2 py-2.5">
         {groups.map((group) => {
           const count = group.stories.length;
           const name = group.mine
             ? "Your story"
             : group.authorHandle || "a contact";
+          // Blank for a story whose author has not been resolved yet -- see
+          // `Story.author_handle`. There is nothing to look a picture up by
+          // then, so the generated gradient stands, seeded from the group key
+          // the way it always was: one colour per unresolved *device*, rather
+          // than one colour shared by all of them.
+          const handle = group.mine ? myHandle : group.authorHandle;
           return (
             <button
               key={group.key}
@@ -91,13 +86,23 @@ export function Stories({ canPost = false }: { canPost?: boolean }) {
                   : `Story from ${name}`
               }
             >
-              <span className="relative">
-                <span className="ring-accent rounded-full ring-2 ring-offset-2 ring-offset-[var(--color-surface-1)]">
-                  <Avatar
-                    seed={group.authorHandle || group.key}
-                    name={group.mine ? "You" : group.authorHandle || "?"}
-                    size={52}
-                  />
+              {/* `inline-flex`, not the default. A ring is a box-shadow, and
+                  on an inline box it is drawn around the *line box* -- a
+                  strip of text height across the middle of the picture --
+                  rather than around the 52px avatar inside it. That was the
+                  cropped frame: the ring was the wrong size and the scroll
+                  box then clipped what was left of it. */}
+              <span className="relative inline-flex">
+                <span className="ring-accent inline-flex rounded-full ring-2 ring-offset-2 ring-offset-[var(--color-surface-1)]">
+                  {handle ? (
+                    <HandleAvatar
+                      handle={handle}
+                      name={group.mine ? "You" : handle}
+                      size={52}
+                    />
+                  ) : (
+                    <Avatar seed={group.key} name="?" size={52} />
+                  )}
                 </span>
                 {count > 1 ? (
                   <span
@@ -127,9 +132,9 @@ export function Stories({ canPost = false }: { canPost?: boolean }) {
         ) : null}
       </div>
 
-      {loadProblem || postProblem ? (
+      {loadProblem ? (
         <Callout tone="warning" icon="alert" className="mt-2">
-          {postProblem ?? loadProblem}
+          {loadProblem}
         </Callout>
       ) : null}
 

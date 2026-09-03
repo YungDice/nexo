@@ -33,6 +33,26 @@ export function relativeTime(at: Date, now: Date): string {
   return at.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 
+/**
+ * How long something has left, e.g. "7h left".
+ *
+ * Not `relativeTime` with the arguments the other way round: that one answers
+ * "when was this" and reaches for clock times, weekdays and dates, none of
+ * which a countdown wants. Everything this is used for lasts under a day, so
+ * hours and minutes are the whole vocabulary.
+ *
+ * Rounds *down*, deliberately. "1h left" on something with 59 minutes to go is
+ * a promise the clock will not keep, and a story is the kind of thing people
+ * decide what to do about based on the number here.
+ */
+export function timeLeft(until: Date, now: Date): string {
+  const remaining = until.getTime() - now.getTime();
+  if (remaining <= 0) return "gone";
+  if (remaining < MINUTE) return "under a minute left";
+  if (remaining < HOUR) return `${Math.floor(remaining / MINUTE)}m left`;
+  return `${Math.floor(remaining / HOUR)}h left`;
+}
+
 /** The day divider inside the message scroll. */
 export function dayDivider(at: Date, now: Date): string {
   if (isSameDay(at, now)) return "Today";

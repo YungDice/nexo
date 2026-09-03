@@ -230,6 +230,10 @@ const glyphs = {
       <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.5M8.5 21.5h7" />
     </>
   ),
+  /* A stroked triangle rather than a filled one, so it sits in the same
+     weight as everything else here. Marks a video where there is no room for
+     a control -- a gallery tile's poster frame, not a player. */
+  play: <path d="M8.5 5.8 18.5 12l-10 6.2z" />,
   music: (
     <>
       <path d="M9 18V5.5l10-2V16" />

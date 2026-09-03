@@ -13,15 +13,22 @@ import type { StoryGroup } from "./storyGroups";
  * be watched from: the ring on a profile avatar opens the same viewer on the
  * same group, rather than a second implementation of Prev/Next, the fetch
  * dance, and the honesty line about what taking a copy means.
+ *
+ * `startIndex` is for the one caller that is not a circle. A strip or a ring
+ * names a *person*, so watching starts where the sequence starts; the gallery
+ * on your own profile names a particular story, and opening it at somebody
+ * else's would answer a different question than the one that was asked.
  */
 export function StoryViewer({
   group,
+  startIndex = 0,
   onClose,
 }: {
   group: StoryGroup;
+  startIndex?: number;
   onClose: () => void;
 }) {
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState(startIndex);
   const [src, setSrc] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 

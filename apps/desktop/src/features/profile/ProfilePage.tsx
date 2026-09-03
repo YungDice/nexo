@@ -26,8 +26,8 @@ import { VisibilityControls } from "./VisibilityControls";
 import { Avatar } from "../../components/ui/Avatar";
 import { Button, IconButton } from "../../components/ui/Button";
 import { FactRow, Field, Tabs, TextArea } from "../../components/ui/Controls";
+import { MyStories } from "./MyStories";
 import { PrivacyPanel } from "./PrivacyPanel";
-import { Stories } from "../home/Stories";
 import { pickAndPostStory } from "../home/story";
 import { hasLiveStory } from "../home/storyGroups";
 import { useStories } from "../home/useStories";
@@ -376,7 +376,16 @@ export function ProfilePage({ now }: { now: Date }) {
                     have kept it. Pictures and video.
                   </p>
                 </div>
-                <Stories canPost key={storiesEpoch} />
+                {/* Remounted after a post rather than merely refreshed: the
+                    tab's own read, its tiles and their in-flight fetches are
+                    all keyed to the list it opened with, and starting them
+                    over is both simpler and what somebody who just posted
+                    expects to see. */}
+                <MyStories
+                  key={storiesEpoch}
+                  onPost={() => void addStory()}
+                  posting={posting}
+                />
               </section>
             ) : null}
             {tab === "privacy" ? (

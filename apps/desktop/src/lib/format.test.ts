@@ -6,6 +6,7 @@ import {
   initials,
   relativeTime,
   safetyNumber,
+  timeLeft,
 } from "./format";
 
 const now = new Date(2026, 7, 24, 14, 30);
@@ -73,5 +74,26 @@ describe("initials", () => {
     expect(initials("Mira")).toBe("M");
     expect(initials("Ada Byron King Lovelace")).toBe("AL");
     expect(initials("   ")).toBe("?");
+  });
+});
+
+describe("timeLeft", () => {
+  it("counts down in whole hours, then whole minutes", () => {
+    expect(timeLeft(new Date(2026, 7, 24, 21, 30), now)).toBe("7h left");
+    expect(timeLeft(new Date(2026, 7, 24, 14, 52), now)).toBe("22m left");
+    expect(timeLeft(new Date(2026, 7, 24, 14, 30, 40), now)).toBe(
+      "under a minute left",
+    );
+  });
+
+  it("rounds down, so the number never over-promises", () => {
+    // 59 minutes left is not an hour, and saying so would be a promise the
+    // clock does not keep.
+    expect(timeLeft(new Date(2026, 7, 24, 15, 29), now)).toBe("59m left");
+  });
+
+  it("says gone rather than counting backwards", () => {
+    expect(timeLeft(new Date(2026, 7, 24, 14, 30), now)).toBe("gone");
+    expect(timeLeft(new Date(2026, 7, 24, 10, 0), now)).toBe("gone");
   });
 });

@@ -223,6 +223,25 @@ pub enum Payload {
     /// It draws no bubble. Like `Rename`, it changes state elsewhere and ends
     /// the receive branch with `continue`.
     Story {
+        /// The server's id for this story.
+        ///
+        /// Carried because the reader needs it and cannot derive it: fetching
+        /// the bytes is `POST /v1/stories/{id}/url`, and an envelope names a
+        /// device rather than anything the stories table knows about. The
+        /// receiver used to hash `s3_key` into a stand-in id, which no server
+        /// route has ever recognised — a contact's story could be listed and
+        /// never opened.
+        ///
+        /// It is not a capability and grants nothing. The download route still
+        /// checks contact, block and expiry for the *caller*, so a sender who
+        /// named somebody else's story would only point a reader at bytes they
+        /// were already allowed to fetch — and hand them the wrong key for it.
+        ///
+        /// `default` rather than a version bump: a story from a build that
+        /// predates this field arrives as `0`, which the receiver reads as
+        /// "unknown" and falls back on exactly as it behaved before.
+        #[serde(default)]
+        story_id: i64,
         /// Where the ciphertext is, in the **encrypted** bucket.
         s3_key: String,
         /// The AES-256-GCM key, hex. Fresh for this story and nothing else.
@@ -1117,6 +1136,39 @@ mod tests {
 
     /// The states are written into the database's CHECK constraint, so their
     /// wire spelling is not free to drift.
+    /// The field was added after stories shipped, so a story from a build
+    /// that predates it must still decode -- as a story, with the id unknown,
+    /// rather than as `Unsupported`.
+    #[test]
+    fn a_story_from_before_the_id_existed_still_decodes() {
+        let old = br#"{"kind":"story","s3_key":"story/abc","key":"00","nonce":"01",
+            "sha256":"02","mime":"image/png","size":9,"expires_at_ms":7}"#;
+        match Payload::decode(old) {
+            Payload::Story {
+                story_id, s3_key, ..
+            } => {
+                assert_eq!(story_id, 0, "unknown, and the reader says so");
+                assert_eq!(s3_key, "story/abc");
+            }
+            other => panic!("a story decoded as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_story_carries_the_server_id_it_was_given() {
+        let payload = Payload::Story {
+            story_id: 4242,
+            s3_key: "story/abc".into(),
+            key: "00".into(),
+            nonce: "01".into(),
+            sha256: "02".into(),
+            mime: "image/png".into(),
+            size: 9,
+            expires_at_ms: 7,
+        };
+        assert_eq!(Payload::decode(&payload.encode()), payload);
+    }
+
     #[test]
     fn meet_request_states_are_snake_case_on_the_wire() {
         assert_eq!(

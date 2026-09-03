@@ -12,6 +12,7 @@ import { Panel } from "../../components/ui/Surface";
 import { Composer } from "../messages/Composer";
 import { ConversationRow } from "../messages/ConversationList";
 import { MessageList } from "../messages/MessageList";
+import { peerHandle } from "../messages/peer";
 import { MIN_HOME_CHAT } from "./Splitter";
 
 /**
@@ -62,6 +63,19 @@ import { MIN_HOME_CHAT } from "./Splitter";
  * and CSS re-evaluates that during a window resize without being asked.
  */
 /**
+ * # The header is three controls, not one
+ *
+ * The picture, the name, and the way out. They used to be a single button that
+ * opened the switcher, which made the avatar mean "switch conversation" —
+ * everywhere else in this app somebody's picture is the way to their profile,
+ * and a picture that means something different in one pane is worse than no
+ * picture at all. The avatar goes to the profile; the name beside it, with its
+ * chevron, is the switcher.
+ *
+ * Only in a DM. A group has no one person behind its picture, so there is
+ * nowhere for it to lead and it is not a control at all — better than a button
+ * that has to explain why it did nothing.
+ *
  * Switching conversation, in the pane rather than over it.
  *
  * This was a dropdown menu, capped at eight entries because a menu does not
@@ -79,6 +93,8 @@ import { MIN_HOME_CHAT } from "./Splitter";
 export function HomeChat({ now, width }: { now: Date; width: string }) {
   const go = useApp((s) => s.go);
   const openConversation = useApp((s) => s.openConversation);
+  const viewProfile = useApp((s) => s.viewProfile);
+  const me = useApp((s) => s.account?.handle);
   const overrides = useApp((s) => s.conversationOverrides);
 
   // Two steps, because `useConversations` loads the history for an id it is
@@ -120,6 +136,21 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
     openConversation(conversation.id);
     go("messages");
   };
+
+  // `undefined` for a group, and for a DM whose member list has not arrived
+  // yet — see `peerHandle`. Both mean the picture is not a way anywhere.
+  const peer = conversation ? peerHandle(conversation, me) : undefined;
+
+  // Drawn the same whether or not it leads anywhere; only the wrapper differs.
+  const avatar = conversation ? (
+    <ConversationAvatar
+      conversationId={conversation.id}
+      kind={conversation.kind}
+      title={conversation.title}
+      hasAvatar={conversation.hasAvatar ?? false}
+      size={30}
+    />
+  ) : null;
 
   // Open, and what is typed into its search box. The query is cleared on
   // close so it does not greet you next time with a list filtered by
@@ -168,22 +199,32 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
     >
       {conversation ? (
         <>
-          <div className="flex items-center gap-2.5 border-b border-[var(--hairline)] px-3 py-2.5">
+          <div className="flex items-center gap-2 border-b border-[var(--hairline)] px-3 py-2.5">
+            {/* `flex`, so the button is exactly the circle it wraps: a
+                button is inline-block by default and its height comes from
+                the line box, which leaves a few pixels of descender under a
+                30px avatar and puts the focus ring around a shape that is
+                not the picture. */}
+            {peer ? (
+              <button
+                type="button"
+                aria-label={`Open ${conversation.title}'s profile`}
+                onClick={() => viewProfile(peer)}
+                className="focus-visible:ring-accent flex rounded-full outline-none transition-opacity duration-[var(--motion-fast)] ease-[var(--ease-state)] hover:opacity-80 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface-1)]"
+              >
+                {avatar}
+              </button>
+            ) : (
+              avatar
+            )}
             <button
               type="button"
               aria-expanded={picking}
               aria-label={`Switch conversation, currently ${conversation.title}`}
               onClick={() => setPicking(true)}
-              className="rounded-control flex min-w-0 flex-1 items-center gap-2.5 px-1 py-0.5 text-left outline-none transition-colors duration-[var(--motion-fast)] ease-[var(--ease-state)] hover:bg-fill-hover focus-visible:ring-1 focus-visible:ring-accent"
+              className="rounded-control flex min-w-0 flex-1 items-center gap-2 px-1.5 py-0.5 text-left outline-none transition-colors duration-[var(--motion-fast)] ease-[var(--ease-state)] hover:bg-fill-hover focus-visible:ring-1 focus-visible:ring-accent"
             >
-              <ConversationAvatar
-                conversationId={conversation.id}
-                kind={conversation.kind}
-                title={conversation.title}
-                hasAvatar={conversation.hasAvatar ?? false}
-                size={30}
-              />
-              <span className="flex min-w-0 flex-col">
+              <span className="flex min-w-0 flex-1 flex-col">
                 <span className="text-text-hi truncate text-body font-medium">
                   {conversation.title}
                 </span>
@@ -191,6 +232,9 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
                   {following ? "Most recent" : "Chosen"}
                 </span>
               </span>
+              {/* Points down, at the panel it pulls in. The rotation is the
+                  same trick the rest of the app uses -- there is one chevron
+                  in the set and every direction is an angle on it. */}
               <Icon
                 name="chevronLeft"
                 size={13}

@@ -72,6 +72,9 @@ pub fn post<T: Transport>(
     let summary = ctx.transport.create_story(&s3_key, size)?;
 
     let payload = Payload::Story {
+        // The reader's only route to the bytes. Without it the receiving side
+        // has nothing the download route recognises -- see `Payload::Story`.
+        story_id: summary.id,
         s3_key: s3_key.clone(),
         key: hex(sealed.key.as_slice()),
         nonce: hex(&sealed.nonce),

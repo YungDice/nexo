@@ -1079,6 +1079,7 @@ pub fn sync<T: Transport>(
                                 continue;
                             }
                             if let Payload::Story {
+                                story_id,
                                 s3_key,
                                 key,
                                 nonce,
@@ -1093,11 +1094,7 @@ pub fn sync<T: Transport>(
                                 // the expiry is that the key stops existing.
                                 if *expires_at_ms > envelope.server_timestamp_ms {
                                     ctx.store.insert_story(&nexo_store::StoredStory {
-                                        // The server's id is not on the
-                                        // envelope, so the object key stands in
-                                        // as the identity until a listing
-                                        // reconciles it.
-                                        id: story_id_from(s3_key),
+                                        id: received_story_id(*story_id, s3_key),
                                         // The device that sent it, not a
                                         // handle -- an envelope carries no
                                         // handle, and MLS names devices. The
@@ -1791,6 +1788,27 @@ pub fn safety_number(
 /// recipients do not — so the key stands in. It is unique by construction
 /// (`upload_url` mints it) and stable, which is all the local table needs to
 /// avoid storing the same story twice when it arrives down two conversations.
+/// Which id a received story is filed under.
+///
+/// The server's, whenever the sender carried one -- it is the only number the
+/// download route and the story listing recognise, and the reader has no way
+/// to derive it: an envelope names a device, and the stories table knows
+/// nothing about devices.
+///
+/// The hash of the object key is not a substitute and never was. It stands in
+/// for exactly one case, a story posted by a build from before
+/// `Payload::Story::story_id` existed, and it buys exactly one thing there:
+/// the same story arriving down two conversations is one row rather than two.
+/// Such a story still cannot be opened, which is what it was already doing
+/// before this function had a name.
+fn received_story_id(carried: i64, s3_key: &str) -> i64 {
+    if carried > 0 {
+        carried
+    } else {
+        story_id_from(s3_key)
+    }
+}
+
 fn story_id_from(s3_key: &str) -> i64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in s3_key.as_bytes() {
@@ -1843,6 +1861,28 @@ mod tests {
     fn odd_length_hex_is_refused_rather_than_truncated() {
         assert!(from_hex("abc").is_err());
         assert!(from_hex("zz").is_err());
+    }
+
+    /// The bug this replaced: every received story was filed under a hash of
+    /// its object key, and `stories::open` then asked the server for that
+    /// number. No route has ever known it, so a contact's story was listed
+    /// with a blank name and refused to open.
+    #[test]
+    fn a_received_story_is_filed_under_the_servers_id() {
+        assert_eq!(received_story_id(4242, "story/abc"), 4242);
+    }
+
+    #[test]
+    fn a_story_from_a_build_without_the_id_keeps_the_old_stand_in() {
+        assert_eq!(
+            received_story_id(0, "story/abc"),
+            story_id_from("story/abc"),
+        );
+        assert_ne!(
+            story_id_from("story/abc"),
+            story_id_from("story/def"),
+            "and two stories must not collide into one row"
+        );
     }
 
     #[test]

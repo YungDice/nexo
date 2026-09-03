@@ -400,3 +400,13 @@ decision rather than configuration.
   a caption where there is one, the file name where there is not, "Voice
   message" for a recording whose name says nothing, and what happened to a
   message that was taken back or could not be opened.
+- **Home's chat pane switches conversation by sliding the chat aside.** The
+  header opened a dropdown before, capped at eight entries because a menu does
+  not scroll — somebody with two hundred conversations could not reach most of
+  them from here. A panel slides across the pane instead, showing the Messages
+  tab's own rows (the component is exported and reused, so "looks like the chat
+  tab" stays true when a pin mark or a preview rule changes there), scrolling,
+  searchable by name, with "Most recent" as the first row rather than a control
+  somewhere else. It covers the chat and nothing else: the feed keeps its width
+  and its scroll position, which is the difference between switching a
+  conversation and navigating away from what you were reading.

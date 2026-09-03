@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useApp } from "../../app/store";
 import { useConversations } from "../../app/useConversations";
+import { cn } from "../../lib/cn";
 import { ConversationAvatar } from "../../components/ui/ConversationAvatar";
 import { Button, IconButton } from "../../components/ui/Button";
-import { ContextMenu, type MenuItem } from "../../components/ui/ContextMenu";
+import { Field } from "../../components/ui/Controls";
 import { EmptyState } from "../../components/ui/Feedback";
 import { Icon } from "../../components/ui/Icon";
 import { Panel } from "../../components/ui/Surface";
 import { Composer } from "../messages/Composer";
+import { ConversationRow } from "../messages/ConversationList";
 import { MessageList } from "../messages/MessageList";
 import { MIN_HOME_CHAT } from "./Splitter";
 
@@ -60,13 +62,19 @@ import { MIN_HOME_CHAT } from "./Splitter";
  * and CSS re-evaluates that during a window resize without being asked.
  */
 /**
- * How many conversations the header's picker offers.
+ * Switching conversation, in the pane rather than over it.
  *
- * The menu does not scroll, so this is the number that fits without running
- * off the screen at the smallest supported window. Everything else lives in
- * Messages, one click away.
+ * This was a dropdown menu, capped at eight entries because a menu does not
+ * scroll and somebody with two hundred conversations would have got a list
+ * taller than the screen. A panel that slides across the pane has no such
+ * ceiling: it scrolls, it can be searched, and it shows the same rows the
+ * Messages tab shows, so switching here looks like switching there.
+ *
+ * It covers the chat and nothing else. The feed keeps its width and its scroll
+ * position -- the pane is the only thing that moves, which is the difference
+ * between switching a conversation and navigating away from what you were
+ * reading.
  */
-const PICKER_LIMIT = 8;
 
 export function HomeChat({ now, width }: { now: Date; width: string }) {
   const go = useApp((s) => s.go);
@@ -113,45 +121,48 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
     go("messages");
   };
 
-  // Anchored under the header rather than at the pointer: this menu belongs to
-  // a control, so it opens where that control is and can be found there again.
-  const trigger = useRef<HTMLButtonElement>(null);
-  const [pickerAt, setPickerAt] = useState<{ x: number; y: number } | null>(
-    null,
-  );
-  // `ContextMenu` closes on any `pointerdown` outside itself, and the trigger
-  // is outside itself. Without this, clicking it while open would close and
-  // immediately reopen. Capture runs before the menu's document listener, so
-  // this reads the state the click actually started from; keyboard activation
-  // fires no pointer event and finds it `false`, which is correct there.
-  const wasOpen = useRef(false);
+  // Open, and what is typed into its search box. The query is cleared on
+  // close so it does not greet you next time with a list filtered by
+  // something you were looking for yesterday.
+  const [picking, setPicking] = useState(false);
+  const [query, setQuery] = useState("");
+
   const closePicker = () => {
-    setPickerAt(null);
-    wasOpen.current = false;
+    setPicking(false);
+    setQuery("");
   };
 
-  const pickerItems: MenuItem[] = [
-    {
-      label: "Most recent",
-      ...(following ? { icon: "check" as const } : {}),
-      onSelect: () => setChosenId(undefined),
-    },
-    { label: "", separator: true },
-    // Capped, because this menu does not scroll and a person with two hundred
-    // conversations would get a list taller than the screen. The ones missing
-    // from it are one click away in Messages, which is what the button beside
-    // this one is for.
-    ...live.conversations.slice(0, PICKER_LIMIT).map((c) => ({
-      label: c.title,
-      ...(c.id === shownId ? { icon: "check" as const } : {}),
-      onSelect: () => setChosenId(c.id),
-    })),
-  ];
+  // Escape closes it, the way it closes every other layer in the app. Bound
+  // while it is open and not otherwise, so Escape means something else --
+  // anything else -- the rest of the time.
+  useEffect(() => {
+    if (!picking) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setPicking(false);
+      setQuery("");
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [picking]);
+
+  // Matched on the name only. The Messages tab also searches message bodies
+  // through the store's index, and that is the right thing there -- here it
+  // would put results in a list whose rows are conversations, which is a
+  // different answer to a different question.
+  const term = query.trim().toLowerCase();
+  const listed = term
+    ? live.conversations.filter((c) => c.title.toLowerCase().includes(term))
+    : live.conversations;
 
   return (
     <Panel
       tone="list"
-      className="flex shrink-0 flex-col"
+      // `relative` and `overflow-hidden` are what make the switcher slide
+      // *inside* the pane instead of over the window: it is positioned against
+      // this box and clipped by it, so the feed beside it never moves.
+      className="relative flex shrink-0 flex-col overflow-hidden"
       style={{ width, minWidth: MIN_HOME_CHAT, maxWidth: "58%" }}
       aria-label="Conversation beside the feed"
     >
@@ -159,18 +170,10 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
         <>
           <div className="flex items-center gap-2.5 border-b border-[var(--hairline)] px-3 py-2.5">
             <button
-              ref={trigger}
               type="button"
-              aria-haspopup="menu"
-              aria-expanded={pickerAt !== null}
-              onPointerDownCapture={() => {
-                wasOpen.current = pickerAt !== null;
-              }}
-              onClick={() => {
-                if (wasOpen.current) return;
-                const rect = trigger.current?.getBoundingClientRect();
-                if (rect) setPickerAt({ x: rect.left, y: rect.bottom + 4 });
-              }}
+              aria-expanded={picking}
+              aria-label={`Switch conversation, currently ${conversation.title}`}
+              onClick={() => setPicking(true)}
               className="rounded-control flex min-w-0 flex-1 items-center gap-2.5 px-1 py-0.5 text-left outline-none transition-colors duration-[var(--motion-fast)] ease-[var(--ease-state)] hover:bg-fill-hover focus-visible:ring-1 focus-visible:ring-accent"
             >
               <ConversationAvatar
@@ -202,14 +205,6 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
             />
           </div>
 
-          {pickerAt ? (
-            <ContextMenu
-              items={pickerItems}
-              at={pickerAt}
-              onClose={closePicker}
-            />
-          ) : null}
-
           <MessageList
             messages={live.messages}
             now={now}
@@ -238,6 +233,112 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
           }
         />
       )}
+
+      {/* Mounted whether or not it is open, because a panel that is only
+          rendered while open cannot slide away -- it would vanish. `inert`
+          is what keeps the closed one out of the tab order and away from a
+          screen reader; without it there would be a whole conversation list
+          sitting off-screen that Tab still walks into. */}
+      <div
+        inert={!picking}
+        aria-label="Switch conversation"
+        className={cn(
+          "bg-surface-1 absolute inset-0 z-10 flex flex-col transition-transform duration-[var(--motion-panel)] ease-[var(--ease-out)]",
+          picking ? "translate-x-0" : "-translate-x-full",
+        )}
+      >
+        <div className="flex items-center gap-2 border-b border-[var(--hairline)] px-3 py-2.5">
+          <IconButton
+            name="chevronLeft"
+            label="Back to the conversation"
+            size={16}
+            onClick={closePicker}
+          />
+          <span className="text-text-hi flex-1 text-body font-medium">
+            Conversations
+          </span>
+        </div>
+
+        <div className="px-3 pt-3">
+          <Field
+            label="Search"
+            hideLabel
+            placeholder="Search conversations"
+            value={query}
+            // Focused on open, so typing a name works straight away -- which
+            // is how somebody with many conversations gets to one of them
+            // without scrolling. `key` remounts it when the panel opens,
+            // because `autoFocus` only fires on mount.
+            key={picking ? "open" : "closed"}
+            autoFocus={picking}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+
+        <div
+          className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2"
+          role="listbox"
+          aria-label="Conversations"
+        >
+          {/* Going back to following is a choice like any other, so it is a
+              row in the list rather than a control somewhere else. */}
+          <button
+            type="button"
+            role="option"
+            aria-selected={following}
+            onClick={() => {
+              setChosenId(undefined);
+              closePicker();
+            }}
+            className={cn(
+              "rounded-panel flex w-full items-center gap-3 px-2.5 py-2.5 text-left transition-colors duration-[var(--motion-fast)] ease-[var(--ease-state)]",
+              following ? "bg-fill-hover" : "hover:bg-fill",
+            )}
+          >
+            <span className="bg-surface-3 text-text-lo flex size-10 shrink-0 items-center justify-center rounded-full">
+              <Icon name="clock" size={17} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="text-text-hi block truncate text-body font-medium">
+                Most recent
+              </span>
+              <span className="text-text-lo block text-meta">
+                Follows whoever wrote last
+              </span>
+            </span>
+            {following ? (
+              <Icon name="check" size={15} className="text-accent-soft shrink-0" />
+            ) : null}
+          </button>
+
+          {listed.map((c, index) => (
+            <ConversationRow
+              key={c.id}
+              conversation={{ ...c, ...overrides[c.id] }}
+              last={undefined}
+              now={now}
+              active={c.id === shownId}
+              selected={false}
+              showPresence={false}
+              index={index}
+              bulk={null}
+              onClick={() => {
+                setChosenId(c.id);
+                closePicker();
+              }}
+              onRemoved={() => void live.refresh()}
+            />
+          ))}
+
+          {listed.length === 0 ? (
+            <p className="text-text-lo px-2.5 py-6 text-center text-meta">
+              {term
+                ? `Nothing here matches “${query.trim()}”.`
+                : "No conversations yet."}
+            </p>
+          ) : null}
+        </div>
+      </div>
     </Panel>
   );
 }

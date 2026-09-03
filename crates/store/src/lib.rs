@@ -2536,8 +2536,8 @@ mod tests {
             let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
             store
                 .connection()
-                // v11's columns go too: a rollback test has to restore the
-                // shape of the version it claims to be.
+                // v11's columns go too: a rollback test restores the shape
+                // of the version it claims to be, not just the number.
                 .execute_batch(
                     "DROP TABLE meet_pins;
                      DROP INDEX messages_client_id_idx;
@@ -3050,10 +3050,12 @@ mod tests {
             store
                 .connection()
                 .execute_batch(
-                    // Everything v9 and later added, because a rollback test
-                    // has to restore the *shape* of the version it claims to
-                    // be -- a bare `ADD COLUMN` re-run against a column that
-                    // is already there fails, and rightly so.
+                    // Everything v9 and later added. `add_column` checks
+                    // `PRAGMA table_info` and would skip a column already
+                    // there, so this is not what keeps the re-run working --
+                    // it is that a store claiming to be v8 while carrying
+                    // v11's columns is a shape that never existed, and an
+                    // upgrade test on it proves nothing about the upgrade.
                     "DROP TRIGGER messages_fts_insert;
                      DROP TRIGGER messages_fts_delete;
                      DROP TRIGGER messages_fts_update;

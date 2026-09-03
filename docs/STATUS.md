@@ -191,3 +191,11 @@ candidate fixes were identified and none has been confirmed.
 - **"Until I turn it off" is a mute entry you can see.** It always was the
   behaviour of a plain click on Mute; beside four durations, a bare "Mute" read
   as "for how long?" instead. Naming it costs one line.
+- **Blocking is reachable from the conversation.** It was already built and
+  already server-enforced, but only offered on their profile, on their pin on
+  the map, and in the undo list in Settings — none of which is where you are
+  when somebody starts being a problem. The conversation's own menu now offers
+  it, for a two-person conversation whose member list has arrived; a group and
+  a conversation that cannot name anybody get no entry rather than a broken
+  one. Not in the conversation header: that toolbar is for the things people
+  do often, which is the rule it already applies to mute durations.

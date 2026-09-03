@@ -19,6 +19,7 @@ import { Field } from "../../components/ui/Controls";
 import { EmptyState } from "../../components/ui/Feedback";
 import { Icon } from "../../components/ui/Icon";
 import { Panel } from "../../components/ui/Surface";
+import { blockPeer, peerHandle } from "./peer";
 import { clickSelection, pruneSelection } from "./selection";
 
 /**
@@ -418,6 +419,8 @@ function ConversationRow({
   const toggleFlag = useApp((s) => s.toggleConversationFlag);
   const mute = useApp((s) => s.muteConversation);
   const forget = useApp((s) => s.forgetConversation);
+  const account = useApp((s) => s.account);
+  const peer = peerHandle(conversation, account?.handle);
   const override = useApp((s) => s.conversationOverrides[conversation.id]);
   const muted = isMuted(override, now.getTime());
   const pinned = override?.pinned ?? false;
@@ -477,6 +480,20 @@ function ConversationRow({
             submenu: timedMutes((until) => mute(conversation.id, until)),
           },
       { label: "", separator: true },
+      // Only where there is somebody to name. A group has several people and
+      // no single answer, and a DM whose member list has not arrived yet has
+      // no answer at all -- in both cases the entry is absent rather than
+      // present and broken.
+      ...(peer
+        ? [
+            {
+              label: `Block ${conversation.title}`,
+              icon: "shield" as const,
+              danger: true,
+              onSelect: () => void blockPeer(peer, conversation.title),
+            },
+          ]
+        : []),
       {
         label: "Remove from this device",
         icon: "trash",

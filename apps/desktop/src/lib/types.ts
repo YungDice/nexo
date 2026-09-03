@@ -67,6 +67,13 @@ export interface Message {
    */
   undecryptable?: boolean;
   /**
+   * The sender's name for this message, when it has one.
+   *
+   * Absent for anything sent before names existed. The actions that need one —
+   * reacting, editing, taking back — are simply not offered on those.
+   */
+  clientId?: string;
+  /**
    * Set when the payload decrypted but this build does not know its shape.
    *
    * Distinct from `undecryptable`: the message opened, and the remedy is an

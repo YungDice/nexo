@@ -13,8 +13,9 @@ use uuid::Uuid;
 
 /// Wire protocol version. Bump on any breaking change to the types below.
 ///
-/// 2 adds the Meet&Greet types at the end of this file.
-pub const PROTOCOL_VERSION: u16 = 2;
+/// 2 adds the Meet&Greet types at the end of this file. 3 gives a message a
+/// name of its own, so a later reaction, edit or retraction can refer to it.
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// A conversation identifier. One MLS group per conversation; a 1:1 chat is a
 /// two-member group with no special-casing (§4.2).
@@ -64,6 +65,22 @@ pub enum Payload {
     Text {
         /// The message.
         body: String,
+        /// This sender's name for this message.
+        ///
+        /// Not the envelope id: that is the server's number, and a message
+        /// still sitting in the outbox does not have one — which is exactly
+        /// the window in which somebody wants to take a message back. Not the
+        /// `client_msg_id` either: that one is the server's idempotency key,
+        /// and a value that was both would sit in the server's tables in
+        /// cleartext *and* inside everyone's ciphertext.
+        ///
+        /// `None` for anything sent before this existed. Such a message cannot
+        /// be named, so it cannot be edited or retracted, and the menu does
+        /// not offer it — absence has to be representable for that to work,
+        /// which is why this is an `Option` rather than a defaulted `Uuid`
+        /// that would give every old message the same nil name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<Uuid>,
     },
     /// A file. The bytes live in object storage; the key to them is here.
     ///
@@ -90,6 +107,9 @@ pub enum Payload {
         /// An optional message sent with the file.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         body: Option<String>,
+        /// This sender's name for this message. See [`Payload::Text`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<Uuid>,
     },
     /// A change to what the conversation is called.
     ///
@@ -148,9 +168,31 @@ pub enum Payload {
 }
 
 impl Payload {
-    /// A plain text message.
+    /// A plain text message, with a fresh name.
+    ///
+    /// Minted here rather than by the caller so that every message made this
+    /// way has one. The sender reads it back with [`Payload::id`] before
+    /// encrypting: MLS ratchets on encryption and those bytes *are* the
+    /// message, so there is no second chance to look inside and learn what it
+    /// was called.
     pub fn text(body: impl Into<String>) -> Self {
-        Self::Text { body: body.into() }
+        Self::Text {
+            body: body.into(),
+            id: Some(Uuid::new_v4()),
+        }
+    }
+
+    /// The sender's name for this message, when it has one.
+    ///
+    /// `None` for a payload that carries no name at all — a rename, a group
+    /// picture, something this build cannot read, or a message from before
+    /// names existed. Nothing can refer to those, and the UI offers no action
+    /// that would try.
+    pub fn id(&self) -> Option<Uuid> {
+        match self {
+            Payload::Text { id, .. } | Payload::Attachment { id, .. } => *id,
+            _ => None,
+        }
     }
 
     /// What to show in a conversation list, and in the bubble.
@@ -159,7 +201,7 @@ impl Payload {
     /// useful thing to render and the name is already inside the ciphertext.
     pub fn preview(&self) -> &str {
         match self {
-            Payload::Text { body } => body,
+            Payload::Text { body, .. } => body,
             Payload::Attachment { body, name, .. } => match body {
                 Some(body) if !body.is_empty() => body,
                 _ => name,
@@ -208,8 +250,11 @@ impl Payload {
             Ok(payload) => payload,
             Err(_) => match tagged_kind(bytes) {
                 Some(kind) => Payload::Unsupported { kind },
+                // No name, and there cannot be one: these bytes predate the
+                // idea. The actions that need a name are not offered on them.
                 None => Payload::Text {
                     body: String::from_utf8_lossy(bytes).into_owned(),
+                    id: None,
                 },
             },
         }
@@ -515,6 +560,7 @@ mod tests {
             mime: "application/pdf".into(),
             size: 1234,
             body: Some("as promised".into()),
+            id: Some(Uuid::new_v4()),
         };
         assert_eq!(Payload::decode(&payload.encode()), payload);
     }
@@ -523,9 +569,59 @@ mod tests {
     fn bare_bytes_are_read_as_text() {
         // The first messages this project sent had no envelope. Refusing to
         // read them would be self-inflicted data loss.
+        // Spelled out rather than compared against `Payload::text`, which mints
+        // a name. These bytes predate the idea of one, and `None` is the part
+        // being asserted: a message nothing can refer to.
         assert_eq!(
             Payload::decode(b"just a message"),
-            Payload::text("just a message")
+            Payload::Text {
+                body: "just a message".into(),
+                id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_payload_without_an_id_still_reads() {
+        // Every message sent before version 3 looks like this. Refusing them,
+        // or reading them as something else, would break every history that
+        // already exists — which is the whole reason the field is optional.
+        let before = br#"{"kind":"text","body":"from before names"}"#;
+        assert_eq!(
+            Payload::decode(before),
+            Payload::Text {
+                body: "from before names".into(),
+                id: None,
+            }
+        );
+        assert_eq!(Payload::decode(before).id(), None);
+    }
+
+    #[test]
+    fn an_id_survives_the_round_trip() {
+        let payload = Payload::text("hello");
+        let id = payload.id().expect("text() mints one");
+        assert_eq!(Payload::decode(&payload.encode()).id(), Some(id));
+    }
+
+    #[test]
+    fn payloads_that_are_not_messages_have_no_id() {
+        // A rename changes shared state and is not a thing anyone can react
+        // to, edit or take back. Answering `None` is what stops the UI from
+        // offering those on it.
+        assert_eq!(
+            Payload::Rename {
+                title: "Trip".into()
+            }
+            .id(),
+            None
+        );
+        assert_eq!(
+            Payload::Unsupported {
+                kind: "reaction".into()
+            }
+            .id(),
+            None
         );
     }
 
@@ -563,7 +659,10 @@ mod tests {
         let typed = br#"{"hello": "world"}"#;
         assert_eq!(
             Payload::decode(typed),
-            Payload::text(r#"{"hello": "world"}"#)
+            Payload::Text {
+                body: r#"{"hello": "world"}"#.into(),
+                id: None,
+            }
         );
     }
 
@@ -588,6 +687,7 @@ mod tests {
             mime: "image/jpeg".into(),
             size: 1,
             body: None,
+            id: None,
         };
         assert_eq!(payload.preview(), "holiday.jpg");
     }
@@ -603,6 +703,7 @@ mod tests {
             mime: "image/jpeg".into(),
             size: 1,
             body: Some("from the trip".into()),
+            id: None,
         };
         assert_eq!(payload.preview(), "from the trip");
     }
@@ -620,6 +721,7 @@ mod tests {
             mime: "application/pdf".into(),
             size: 10,
             body: None,
+            id: None,
         };
         let encoded = payload.encode();
         assert!(

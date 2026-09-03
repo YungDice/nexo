@@ -76,6 +76,7 @@ function toMessage(wire: WireMessage, conversationId: string): Message {
     // the local store was accepted by the server before it was written, so
     // "sent" is the honest floor there.
     state: wire.pending ? "sending" : "sent",
+    ...(wire.client_id ? { clientId: wire.client_id } : {}),
     ...(wire.unsupported ? { unsupported: wire.unsupported } : {}),
     // `exactOptionalPropertyTypes` is on, so an optional property is either
     // absent or a value -- never explicitly undefined. Spreading is how you

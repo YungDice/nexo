@@ -76,6 +76,12 @@ pub struct MessageView {
     /// key, and the nonce stay in Rust (rule 2) -- the WebView asks to save an
     /// attachment by envelope id and never sees what opens it.
     pub attachment: Option<AttachmentView>,
+    /// The sender's own name for this message, when it has one.
+    ///
+    /// What a later reaction, edit or retraction refers to. `None` for a
+    /// message sent before names existed and for one still in the outbox that
+    /// somehow lost it -- the UI offers no action that needs a name on those.
+    pub client_id: Option<String>,
     /// The `kind` of a payload this build cannot read, when that is what
     /// arrived.
     ///
@@ -662,6 +668,7 @@ pub async fn send_message(
             outgoing: true,
             pending: sent.envelope_id().is_none(),
             attachment: None,
+            client_id: sent.client_id().map(str::to_string),
             // We wrote it, so this build understands it by construction.
             unsupported: None,
         })
@@ -796,6 +803,7 @@ pub async fn conversation_messages(
                 outgoing: true,
                 pending: true,
                 attachment: AttachmentView::from_payload(item.payload.as_deref()),
+                client_id: item.client_id.clone(),
                 unsupported: None,
             })
             .collect();
@@ -807,6 +815,7 @@ pub async fn conversation_messages(
                 outgoing: m.sender_device_id.is_none(),
                 sender_device_id: m.sender_device_id,
                 attachment: AttachmentView::from_payload(m.payload.as_deref()),
+                client_id: m.client_id,
                 unsupported: unsupported_kind(m.payload.as_deref()),
                 body: bubble_body(&m.body, m.payload.as_deref()),
                 sent_at_ms: m.sent_at_ms,

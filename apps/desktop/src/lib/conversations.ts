@@ -54,6 +54,15 @@ export interface Message {
   /** Present when the message carries a file. */
   attachment: Attachment | null;
   /**
+   * The sender's own name for this message, or `null` for one sent before
+   * names existed.
+   *
+   * What anything referring to a message refers to. Not the envelope id: the
+   * server assigns that, so a message still in the outbox has none — and that
+   * is exactly the window in which somebody wants to take one back.
+   */
+  client_id: string | null;
+  /**
    * The `kind` of a payload this build could not read, when that is what
    * arrived — otherwise `null`.
    *

@@ -257,6 +257,13 @@ move.
 
 - **Pinned dependencies, everywhere.** `=1.0.229`, not `^1.0`. Rule 8. A bump is
   a deliberate act that goes through `cargo deny` and `cargo audit`.
+- **The local store's schema version is one constant.**
+  `crates/store/src/lib.rs` `SCHEMA_VERSION` and the last `PRAGMA
+  user_version` in `migrate()` must agree; a test fails if they drift. A
+  migration that adds a column with a bare `ALTER TABLE` is **not idempotent**,
+  so any test that rolls `user_version` back has to drop what the later
+  versions added — otherwise the step re-runs against a column that is already
+  there.
 - **`sqlx` is compile-time checked, offline by default.** `.cargo/config.toml`
   sets `SQLX_OFFLINE = "true"` for every cargo invocation, so `query!` macros
   check themselves against the committed `.sqlx/` cache and the Windows CI job

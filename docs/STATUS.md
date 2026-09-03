@@ -191,6 +191,17 @@ candidate fixes were identified and none has been confirmed.
 - **"Until I turn it off" is a mute entry you can see.** It always was the
   behaviour of a plain click on Mute; beside four durations, a bare "Mute" read
   as "for how long?" instead. Naming it costs one line.
+- **A message has a name of its own** (protocol version 3, store schema 11).
+  `Payload::Text` and `Payload::Attachment` carry an optional `id` that the
+  sender mints before encrypting, and the store keeps it beside the message and
+  in the outbox. Nothing user-visible yet; it is what reacting to, editing or
+  taking back a message will refer to. Not the envelope id, because the server
+  assigns that and a message still in the outbox has none — which is exactly
+  the window in which somebody wants to take one back. Not the `client_msg_id`
+  either: that is the server's idempotency key, and a value that was both would
+  sit in the server's tables in cleartext *and* inside everyone's ciphertext.
+  Messages sent before this carry no name, keep working, and are simply not
+  offered the actions that need one.
 - **An account can be deleted.** `POST /v1/auth/delete-account`, a *Delete
   account* group at the foot of Settings → Security, and the wipe of the local
   store, its key and the unlock PIN that signing out already performed. The

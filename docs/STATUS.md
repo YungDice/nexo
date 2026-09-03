@@ -392,3 +392,11 @@ decision rather than configuration.
   The arrow keys pan while zoomed and step through the conversation's media at
   rest, so panning is not a mouse-only feature next to zoom controls that are
   not. The zoom buttons are disabled on a video, where they never did anything.
+- **Pinning works on every kind of message, and the panel shows what was
+  pinned.** Pinning a photograph already worked and looked like it had not: the
+  pinned list rendered the message body or, failing that, the literal words
+  "(no text)", so a pinned picture, video, voice message or file appeared as a
+  row saying nothing. Each now shows its own mark and a line that describes it —
+  a caption where there is one, the file name where there is not, "Voice
+  message" for a recording whose name says nothing, and what happened to a
+  message that was taken back or could not be opened.

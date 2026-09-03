@@ -7,6 +7,8 @@ import type { Attachment, Conversation, Message } from "../../lib/types";
 import { IconButton } from "../../components/ui/Button";
 import { Icon } from "../../components/ui/Icon";
 import { Panel } from "../../components/ui/Surface";
+import { cn } from "../../lib/cn";
+import { pinnedLine } from "./pinned";
 
 /**
  * The 280px context panel (§6.1, §7.3).
@@ -57,16 +59,38 @@ export function ContextPanel({
                 promise nothing here can keep. */}
             <SectionHead label="Pinned on this device" onSeeAll={false} />
             <ul className="space-y-2">
-              {pinned.map((message) => (
-                <li
-                  key={message.id}
-                  className="rounded-control bg-surface-2 px-3 py-2"
-                >
-                  <p className="text-text-body line-clamp-3 text-[12px]">
-                    {message.body || "(no text)"}
-                  </p>
-                </li>
-              ))}
+              {pinned.map((message) => {
+                const line = pinnedLine(message);
+                return (
+                  <li
+                    key={message.id}
+                    className="rounded-control bg-surface-2 px-3 py-2"
+                  >
+                    <p className="flex items-start gap-1.5">
+                      {line.icon ? (
+                        <Icon
+                          name={line.icon}
+                          size={12}
+                          className="text-text-lo mt-[3px] shrink-0"
+                        />
+                      ) : null}
+                      <span
+                        className={cn(
+                          "line-clamp-3 min-w-0 flex-1 text-[12px]",
+                          // The app describing the message reads quieter than
+                          // the message itself. A file name in the same weight
+                          // as somebody's words reads as their words.
+                          line.described
+                            ? "text-text-lo italic"
+                            : "text-text-body",
+                        )}
+                      >
+                        {line.text}
+                      </span>
+                    </p>
+                  </li>
+                );
+              })}
             </ul>
           </section>
         ) : null}

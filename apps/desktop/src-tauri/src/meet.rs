@@ -488,8 +488,11 @@ pub async fn story_post(state: State<'_, ClientState>, path: String) -> Result<i
                 format!("That file could not be read: {e}"),
             )
         })?;
+        // A story is a picture or a video. The sniffer knows about sound now
+        // too, so this says which of the three it wants rather than trusting
+        // that the sniffer only recognises two things.
         let mime = crate::feed::sniff_mime(&contents);
-        if mime == "application/octet-stream" {
+        if !crate::feed::is_renderable(mime) {
             return Err(failure(
                 "not_an_image",
                 "That file is not a picture or a video.",

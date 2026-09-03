@@ -9,6 +9,7 @@ import {
   type Conversation as WireConversation,
   type Message as WireMessage,
 } from "../lib/conversations";
+import { attachmentKind } from "../lib/media";
 import type { Conversation, Message } from "../lib/types";
 import { useApp } from "./store";
 import { onSync, syncNow } from "./syncAgent";
@@ -97,9 +98,7 @@ function toMessage(wire: WireMessage, conversationId: string): Message {
               name: wire.attachment.name,
               size: wire.attachment.size,
               mime: wire.attachment.mime,
-              kind: wire.attachment.mime.startsWith("image/")
-                ? ("image" as const)
-                : ("file" as const),
+              kind: attachmentKind(wire.attachment.mime),
             },
           ],
         }

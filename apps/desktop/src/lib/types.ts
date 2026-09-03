@@ -40,7 +40,17 @@ export interface Attachment {
   /** Bytes. Rendered in the mono face so a column of them lines up. */
   size: number;
   mime: string;
-  kind: "image" | "file";
+  /**
+   * How the bubble draws it.
+   *
+   * `voice` is not a MIME type: it is what a `.wav` or a `.flac` is treated as,
+   * because those are what a recorder writes before anything has compressed it
+   * and a message-length one of them is somebody talking. Everything else with
+   * sound in it is `audio` and gets an ordinary player. There is no recorder in
+   * the app yet, so this is a reading of what arrives rather than something the
+   * app produced.
+   */
+  kind: "image" | "video" | "audio" | "voice" | "file";
 }
 
 export interface LinkPreview {

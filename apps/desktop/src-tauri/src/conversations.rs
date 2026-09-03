@@ -570,7 +570,7 @@ pub async fn set_conversation_avatar(
         // Sniffed, never taken from the name: this is what every member's
         // browser will be told the bytes are.
         let mime = crate::feed::sniff_mime(&contents);
-        if mime == "application/octet-stream" {
+        if !crate::feed::is_renderable(mime) {
             return Err(failure("not_an_image", "That file is not an image."));
         }
 
@@ -598,7 +598,7 @@ pub async fn conversation_avatar(
         // The sender's declared type is not evidence. Sniffing again here is
         // what stops a member handing everyone else an HTML "image".
         let mime = crate::feed::sniff_mime(&contents);
-        if mime == "application/octet-stream" {
+        if !crate::feed::is_renderable(mime) {
             return Ok(None);
         }
         Ok(Some(crate::feed::data_url(mime, &contents)))
@@ -638,6 +638,8 @@ pub async fn conversation_attachments(
                         "image"
                     } else if view.mime.starts_with("video/") {
                         "video"
+                    } else if view.mime.starts_with("audio/") {
+                        "audio"
                     } else {
                         "file"
                     }
@@ -659,7 +661,7 @@ pub async fn conversation_attachments(
 pub struct AttachmentEntry {
     /// All the WebView needs to ask for the bytes.
     pub envelope_id: i64,
-    /// `image`, `video` or `file`, from the type inside the ciphertext.
+    /// `image`, `video`, `audio` or `file`, from the type inside the ciphertext.
     pub kind: String,
     pub name: String,
     pub mime: String,
@@ -1148,15 +1150,15 @@ pub async fn save_attachment(
     .await
 }
 
-/// An attached image, decrypted, as a `data:` URL the page can render.
+/// An attachment, decrypted, as a `data:` URL the page can play or render.
 ///
 /// The bytes never touch disk and the S3 key never leaves Rust. Only reached
 /// when the GCM tag and the SHA-256 both matched, so nothing unverified is
 /// ever rendered.
 ///
-/// Refuses anything that is not actually an image, whatever the sender called
-/// it: this value goes straight into the page, and a sender-supplied MIME type
-/// is not evidence of anything.
+/// Refuses anything that is not actually a picture, a video or a sound,
+/// whatever the sender called it: this value goes straight into the page, and
+/// a sender-supplied MIME type is not evidence of anything.
 #[tauri::command]
 pub async fn attachment_data_url(
     state: State<'_, ClientState>,
@@ -1168,14 +1170,14 @@ pub async fn attachment_data_url(
         if attachment.contents.len() > crate::feed::MAX_INLINE_IMAGE_BYTES {
             return Err(failure(
                 "too_large",
-                "That image is too large to display. Save it instead.",
+                "That file is too large to open here. Save it instead.",
             ));
         }
         let mime = crate::feed::sniff_mime(&attachment.contents);
-        if !crate::feed::is_renderable(mime) {
+        if !crate::feed::is_playable(mime) {
             return Err(failure(
                 "not_renderable",
-                "That attachment is not a picture or a video.",
+                "That attachment is not a picture, a video or a sound.",
             ));
         }
         Ok(crate::feed::data_url(mime, &attachment.contents))
@@ -1209,8 +1211,18 @@ fn mime_for(path: &std::path::Path) -> &'static str {
         Some("pdf") => "application/pdf",
         Some("txt" | "md" | "log") => "text/plain",
         Some("zip") => "application/zip",
-        Some("mp4") => "video/mp4",
+        Some("mp4" | "m4v") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
         Some("mp3") => "audio/mpeg",
+        // Named separately from the rest of the audio below because the UI
+        // treats these two as voice messages: they are what a recorder writes
+        // when nothing has compressed it yet.
+        Some("wav") => "audio/wav",
+        Some("flac") => "audio/flac",
+        Some("ogg" | "oga" | "opus") => "audio/ogg",
+        Some("m4a") => "audio/mp4",
+        Some("aac") => "audio/aac",
         _ => "application/octet-stream",
     }
 }

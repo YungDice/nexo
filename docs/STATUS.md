@@ -360,3 +360,26 @@ decision rather than configuration.
   The menu is now built by a pure function with the order under test, because
   the entries appear and disappear with the message's state and "last" means
   something different in each case.
+- **Pictures in a conversation arrive at the size they were sent at.** They were
+  drawn as a background image inside a forced 4:3 box, so anything that was not
+  4:3 — most photographs — sat letterboxed in a corner of a box sized for
+  something else, inside a column capped at 64%. They are now real `img`
+  elements at their own ratio, up to 440px tall, and a message carrying media
+  gets a wider column than a message carrying a paragraph.
+- **Video and sound play in the bubble.** An mp4 gets a player, and so does an
+  mp3, an m4a or an ogg. A `.wav` or a `.flac` is shown as a voice message
+  instead — those are what a recorder writes before anything has compressed it.
+  That is a reading of what arrives, not a fact about it: there is no recorder
+  in the app yet, so nothing marks a file as speech, and when there is one the
+  payload should say so and the extension list becomes the fallback.
+- **The byte-sniffer knows sound**: WAV, FLAC, Ogg, MP3 and the M4A family,
+  which used to be called `video/mp4` because it wears MP4's boxes — a player
+  with a black rectangle where the picture would be. What a *story* or a profile
+  picture may be did not widen with it: those ask `is_renderable`, a
+  conversation asks `is_playable`, and five call sites that asked "is this not
+  `application/octet-stream`?" now name what they want, because that spelling
+  would have accepted sound the moment the sniffer learned it.
+- Two smaller things found on the way: the cropper accepted a video (it tested
+  for "anything the sniffer knew" and got one frame of nothing to crop), and the
+  RIFF and ISO branches guarded a `[8..12]` slice with `len() > 12`, so a file
+  that was exactly its own header fell through to "unknown".

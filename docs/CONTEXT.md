@@ -149,6 +149,8 @@ features/{auth,home,meet,messages,profile,settings}  The five destinations plus 
               home/Stories.tsx is the stories strip; stories have no destination of
               their own, because their audience is contacts.
 lib/          Typed wrappers around invoke(): auth, conversations, feed, profiles, blocks, meet.
+              media.ts is the exception -- no invoke, just the rule that picks
+              which player a bubble draws for an attachment.
 mock/         The data every surface reads where the network does not exist yet.
 ```
 
@@ -291,6 +293,15 @@ move.
 - **`pnpm server` does not work** — `server` is one of pnpm's own commands. The
   script is `dev:server`.
 - **Port 1420 is fixed on purpose** so Tauri and Vite cannot disagree about it.
+- **Two different questions decide what an attachment is**, and only one of
+  them is about safety. `lib/media.ts` reads the sender's declared MIME to pick
+  a *layout* — that value is guessed from a file extension and is not evidence.
+  What the page may actually be handed is decided in Rust from the bytes:
+  `feed::sniff_mime`, then `is_renderable` (a picture or a video — what a story
+  or a profile picture may be) or `is_playable` (also sound — what a
+  conversation may be). Never widen the first to fix the second, and never test
+  for `"application/octet-stream"` instead of asking one of those two: that
+  spelling silently accepts whatever the sniffer learns next.
 - **A menu's destructive entries sit last**, and `MenuItem` says so. The
   message menu is where that is easy to break, because its entries come and go
   with the message's state — it is built by `features/messages/menu.ts`, a pure

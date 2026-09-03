@@ -383,3 +383,12 @@ decision rather than configuration.
   for "anything the sniffer knew" and got one frame of nothing to crop), and the
   RIFF and ISO branches guarded a `[8..12]` slice with `len() > 12`, so a file
   that was exactly its own header fell through to "unknown".
+- **A picture in the viewer zooms and drags.** The zoom was there and did half a
+  job: past 100% you were looking at the middle of the picture with no way to
+  reach the rest of it. Dragging moves it now, the wheel zooms about the cursor
+  rather than the middle (zoom about the middle is the version where you point
+  at a face, zoom, and the face leaves the screen), a double-click toggles 200%,
+  and the picture is held inside the frame so it cannot be thrown off the edge.
+  The arrow keys pan while zoomed and step through the conversation's media at
+  rest, so panning is not a mouse-only feature next to zoom controls that are
+  not. The zoom buttons are disabled on a video, where they never did anything.

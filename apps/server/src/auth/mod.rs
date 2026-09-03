@@ -41,6 +41,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/auth/refresh", post(refresh))
         .route("/v1/auth/logout", post(logout))
         .route("/v1/auth/change-password", post(change_password))
+        .route("/v1/auth/delete-account", post(delete_account))
 }
 
 // ---------------------------------------------------------------- errors ---
@@ -608,6 +609,101 @@ fn hex(bytes: &[u8]) -> String {
         out.push(char::from_digit(u32::from(b & 0x0F), 16).unwrap());
     }
     out
+}
+
+/// What deleting an account asks for.
+#[derive(Deserialize)]
+pub struct DeleteAccountRequest {
+    /// Hex of the current password's verifier.
+    ///
+    /// The same reasoning as change-password, with more resting on it: a
+    /// bearer token is possession of a session, not knowledge of the password,
+    /// and an unattended unlocked machine must not be enough to destroy an
+    /// account that has no recovery. Nothing here is reversible afterwards.
+    pub pw_verifier: String,
+}
+
+/// Deletes the account and everything the server holds for it.
+///
+/// # Why the deletes are written out rather than left to the schema
+///
+/// Most tables cascade from `users`, but **`devices` deliberately does not** —
+/// it references `users(id)` with no `ON DELETE` clause, so a stray delete of
+/// a user cannot silently take a device, its published KeyPackages and every
+/// envelope it ever sent. That is a good default and this route does not
+/// change it; it deletes devices on purpose, in an order it states, so the
+/// destruction is legible at the one place that means to do it.
+///
+/// What goes, in order:
+///
+/// 1. **Devices**, and with them the account's KeyPackages and every envelope
+///    it sent that the server still holds. Ciphertext nobody has synced yet is
+///    included, so a message sent minutes ago may never arrive. The UI says
+///    so; it is the one consequence people do not expect.
+/// 2. **The user row**, and with it posts, comments, reactions, votes, blocks,
+///    profile fields and their visibility, Meet&Greet's profile, consent and
+///    intros, reports, refresh tokens, and conversation membership.
+/// 3. **Conversations left with nobody in them.** Bounded to the ones this
+///    account was in: a two-person conversation whose other member is gone is
+///    unreachable for anyone, and leaving it would be the first orphan row in
+///    a schema that has none.
+///
+/// What does not go, and cannot: messages already delivered to other people.
+/// They are on those machines, and the server never had the keys.
+async fn delete_account(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(request): Json<DeleteAccountRequest>,
+) -> Result<StatusCode, AuthError> {
+    let verifier = unhex(&request.pw_verifier, "pw_verifier")?;
+
+    let mut tx = state.db.begin().await?;
+
+    // FOR UPDATE for the same reason change-password takes it: the verify and
+    // the write must not straddle another change to this row.
+    let user = sqlx::query!(
+        "SELECT pw_hash FROM users WHERE id = $1 FOR UPDATE",
+        caller.user_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(user) = user else {
+        // The account vanished under a valid token; nothing left to delete.
+        return Err(AuthError::InvalidCredentials);
+    };
+    if !password::verify(&verifier, &user.pw_hash)? {
+        return Err(AuthError::WrongPassword);
+    }
+
+    // Noted before the membership rows go, because afterwards there is nothing
+    // left to say which conversations this account was in.
+    let conversations: Vec<Uuid> = sqlx::query_scalar!(
+        "SELECT conversation_id FROM conversation_members WHERE user_id = $1",
+        caller.user_id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    sqlx::query!("DELETE FROM devices WHERE user_id = $1", caller.user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query!("DELETE FROM users WHERE id = $1", caller.user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query!(
+        "DELETE FROM conversations c
+         WHERE c.id = ANY($1)
+           AND NOT EXISTS (
+               SELECT 1 FROM conversation_members m WHERE m.conversation_id = c.id
+           )",
+        &conversations[..]
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    tracing::info!("account deleted");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn unhex(s: &str, field: &str) -> Result<Vec<u8>, AuthError> {

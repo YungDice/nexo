@@ -170,6 +170,9 @@ impl Transport for CutNetwork {
         self.inner
             .change_password(old_verifier, new_salt, new_verifier)
     }
+    fn delete_account(&self, pw_verifier: &str) -> Result<(), TransportError> {
+        self.inner.delete_account(pw_verifier)
+    }
     fn publish_key_packages(&self, packages: &[String]) -> Result<(), TransportError> {
         self.inner.publish_key_packages(packages)
     }

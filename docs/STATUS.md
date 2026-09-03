@@ -191,6 +191,17 @@ candidate fixes were identified and none has been confirmed.
 - **"Until I turn it off" is a mute entry you can see.** It always was the
   behaviour of a plain click on Mute; beside four durations, a bare "Mute" read
   as "for how long?" instead. Naming it costs one line.
+- **An account can be deleted.** `POST /v1/auth/delete-account`, a *Delete
+  account* group at the foot of Settings → Security, and the wipe of the local
+  store, its key and the unlock PIN that signing out already performed. The
+  dialog asks for two things doing two jobs: the handle typed out, which cannot
+  be answered by reflex and names which account is going, and the password,
+  which the server checks — a bearer token is possession of a session, the rule
+  change-password already applies to itself. The server talks first and the
+  machine is wiped second, the opposite of signing out and for the opposite
+  reason: a local wipe followed by a refusal would leave a live account nothing
+  here could reach. `docs/THREAT-MODEL.md` §2.9 has what deletion does and does
+  not reach.
 - **Blocking is reachable from the conversation.** It was already built and
   already server-enforced, but only offered on their profile, on their pin on
   the map, and in the undo list in Settings — none of which is where you are

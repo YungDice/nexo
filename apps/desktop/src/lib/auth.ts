@@ -125,6 +125,23 @@ export function logout(): Promise<void> {
 }
 
 /**
+ * Deletes the account, on the server and then on this machine.
+ *
+ * The password goes to Rust and no further: it becomes a verifier there and is
+ * never sent, stored or logged — the same path `changePassword` takes. The
+ * handle goes with it because the verifier has to be derived against that
+ * account's salt.
+ *
+ * Rejects without having deleted anything local if the server refuses, which
+ * is the whole reason the order is server-first: an account that still exists
+ * but that this machine can no longer reach would have no way back, because
+ * there is no account recovery.
+ */
+export function deleteAccount(handle: string, password: string): Promise<void> {
+  return invoke<void>("delete_account", { handle, password });
+}
+
+/**
  * Changes the account password (§6.4).
  *
  * Both passwords go in once and are gone when this resolves. Rust derives the

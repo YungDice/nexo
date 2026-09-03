@@ -615,6 +615,53 @@ pub async fn logout(
     result.map_err(AuthErrorView::from)
 }
 
+/// Deletes the account on the server, then wipes this machine.
+///
+/// The order is the opposite of [`logout`]'s and the reasoning is spelled out
+/// in `session::delete_account`: wiping first and then failing would leave an
+/// account that still exists, that nothing here can reach, and that has no
+/// recovery.
+///
+/// The password crosses the IPC boundary and nothing else does. It is turned
+/// into a verifier inside the core and never sent, stored or logged — the same
+/// path `change_password` takes, for the same reason.
+#[tauri::command]
+pub async fn delete_account(
+    app: tauri::AppHandle,
+    state: State<'_, SessionState>,
+    client_state: State<'_, ClientState>,
+    handle: String,
+    password: String,
+) -> Result<(), AuthErrorView> {
+    let path = store_path()?;
+    let keystore = keystore()?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let transport = HttpTransport::new();
+        session::delete_account(&transport, &keystore, &path, &handle, &password)
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!(%e, "delete-account task panicked");
+        AuthErrorView {
+            kind: "internal",
+            message: "Something went wrong. Try again.".to_string(),
+        }
+    })?
+    .map_err(AuthErrorView::from)?;
+
+    // Only after the core reported success. Everything below is cleanup of an
+    // account that no longer exists anywhere.
+    *state.0.lock().expect("session lock") = None;
+    if let Ok(mut guard) = client_state.0.lock() {
+        *guard = None;
+    }
+    crate::windows::forget_account(&app);
+
+    tracing::info!("account deleted");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

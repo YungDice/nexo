@@ -86,6 +86,7 @@ pub fn run() {
             auth::clear_pin,
             auth::unlock_with_pin,
             auth::logout,
+            auth::delete_account,
             conversations::list_conversations,
             conversations::delete_conversation,
             conversations::start_conversation,

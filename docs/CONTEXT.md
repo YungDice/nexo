@@ -105,7 +105,7 @@ Each module owns its own `router()`, merged in `lib.rs`.
 
 | Module | Routes |
 |---|---|
-| `auth/` (`mod`, `password`, `tokens`, `bearer`, `salt`) | `/v1/auth/{register,login,refresh,logout,salt,change-password}` |
+| `auth/` (`mod`, `password`, `tokens`, `bearer`, `salt`) | `/v1/auth/{register,login,refresh,logout,salt,change-password,delete-account}` |
 | `delivery/` (`mod`, `epoch`) | `/v1/conversations*` (send, sync, members), `/v1/keypackages*` |
 | `posts.rs` (1206 ln) | `/v1/posts*`, `/v1/feed`, `/v1/comments/{id}`, `/v1/users/{handle}/posts` |
 | `profiles.rs` | `/v1/me`, `/v1/me/visibility`, `/v1/users/{handle}` |
@@ -124,7 +124,7 @@ without a regenerated `.sqlx` breaks an offline build — see
 
 ### Desktop shell (`apps/desktop/src-tauri/src`)
 
-80 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
+81 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
 crosses into the WebView is already decrypted, and nothing else does.
 
 | File | Commands | Owns |
@@ -132,7 +132,7 @@ crosses into the WebView is already decrypted, and nothing else does.
 | `feed.rs` (750 ln) | 23 | Posts, comments, votes, reactions. |
 | `conversations.rs` (1169 ln) | 22 | Messaging, attachments, `attachment_data_url`. |
 | `commands.rs` | 15 | Profile, settings, misc. |
-| `auth.rs` (665 ln) | 10 | Register, login, lock, PIN. |
+| `auth.rs` (665 ln) | 11 | Register, login, lock, PIN, delete the account. |
 | `meet.rs` | 10 | Meet&Greet: the map, the pin, intros, reporting. |
 | `client.rs` | — | Builds and holds the `nexo-client` instance. |
 | `windows.rs` (502 ln) | — | Window creation, DWM backdrop, the acrylic path. |

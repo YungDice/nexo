@@ -204,6 +204,42 @@ its contents are end-to-end encrypted and *who wrote to whom, and when* is not
 — §2.2 applies unchanged. The one-message cap is enforced by the delivery
 service rather than the app, for the reason §2.6 gives about blocking.
 
+### 2.9 Deleting your account does not reach other people's copies
+
+Deletion is real where the server is concerned. The account row goes and takes
+its posts, comments, reactions, votes, blocks, profile fields and their
+visibility settings, Meet&Greet profile, consent and intros, reports, refresh
+tokens and conversation membership with it; the device row goes and takes its
+published KeyPackages and every envelope it sent that the server still held.
+Conversations left with nobody in them are removed rather than kept as
+unreachable rows. Locally, the SQLCipher store, the wrapped key and the unlock
+PIN are destroyed, the same wipe signing out performs.
+
+**What it cannot reach is every message that was already delivered.** Those sit
+in other people's encrypted stores, and the server never held the keys to them
+— it could not remove them if it wanted to, and neither can this app. The same
+is true of anything anyone screenshotted or copied. Deleting an account ends
+what happens next; it does not reach into what already happened.
+
+**One consequence is genuinely surprising and is stated in the UI for that
+reason.** Deleting the device deletes the ciphertext it sent that the server is
+still holding — messages sent minutes ago, to somebody who has not opened the
+app since. Those never arrive. The alternative would be leaving ciphertext on
+the server that belongs to an account that no longer exists, which is worse in
+every direction.
+
+**The order is server first, machine second**, the opposite of signing out.
+Signing out wipes the disk whatever the server says, because somebody handing
+over a laptop cares about the disk. Deletion has to hear a yes first: wiping
+locally and then failing would leave an account that still exists, that this
+machine can no longer reach, and that has no recovery.
+
+**A session is not enough to do it.** The route requires the password's
+verifier as well as the bearer token, for the reason change-password gives
+about itself in §4.1: a token is possession of an unlocked machine, not
+knowledge of the password. A wrong guess costs nothing here and a right one
+costs everything.
+
 ## 3. Adversaries in scope
 
 **A network attacker.** Defeated by TLS 1.3 for transport plus MLS for content.

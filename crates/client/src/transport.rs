@@ -205,6 +205,18 @@ pub trait Transport {
         new_verifier: &str,
     ) -> Result<(), TransportError>;
 
+    /// Deletes the account on the server, for good.
+    ///
+    /// Hex of the current password's verifier, for the reason
+    /// [`Transport::change_password`] gives about itself and more so: a token
+    /// is a session, and this is the one call whose mistake cannot be undone
+    /// by anybody, here or on the server.
+    ///
+    /// Says nothing about the local half. That is
+    /// [`crate::session::delete_account`]'s job, and it runs whatever this
+    /// returns.
+    fn delete_account(&self, pw_verifier: &str) -> Result<(), TransportError>;
+
     /// Remembers the access token that authenticates everything below.
     ///
     /// Held by the transport rather than passed to each call: a token that has

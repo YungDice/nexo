@@ -22,6 +22,7 @@ import { Callout } from "../../components/ui/Feedback";
 import { Icon, type IconName } from "../../components/ui/Icon";
 import { Divider, Panel, SectionHeader } from "../../components/ui/Surface";
 import { ChangePassword } from "./ChangePassword";
+import { DeleteAccount } from "./DeleteAccount";
 import { UnlockPin } from "./UnlockPin";
 import { BlockedList } from "./BlockedList";
 import { PrivacyTable } from "./PrivacyTable";
@@ -595,6 +596,12 @@ function Security() {
             been delivered. Encrypted key backup is planned, and it is not in v0.1.
           </Callout>
         </div>
+      </Group>
+
+      {/* Last, and it belongs last. The section above explains why nothing
+          here can be undone; this is the button that spends that. */}
+      <Group title="Delete account" bare>
+        <DeleteAccount />
       </Group>
     </>
   );

@@ -397,6 +397,48 @@ where
     Ok(())
 }
 
+/// Deletes the account: the server's copy, then everything on this machine.
+///
+/// The order is the opposite of [`logout`]'s and the reason is the opposite
+/// too. Signing out wipes the disk whatever the server says, because somebody
+/// handing a laptop over cares about the disk. Deleting must hear from the
+/// server *first*: wiping locally and then failing would leave an account that
+/// still exists, that nothing on this machine can reach any more, and that has
+/// no recovery — the worst of both outcomes.
+///
+/// The password is proved to the server rather than merely typed at us. A
+/// bearer token is possession of a session; this is the one call where that
+/// distinction is the difference between an inconvenience and an account
+/// nobody can get back.
+///
+/// What this cannot reach, and what the UI has to say: messages already
+/// delivered to other people. They are on those machines, and the server never
+/// had the keys to them.
+pub fn delete_account<T: Transport, S: SecureStore>(
+    transport: &T,
+    keystore: &S,
+    store_path: &std::path::Path,
+    handle: &str,
+    password: &str,
+) -> Result<(), SessionError>
+where
+    S::Error: 'static,
+{
+    let salt_response = transport.salt(handle)?;
+    let salt = unhex(&salt_response.salt)?;
+    let verifier = derive_verifier(password, &salt, salt_response.argon2)?;
+
+    // Before anything local. If this refuses, nothing has been lost.
+    transport.delete_account(&hex(&verifier))?;
+
+    nexo_store::delete(store_path)?;
+    keystore
+        .erase(nexo_platform::STORE_KEY_NAME)
+        .map_err(|e| SessionError::Keystore(e.to_string()))?;
+    crate::pin::clear(keystore).map_err(|e| SessionError::Keystore(e.to_string()))?;
+    Ok(())
+}
+
 fn open_store<S: SecureStore>(
     keystore: &S,
     path: &std::path::Path,

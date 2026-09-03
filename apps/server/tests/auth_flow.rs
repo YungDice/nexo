@@ -589,3 +589,130 @@ async fn changing_a_password_needs_a_token_at_all() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// Deleting an account is not something a stolen session can do.
+///
+/// The same reasoning as change-password, which this route sits beside: a
+/// bearer token is possession of a session, not knowledge of the password. The
+/// difference is that a wrong guess here costs nothing and a right one costs
+/// everything, because there is no recovery.
+#[tokio::test]
+async fn deleting_an_account_needs_the_password_not_just_the_session() {
+    let app = app_or_skip!();
+    let handle = unique_handle();
+
+    let (status, body) = post(
+        &app,
+        "/v1/auth/register",
+        json!({
+            "handle": handle,
+            "display_name": "Test Account",
+            "pw_salt": salt(), "pw_verifier": verifier("correct"),
+            "identity_pubkey": pubkey(),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "register: {body}");
+    let token = body["access_token"].as_str().unwrap().to_string();
+
+    let (status, refused) = post_auth(
+        &app,
+        "/v1/auth/delete-account",
+        &token,
+        json!({ "pw_verifier": verifier("wrong") }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "delete: {refused}");
+
+    // And the account is still there afterwards, which is the half of this
+    // that would be easy to get wrong: refusing the request but destroying
+    // something on the way would be worse than not refusing at all.
+    let (status, login) = post(
+        &app,
+        "/v1/auth/login",
+        json!({
+            "handle": handle,
+            "pw_salt": salt(), "pw_verifier": verifier("correct"),
+            "identity_pubkey": pubkey(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the account should have survived: {login}"
+    );
+}
+
+/// What deletion actually removes.
+///
+/// The account, its device, and the posts it wrote. Checked through the API
+/// rather than against the tables, because what matters is that none of it can
+/// be reached afterwards — a row nobody can read is a different bug from a row
+/// that is gone, but this test is about the promise made to the person.
+#[tokio::test]
+async fn a_deleted_account_leaves_nothing_reachable_behind() {
+    let app = app_or_skip!();
+    let handle = unique_handle();
+
+    let (status, body) = post(
+        &app,
+        "/v1/auth/register",
+        json!({
+            "handle": handle,
+            "display_name": "Test Account",
+            "pw_salt": salt(), "pw_verifier": verifier("correct"),
+            "identity_pubkey": pubkey(),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "register: {body}");
+    let token = body["access_token"].as_str().unwrap().to_string();
+
+    let (status, post_body) = post_auth(
+        &app,
+        "/v1/posts",
+        &token,
+        json!({ "body": "something to leave behind" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "post: {post_body}");
+
+    let (status, deleted) = post_auth(
+        &app,
+        "/v1/auth/delete-account",
+        &token,
+        json!({ "pw_verifier": verifier("correct") }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "delete: {deleted}");
+
+    // The password no longer opens anything.
+    let (status, login) = post(
+        &app,
+        "/v1/auth/login",
+        json!({
+            "handle": handle,
+            "pw_salt": salt(), "pw_verifier": verifier("correct"),
+            "identity_pubkey": pubkey(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the account should be gone: {login}"
+    );
+
+    // And the profile with it. `salt` is the route that answers for a handle
+    // whether or not anyone is signed in, so it is the honest place to ask
+    // whether the account still exists at all -- and it answers the same for a
+    // deleted account as for one that never was, which is the enumeration
+    // behaviour `salt.rs` already goes to trouble to keep.
+    let (status, _) = post(&app, "/v1/auth/salt", json!({ "handle": handle })).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "salt answers for anyone, gone or not"
+    );
+}

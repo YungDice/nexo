@@ -42,7 +42,8 @@ import { IconButton } from "../../components/ui/Button";
 import { Icon } from "../../components/ui/Icon";
 import { DeliveryTick } from "./ConversationList";
 import { Lightbox } from "./Lightbox";
-import { useContextMenu, type MenuItem } from "../../components/ui/ContextMenu";
+import { useContextMenu } from "../../components/ui/ContextMenu";
+import { messageMenuItems } from "./menu";
 
 /** Messages from the same person inside five minutes are one run (§6.1). */
 const RUN_WINDOW_MS = 5 * 60_000;
@@ -310,68 +311,27 @@ function Bubble({
       : "Unknown sender";
   const authorSeed = mine ? (account?.handle ?? "me") : message.authorId;
 
-  // N7: what a right-click on a message can usefully do. Copy only when there
-  // is text to copy -- an image with no caption has nothing, and an entry that
-  // copies "" is worse than no entry.
-  const { onContextMenu, menu } = useContextMenu(() => {
-    const items: MenuItem[] = [];
-    if (message.body) {
-      items.push({
-        label: "Copy text",
-        icon: "file",
-        onSelect: () => void copyText(message.body),
-      });
-    }
-    // A queued message has no envelope id yet, and that is what a pin and a
-    // local delete are keyed by. Offering either would act on a number the
-    // server has not assigned.
-    // Only our own, only while the window is open, and only if the message has
-    // a name to refer to. The entries are **absent** past ten minutes rather
-    // than greyed out: an action that is gone was never offered, while a
-    // disabled one invites the question of how to get it back.
-    if (mine && message.clientId && !message.retracted && withinWindow) {
-      items.push({
-        label: "Edit",
-        icon: "file",
-        onSelect: () => setEditing(message.body),
-      });
-      items.push({
-        label: "Delete for everyone",
-        icon: "close",
-        danger: true,
-        onSelect: () => void askToRetract(),
-      });
-    }
-    // Reacting needs the name inside the ciphertext, which a message sent
-    // before names existed does not have. The entry is simply absent there
-    // rather than shown and refused.
-    if (message.clientId) {
-      items.push({
-        label: "React",
-        icon: "emoji",
-        onSelect: () => setPicking(true),
-      });
-    }
-    // A queued message has no envelope id yet -- the server assigns it, and
-    // that is what a pin and a local delete are keyed by. `state === "sending"`
-    // is how the UI already names that condition.
-    if (message.state !== "sending") {
-      const envelopeId = Number(message.id);
-      items.push({
-        // Named for what it is. "Pin" alone would imply everyone sees it.
-        label: message.pinned ? "Unpin from this device" : "Pin on this device",
-        icon: "shield",
-        onSelect: () => void onPinnedChange(envelopeId, !message.pinned),
-      });
-      items.push({
-        label: "Delete for me",
-        icon: "close",
-        danger: true,
-        onSelect: () => void onDeleteForMe(envelopeId),
-      });
-    }
-    return items;
-  });
+  const { onContextMenu, menu } = useContextMenu(() =>
+    messageMenuItems(
+      {
+        hasBody: !!message.body,
+        mine,
+        clientId: message.clientId,
+        retracted: !!message.retracted,
+        withinWindow,
+        queued: message.state === "sending",
+        pinned: !!message.pinned,
+      },
+      {
+        copy: () => void copyText(message.body),
+        edit: () => setEditing(message.body),
+        react: () => setPicking(true),
+        togglePin: () => void onPinnedChange(Number(message.id), !message.pinned),
+        deleteForMe: () => void onDeleteForMe(Number(message.id)),
+        deleteForEveryone: () => void askToRetract(),
+      },
+    ),
+  );
   const authorHandle = mine
     ? (account?.handle ?? "")
     : conversation.kind === "dm"

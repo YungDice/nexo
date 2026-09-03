@@ -290,6 +290,10 @@ move.
 - **`pnpm server` does not work** — `server` is one of pnpm's own commands. The
   script is `dev:server`.
 - **Port 1420 is fixed on purpose** so Tauri and Vite cannot disagree about it.
+- **A menu's destructive entries sit last**, and `MenuItem` says so. The
+  message menu is where that is easy to break, because its entries come and go
+  with the message's state — it is built by `features/messages/menu.ts`, a pure
+  function whose order is asserted in `menu.test.ts` rather than read.
 - **Design values live in tokens**, not in components. A hex code in a `.tsx` is
   a bug. Tokens are authored in `packages/design-tokens/tokens.css`;
   `tokens.json` is generated from it and a test fails when the two drift.

@@ -352,3 +352,11 @@ decision rather than configuration.
   with an intrinsic size, so an off-screen group is laid out and painted when
   it is scrolled to, and the grids are memoised so typing in the search box no
   longer rebuilds every button.
+- **The two deletions are the last two entries of a message's menu**, in that
+  order: the one that only touches this device, then the one that asks every
+  other device. "Delete for everyone" used to sit in the middle, above React
+  and Pin, which put the most far-reaching entry where the hand lands first and
+  broke the rule `MenuItem` states for itself — destructive entries sit last.
+  The menu is now built by a pure function with the order under test, because
+  the entries appear and disappear with the message's state and "last" means
+  something different in each case.

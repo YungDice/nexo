@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import groups from "unicode-emoji-json/data-by-group.json";
 
 import { cn } from "../../lib/cn";
@@ -101,10 +101,15 @@ export function EmojiPicker({ onPick }: { onPick: (emoji: string) => void }) {
       ?.scrollIntoView({ block: "start", behavior: "smooth" });
   }, [group, query]);
 
-  function pick(emoji: string) {
-    setRecent(remember(emoji));
-    onPick(emoji);
-  }
+  // Stable, so the memoised grids below are not rebuilt on every render of
+  // this component -- which is what makes the memo worth having at all.
+  const pick = useCallback(
+    (emoji: string) => {
+      setRecent(remember(emoji));
+      onPick(emoji);
+    },
+    [onPick],
+  );
 
   return (
     <div className="flex h-[320px] w-[352px] flex-col">
@@ -141,7 +146,30 @@ export function EmojiPicker({ onPick }: { onPick: (emoji: string) => void }) {
               </section>
             ) : null}
             {ALL.map((g) => (
-              <section key={g.slug} data-group={g.name}>
+              <section
+                key={g.slug}
+                data-group={g.name}
+                // The whole reason this picker used to take seconds to appear.
+                //
+                // All 1,914 emoji are in the DOM at once, which is the design:
+                // the group rail scrolls through one list rather than swapping
+                // nine. What cost the time was not the elements but the
+                // *glyphs* -- the browser was rasterising the entire standard
+                // set out of the system emoji font before it could draw the
+                // first row.
+                //
+                // `content-visibility: auto` lets it skip layout and paint for
+                // a section that is off screen, and do that work when the
+                // section scrolls into view. `contain-intrinsic-size` is what
+                // keeps the scrollbar and the rail's jump-to-group honest
+                // while a section is skipped: without a placeholder height
+                // every unrendered group would measure zero and the list would
+                // shudder as it scrolled.
+                style={{
+                  contentVisibility: "auto",
+                  containIntrinsicSize: `auto ${sectionHeight(g.emojis.length)}px`,
+                }}
+              >
                 <h3 className="text-text-lo px-1 pt-2 pb-1 text-[11px] font-medium">{g.name}</h3>
                 <Grid entries={g.emojis} onPick={pick} />
               </section>
@@ -176,7 +204,32 @@ export function EmojiPicker({ onPick }: { onPick: (emoji: string) => void }) {
   );
 }
 
-function Grid({ entries, onPick }: { entries: Entry[]; onPick: (emoji: string) => void }) {
+/**
+ * Roughly how tall a group will be once drawn.
+ *
+ * Eight per row at 40px, plus the heading. It does not have to be exact --
+ * `contain-intrinsic-size` is a placeholder, and the real height replaces it
+ * the moment the section is rendered -- it only has to be close enough that
+ * scrolling does not lurch.
+ */
+function sectionHeight(count: number): number {
+  return Math.ceil(count / 8) * 42 + 24;
+}
+
+/**
+ * Memoised on purpose.
+ *
+ * Nine of these are mounted at once and the picker re-renders on every
+ * keystroke in the search box and every tap on the group rail. Without this,
+ * each of those rebuilt all 1,914 buttons.
+ */
+const Grid = memo(function Grid({
+  entries,
+  onPick,
+}: {
+  entries: Entry[];
+  onPick: (emoji: string) => void;
+}) {
   return (
     <div className="grid grid-cols-8 gap-0.5">
       {entries.map((entry, index) => (
@@ -195,4 +248,4 @@ function Grid({ entries, onPick }: { entries: Entry[]; onPick: (emoji: string) =
       ))}
     </div>
   );
-}
+});

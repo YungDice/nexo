@@ -334,3 +334,21 @@ their own route to their own prefix.
 deletes attachments whose messages are still in people's conversations — those
 bubbles would keep their file name and lose their file — so it is a product
 decision rather than configuration.
+
+### Since v0.1.19
+
+- **A notice that happens twice is said once and counted.** Refresh and "check
+  for updates" are buttons people press again when nothing appears to happen,
+  and every press used to add another identical toast until the corner of the
+  window was a column of the same sentence covering the thing being refreshed.
+  An identical notice now increments a `×n` beside its title and starts its
+  five seconds over, so it outlives the last press rather than the first; a run
+  of *different* notices is capped at three, oldest out.
+- **The emoji picker opens at once.** It took seconds. All 1,914 emoji are in
+  the DOM on purpose — the group rail scrolls one list rather than swapping
+  nine — but the cost was never the elements, it was the glyphs: the browser
+  rasterised the entire standard set out of the system emoji font before it
+  could paint the first row. Each group now carries `content-visibility: auto`
+  with an intrinsic size, so an off-screen group is laid out and painted when
+  it is scrolled to, and the grids are memoised so typing in the search box no
+  longer rebuilds every button.

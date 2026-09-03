@@ -261,7 +261,14 @@ export function revokeInvite(id: number): Promise<void> {
  */
 export interface Story {
   id: number;
+  /**
+   * Who posted it, when known. **Empty for a story that arrived over the
+   * wire**: an envelope names a device, not an account, and inventing a handle
+   * from a device id would put a UUID under somebody's story.
+   */
   author_handle: string;
+  /** The device that sent it, resolved to a person the same way a message is. */
+  author_device_id: string;
   mime: string;
   created_at_ms: number;
   /** When it stops being available. At most 24 hours after it was posted. */

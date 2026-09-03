@@ -105,6 +105,7 @@ impl Transport for Flaky {
         create_invite(Option<&str>, i64) -> nexo_client::transport::MintedInvite;
         list_invites() -> Vec<nexo_client::transport::InviteSummary>;
         revoke_invite(i64) -> ();
+        story_upload_url(u64) -> (String, String);
         create_story(&str, i64) -> nexo_client::transport::StorySummary;
         story_url(i64) -> String;
     }
@@ -233,6 +234,7 @@ fn a_rejection_is_reported_rather_than_hidden_behind_the_cache() {
         create_invite(Option<&str>, i64) -> nexo_client::transport::MintedInvite;
         list_invites() -> Vec<nexo_client::transport::InviteSummary>;
         revoke_invite(i64) -> ();
+        story_upload_url(u64) -> (String, String);
         create_story(&str, i64) -> nexo_client::transport::StorySummary;
         story_url(i64) -> String;
         }

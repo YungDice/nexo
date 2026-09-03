@@ -33,6 +33,7 @@
 //! cannot read any of them.
 
 use nexo_protocol::{ConversationId, Payload};
+
 use nexo_store::StoredStory;
 
 use crate::conversations::{Context, ConversationError};
@@ -56,12 +57,15 @@ pub fn post<T: Transport>(
 ) -> Result<i64, ConversationError> {
     let sealed = nexo_crypto::attachment::encrypt(contents)?;
 
-    // The encrypted bucket. `upload_url` takes a conversation id for the key
-    // path; a story belongs to no single conversation, so it gets its own.
-    let holder = ConversationId::new_v4().to_string();
+    // A story has no conversation, so it does not go through the attachment
+    // route. The first version borrowed a random conversation id for the key
+    // path and could never have worked: that route checks membership, and
+    // nobody is a member of a conversation that does not exist. It also put
+    // stories under `enc/`, where no lifecycle rule can reach them without
+    // reaching every attachment too.
     let (url, s3_key) = ctx
         .transport
-        .upload_url(&holder, sealed.ciphertext.len() as u64)?;
+        .story_upload_url(sealed.ciphertext.len() as u64)?;
     let size = sealed.ciphertext.len() as i64;
     ctx.transport.put_object(&url, sealed.ciphertext)?;
 
@@ -81,6 +85,8 @@ pub fn post<T: Transport>(
     ctx.store.insert_story(&StoredStory {
         id: summary.id,
         author_handle: summary.author_handle.clone(),
+        // Our own: the device is this one, and the server told us the handle.
+        author_device_id: String::new(),
         s3_key,
         enc_key: hex(sealed.key.as_slice()),
         nonce: hex(&sealed.nonce),

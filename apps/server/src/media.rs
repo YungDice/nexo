@@ -109,13 +109,37 @@ impl<E: Into<anyhow::Error>> From<E> for MediaError {
 /// Two buckets with different meanings, so the caller says which rather than
 /// the server guessing from a key prefix — guessing is how a plaintext image
 /// eventually ends up in the encrypted bucket, or worse.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Bucket {
     /// Feed and profile images. Server-readable by design (§4.4).
     Media,
     /// Encrypted attachments. Opaque ciphertext.
     Encrypted,
+    /// An encrypted story. Also opaque ciphertext, and in the same bucket —
+    /// but under its own `story/` prefix.
+    ///
+    /// The prefix is not cosmetic. A story expires after 24 hours and an
+    /// attachment does not, and expiry is enforced partly by a lifecycle rule
+    /// on the object store (`docs/OPS.md`). A rule can only name a prefix, so
+    /// without one the only rule that could reach stories would also reach
+    /// every attachment in every conversation.
+    Story,
+}
+
+impl Bucket {
+    /// Whether this kind lives in the encrypted bucket.
+    ///
+    /// A method rather than `== Bucket::Encrypted` at each call site: adding
+    /// `Story` made both of those quietly wrong, sending a story's presigned
+    /// URL to the media credentials and therefore to the wrong bucket. A
+    /// `match` here fails to compile when a fourth kind arrives instead.
+    fn is_encrypted(self) -> bool {
+        match self {
+            Bucket::Media => false,
+            Bucket::Encrypted | Bucket::Story => true,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -152,8 +176,11 @@ async fn upload_url(
         return Err(MediaError::TooManyRequests);
     }
 
-    let storage = state.storage.as_ref().ok_or(MediaError::NotConfigured)?;
-
+    // Validation first, capability second. A malformed request is malformed
+    // whether or not this deployment has object storage, and answering
+    // "unavailable" to a request that was never valid tells the caller the
+    // wrong thing — and makes every test of the validation inert on a server
+    // without S3, which is exactly how the story upload path shipped broken.
     if request.size == 0 {
         return Err(MediaError::Invalid("Nothing to upload.".into()));
     }
@@ -164,14 +191,15 @@ async fn upload_url(
         )));
     }
 
-    // The key layout is brief 5.3: media by user, encrypted by conversation.
-    // Both are namespaced by something the caller demonstrably belongs to, so a
+    // The key layout is brief 5.3: media by user, encrypted by conversation,
+    // stories under their own prefix. Each is namespaced by something the
+    // caller demonstrably belongs to, or by nothing the caller controls, so a
     // key cannot be aimed at someone else's space.
-    let (bucket_name, key) = match request.bucket {
-        Bucket::Media => (
-            storage.media().name().to_string(),
-            format!("media/{}/{}", caller.user_id, Uuid::new_v4()),
-        ),
+    //
+    // This decides the key and nothing else — no storage is touched — so the
+    // rules stay checkable on a deployment that has no object store.
+    let key = match request.bucket {
+        Bucket::Media => format!("media/{}/{}", caller.user_id, Uuid::new_v4()),
         Bucket::Encrypted => {
             let conversation_id = request
                 .conversation_id
@@ -192,18 +220,38 @@ async fn upload_url(
                 return Err(MediaError::Invalid("No such conversation.".into()));
             }
 
-            (
-                storage.encrypted().name().to_string(),
-                format!("enc/{conversation_id}/{}", Uuid::new_v4()),
-            )
+            format!("enc/{conversation_id}/{}", Uuid::new_v4())
         }
+        Bucket::Story => {
+            // No membership check, and that is not an omission. A story
+            // belongs to no conversation: its audience is everyone the author
+            // shares one with, decided when the bytes are *read*
+            // (`stories.rs`), not when they are written. Requiring a
+            // conversation here is what the first version did, by borrowing a
+            // random id — and it could never have worked, because nobody is a
+            // member of a conversation that does not exist.
+            //
+            // The `story/` prefix is load-bearing rather than tidy: expiry is
+            // partly an object-store lifecycle rule, a rule can only name a
+            // prefix, and without one the only rule that reached stories would
+            // reach every attachment in every conversation too.
+            format!("story/{}", Uuid::new_v4())
+        }
+    };
+
+    // Only now, when there is something worth storing.
+    let storage = state.storage.as_ref().ok_or(MediaError::NotConfigured)?;
+    let bucket_name = if request.bucket.is_encrypted() {
+        storage.encrypted().name().to_string()
+    } else {
+        storage.media().name().to_string()
     };
 
     let config = PresigningConfig::expires_in(UPLOAD_TTL)
         .map_err(|e| MediaError::Internal(anyhow::anyhow!("presign config: {e}")))?;
 
     let presigned = storage
-        .client_for(request.bucket == Bucket::Encrypted)
+        .client_for(request.bucket.is_encrypted())
         .put_object()
         .bucket(&bucket_name)
         .key(&key)
@@ -278,13 +326,26 @@ async fn download_url(
             }
             storage.encrypted().name().to_string()
         }
+        Bucket::Story => {
+            // Refused here, deliberately, and this is not a gap.
+            //
+            // A story's audience is not "members of a conversation" — it is
+            // everyone who shares one with the author, minus blocks, and only
+            // while it is unexpired. Those three conditions live in
+            // `stories.rs`, which has the row to check them against. This
+            // route has only a key, so answering here would mean answering
+            // without the checks. `POST /v1/stories/{id}/url` is the way in.
+            return Err(MediaError::Invalid(
+                "Ask for a story through the stories route.".into(),
+            ));
+        }
     };
 
     let config = PresigningConfig::expires_in(DOWNLOAD_TTL)
         .map_err(|e| MediaError::Internal(anyhow::anyhow!("presign config: {e}")))?;
 
     let presigned = storage
-        .client_for(request.bucket == Bucket::Encrypted)
+        .client_for(request.bucket.is_encrypted())
         .get_object()
         .bucket(&bucket_name)
         .key(&request.key)

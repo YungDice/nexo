@@ -467,7 +467,12 @@ pub async fn meet_revoke_invite(
 #[derive(Debug, Serialize)]
 pub struct StoryView {
     pub id: i64,
+    /// Who posted it, when the account is known. Empty for one that arrived
+    /// over the wire — an envelope names a device, not an account.
     pub author_handle: String,
+    /// The device that sent it. The UI resolves this to a person the same way
+    /// it resolves an incoming message's author.
+    pub author_device_id: String,
     pub mime: String,
     pub created_at_ms: i64,
     pub expires_at_ms: i64,
@@ -508,6 +513,7 @@ pub async fn story_list(state: State<'_, ClientState>) -> Result<Vec<StoryView>,
             .map(|s| StoryView {
                 id: s.id,
                 author_handle: s.author_handle,
+                author_device_id: s.author_device_id,
                 mime: s.mime,
                 created_at_ms: s.created_at_ms,
                 expires_at_ms: s.expires_at_ms,

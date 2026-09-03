@@ -257,6 +257,10 @@ impl Transport for CutNetwork {
 
     // Delegated like everything else: this file cuts the network for `send`
     // and nothing more, so the map behaves normally through it.
+    fn story_upload_url(&self, size: u64) -> Result<(String, String), TransportError> {
+        self.inner.story_upload_url(size)
+    }
+
     fn create_story(
         &self,
         key: &str,

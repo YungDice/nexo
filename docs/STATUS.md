@@ -316,9 +316,13 @@ candidate fixes were identified and none has been confirmed.
 - A story that has already expired when it arrives is **not written down at
   all** — the key is never put on disk.
 
-**Not done, and named rather than left implied:** the object-store lifecycle
-rule is configuration on the bucket, not code, and has not been applied. Until
-it is, layers 1 and 2 hold — nothing is served and no reader keeps a key — but
-expired ciphertext accumulates in the bucket. The same rule is what the
-never-built 30-day envelope cleanup in `BRIEF.md` needs, and it should be
-applied once for both.
+**Layer 3 is applied.** `nexo-enc` carries one lifecycle rule, `story/` after
+two days. It could not have been applied before: stories and attachments shared
+the `enc/<uuid>/<uuid>` key space, so any rule reaching stories would have
+deleted every attachment in every conversation. Stories now upload through
+their own route to their own prefix.
+
+**Still not applied:** the 30-day `enc/` cleanup `BRIEF.md` describes. That one
+deletes attachments whose messages are still in people's conversations — those
+bubbles would keep their file name and lose their file — so it is a product
+decision rather than configuration.

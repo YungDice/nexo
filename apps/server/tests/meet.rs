@@ -794,3 +794,92 @@ async fn a_story_expires_within_a_day() {
     );
     assert!(life > 23 * 60 * 60 * 1000, "and not much less");
 }
+
+/// The seam the first version of stories fell through.
+///
+/// Every other story test posts a *fabricated* `s3_key` straight to
+/// `/v1/stories`, which exercised the bookkeeping and never the upload. The
+/// upload could not have worked: it borrowed a random conversation id, and the
+/// attachment route checks membership, so nobody is a member of a conversation
+/// that does not exist.
+#[tokio::test]
+async fn a_story_gets_an_upload_url_without_belonging_to_a_conversation() {
+    let app = app_or_skip!();
+    let author = register(&app).await;
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/media/upload",
+        Some(&author.token),
+        Some(json!({ "bucket": "story", "size": 4096 })),
+    )
+    .await;
+
+    // The claim under test is that the *request* is valid without a
+    // conversation. Validation now runs before the storage lookup, so a
+    // deployment with no object store answers `503 unavailable` rather than
+    // `400 invalid` — and only `400` would mean the bug is back.
+    assert_ne!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a story upload must not need a conversation"
+    );
+
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        eprintln!("object storage not configured: prefix not asserted");
+        return;
+    }
+    assert!(status.is_success(), "expected an upload URL, got {status}");
+
+    let key = body["key"].as_str().expect("a key");
+    assert!(
+        key.starts_with("story/"),
+        "a story needs its own prefix so a lifecycle rule can reach it          without reaching every attachment: got {key}"
+    );
+}
+
+/// An attachment upload still needs a conversation, and still checks it.
+#[tokio::test]
+async fn an_attachment_upload_still_needs_a_conversation_you_are_in() {
+    let app = app_or_skip!();
+    let author = register(&app).await;
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/media/upload",
+        Some(&author.token),
+        Some(json!({
+            "bucket": "encrypted",
+            "conversation_id": Uuid::new_v4(),
+            "size": 10,
+        })),
+    )
+    .await;
+    // `400`, not `503`: this is refused because the request is wrong, and it
+    // stays refused on a deployment with no object storage at all.
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a conversation you are not in must not yield an upload URL"
+    );
+}
+
+/// The generic download route must not hand out a story: its audience rules
+/// live in `stories.rs`, which has the row to check them against.
+#[tokio::test]
+async fn the_media_route_refuses_to_serve_a_story() {
+    let app = app_or_skip!();
+    let reader = register(&app).await;
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/media/download",
+        Some(&reader.token),
+        Some(json!({ "bucket": "story", "key": "story/whatever" })),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "stories go through their own route");
+}

@@ -619,6 +619,7 @@ impl EncryptedStore {
                  CREATE TABLE IF NOT EXISTS stories (
                      id            INTEGER PRIMARY KEY,
                      author_handle TEXT    NOT NULL,
+                     author_device_id TEXT NOT NULL DEFAULT '',
                      s3_key        TEXT    NOT NULL,
                      enc_key       TEXT    NOT NULL,
                      nonce         TEXT    NOT NULL,
@@ -1050,13 +1051,14 @@ impl EncryptedStore {
     pub fn insert_story(&self, story: &StoredStory) -> Result<(), StoreError> {
         self.connection.execute(
             "INSERT INTO stories
-                 (id, author_handle, s3_key, enc_key, nonce, sha256, mime, size,
-                  created_at_ms, expires_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 (id, author_handle, author_device_id, s3_key, enc_key, nonce,
+                  sha256, mime, size, created_at_ms, expires_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT (id) DO NOTHING",
             rusqlite::params![
                 story.id,
                 story.author_handle,
+                story.author_device_id,
                 story.s3_key,
                 story.enc_key,
                 story.nonce,
@@ -1082,8 +1084,8 @@ impl EncryptedStore {
             .execute("DELETE FROM stories WHERE expires_at_ms <= ?1", [now_ms])?;
 
         let mut statement = self.connection.prepare(
-            "SELECT id, author_handle, s3_key, enc_key, nonce, sha256, mime, size,
-                    created_at_ms, expires_at_ms
+            "SELECT id, author_handle, author_device_id, s3_key, enc_key, nonce,
+                    sha256, mime, size, created_at_ms, expires_at_ms
              FROM stories
              ORDER BY created_at_ms DESC",
         )?;
@@ -1091,14 +1093,15 @@ impl EncryptedStore {
             Ok(StoredStory {
                 id: row.get(0)?,
                 author_handle: row.get(1)?,
-                s3_key: row.get(2)?,
-                enc_key: row.get(3)?,
-                nonce: row.get(4)?,
-                sha256: row.get(5)?,
-                mime: row.get(6)?,
-                size: row.get(7)?,
-                created_at_ms: row.get(8)?,
-                expires_at_ms: row.get(9)?,
+                author_device_id: row.get(2)?,
+                s3_key: row.get(3)?,
+                enc_key: row.get(4)?,
+                nonce: row.get(5)?,
+                sha256: row.get(6)?,
+                mime: row.get(7)?,
+                size: row.get(8)?,
+                created_at_ms: row.get(9)?,
+                expires_at_ms: row.get(10)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1785,8 +1788,15 @@ pub struct SearchHit {
 pub struct StoredStory {
     /// The server's id.
     pub id: i64,
-    /// Who posted it.
+    /// Who posted it, when that is known.
+    ///
+    /// Empty for a story that arrived over the wire: an envelope names a
+    /// *device*, not an account, and inventing a handle from a device id would
+    /// put a UUID under somebody's story. The author's own copy has it,
+    /// because the server said so when it recorded the story.
     pub author_handle: String,
+    /// The device that sent it. Always known for an incoming story.
+    pub author_device_id: String,
     /// Where the ciphertext is, in the encrypted bucket.
     pub s3_key: String,
     /// The AES-256-GCM key, hex.
@@ -2865,6 +2875,7 @@ mod tests {
         StoredStory {
             id,
             author_handle: "dice".into(),
+            author_device_id: "dev-a".into(),
             s3_key: format!("enc/x/{id}"),
             enc_key: "aa".repeat(32),
             nonce: "bb".repeat(12),

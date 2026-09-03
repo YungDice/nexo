@@ -291,6 +291,10 @@ mod tests {
         // Meet&Greet is not what these tests are about. `unimplemented!` rather
         // than an empty answer, so that a test which starts touching the map
         // fails loudly instead of quietly exercising a stub.
+        fn story_upload_url(&self, _size: u64) -> Result<(String, String), TransportError> {
+            unimplemented!("not a story test")
+        }
+
         fn create_story(
             &self,
             _key: &str,

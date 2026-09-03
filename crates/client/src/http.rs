@@ -616,6 +616,29 @@ impl Transport for HttpTransport {
         Ok((reply.url, reply.key))
     }
 
+    fn story_upload_url(&self, size: u64) -> Result<(String, String), TransportError> {
+        #[derive(serde::Serialize)]
+        struct Body {
+            bucket: &'static str,
+            size: u64,
+        }
+        #[derive(Deserialize)]
+        struct Reply {
+            url: String,
+            key: String,
+        }
+        // No conversation: a story has none, and the server mints the key
+        // under `story/` so the caller cannot choose where it writes.
+        let reply: Reply = self.post_auth(
+            "/v1/media/upload",
+            &Body {
+                bucket: "story",
+                size,
+            },
+        )?;
+        Ok((reply.url, reply.key))
+    }
+
     fn download_url(&self, key: &str) -> Result<String, TransportError> {
         #[derive(serde::Serialize)]
         struct Body<'a> {

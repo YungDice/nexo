@@ -353,6 +353,15 @@ pub trait Transport {
         conversation_id: &str,
     ) -> Result<MeetRequest, TransportError>;
 
+    /// Asks for a URL to PUT a story's ciphertext to.
+    ///
+    /// Separate from [`upload_url`](Self::upload_url) because a story belongs
+    /// to no conversation, and the attachment route rightly refuses a key
+    /// whose conversation the caller is not a member of. It also lands under
+    /// its own `story/` prefix, which is what lets the object store expire
+    /// stories without touching attachments.
+    fn story_upload_url(&self, size: u64) -> Result<(String, String), TransportError>;
+
     /// Record a story that has already been uploaded to the encrypted bucket.
     fn create_story(&self, s3_key: &str, size: i64) -> Result<StorySummary, TransportError>;
 

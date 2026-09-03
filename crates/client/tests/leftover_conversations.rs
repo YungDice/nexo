@@ -149,6 +149,10 @@ impl Transport for Listing {
     }
 
     // Meet&Greet is not what this file is about.
+    fn story_upload_url(&self, _size: u64) -> Result<(String, String), TransportError> {
+        unimplemented!("not a story test")
+    }
+
     fn create_story(
         &self,
         _key: &str,

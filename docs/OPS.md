@@ -23,12 +23,40 @@ lifecycle rules on the bucket:
 
 | Prefix | Rule | Why |
 |---|---|---|
-| the story prefix in `NEXO_S3_ENC_BUCKET` | delete after 2 days | Stories are refused after 24 hours by the server and their keys are destroyed by every reader that looks. This is the third layer, for the case where the server does nothing for a week. Two days rather than one, so a clock difference cannot delete something still inside its own lifetime. |
-| envelope attachments in the same bucket | delete after 30 days | `BRIEF.md` describes this cleanup and it was never built: the index for it exists and nothing reads it. The lifecycle rule is the mechanism it was missing. |
+| `story/` in `NEXO_S3_ENC_BUCKET` | delete after 2 days — **applied** | Stories are refused after 24 hours by the server and their keys are destroyed by every reader that looks. This is the third layer, for the case where the server does nothing for a week. Two days rather than one, so a clock difference cannot delete something still inside its own lifetime. |
+| `enc/` in the same bucket | delete after 30 days — **not applied**, see below | `BRIEF.md` describes this cleanup and it was never built: the index for it exists and nothing reads it. The lifecycle rule is the mechanism it was missing. |
 
-Neither is applied yet. Until they are, nothing is *served* past its lifetime
-and no reader keeps a key — but the ciphertext accumulates, and the bill with
-it.
+The story rule is on `nexo-enc` and reads back as one rule over `story/` alone.
+The `enc/` rule is not applied, deliberately — see the last paragraph.
+
+To read what is currently in force (the bucket had none before this):
+
+```powershell
+aws s3api get-bucket-lifecycle-configuration --bucket nexo-enc `
+    --endpoint-url https://fsn1.your-objectstorage.com
+```
+
+Note that the AWS CLI reports an absent configuration as
+`argument of type 'NoneType' is not a container` rather than as
+`NoSuchLifecycleConfiguration`; `--debug` shows the real answer. That is a
+client-side parse quirk, not a permissions problem.
+
+**The prefixes are the whole safety of this.** Stories and attachments used to
+share `enc/<uuid>/<uuid>`, and a rule aimed at stories would have deleted every
+attachment in every conversation. `story/` exists precisely so a rule can name
+one without naming the other; do not apply a rule to `enc/` in the belief that
+it only reaches stories.
+
+The two rules are also **not** equally safe to apply. The `story/` one deletes
+objects that are already unreachable — the server refuses them and every reader
+has destroyed its key. The `enc/` one deletes attachments whose messages are
+still in people's conversations, so those bubbles would keep their file name
+and lose their file. That is a product decision, not configuration, and it
+should be made deliberately rather than because the two rules were written in
+the same table.
+
+Applying one replaces the bucket's entire lifecycle configuration, so read the
+existing one first and send both rules together.
 
 
 ## Phase 0 — Decisions to make before you click anything

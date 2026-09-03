@@ -1098,7 +1098,16 @@ pub fn sync<T: Transport>(
                                         // as the identity until a listing
                                         // reconciles it.
                                         id: story_id_from(s3_key),
-                                        author_handle: envelope.sender_device_id.clone(),
+                                        // The device that sent it, not a
+                                        // handle -- an envelope carries no
+                                        // handle, and MLS names devices. The
+                                        // UI resolves it, the same way an
+                                        // incoming message's author is
+                                        // resolved; storing a guess here
+                                        // would put a UUID under somebody's
+                                        // story.
+                                        author_handle: String::new(),
+                                        author_device_id: envelope.sender_device_id.clone(),
                                         s3_key: s3_key.clone(),
                                         enc_key: key.clone(),
                                         nonce: nonce.clone(),

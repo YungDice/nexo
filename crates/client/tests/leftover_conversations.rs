@@ -108,6 +108,9 @@ impl Transport for Listing {
     fn change_password(&self, _: &str, _: &str, _: &str) -> Result<(), TransportError> {
         unimplemented!()
     }
+    fn delete_account(&self, _: &str) -> Result<(), TransportError> {
+        Ok(())
+    }
     fn publish_key_packages(&self, _: &[String]) -> Result<(), TransportError> {
         unimplemented!()
     }

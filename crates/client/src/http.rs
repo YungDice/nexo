@@ -398,6 +398,11 @@ struct ChangePasswordBody<'a> {
     new_pw_verifier: &'a str,
 }
 
+#[derive(serde::Serialize)]
+struct DeleteAccountBody<'a> {
+    pw_verifier: &'a str,
+}
+
 impl Transport for HttpTransport {
     fn salt(&self, handle: &str) -> Result<SaltResponse, TransportError> {
         self.post("/v1/auth/salt", &SaltBody { handle })
@@ -461,6 +466,14 @@ impl Transport for HttpTransport {
                 new_pw_salt: new_salt,
                 new_pw_verifier: new_verifier,
             },
+        )?;
+        Ok(())
+    }
+
+    fn delete_account(&self, pw_verifier: &str) -> Result<(), TransportError> {
+        let _: serde_json::Value = self.post_auth(
+            "/v1/auth/delete-account",
+            &DeleteAccountBody { pw_verifier },
         )?;
         Ok(())
     }

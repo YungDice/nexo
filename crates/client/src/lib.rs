@@ -176,6 +176,10 @@ mod tests {
             Ok(())
         }
 
+        fn delete_account(&self, _pw_verifier: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+
         fn change_password(
             &self,
             old_verifier: &str,

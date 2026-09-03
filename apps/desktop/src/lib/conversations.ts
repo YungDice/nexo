@@ -53,6 +53,24 @@ export interface Message {
   pending: boolean;
   /** Present when the message carries a file. */
   attachment: Attachment | null;
+  /**
+   * The sender's own name for this message, or `null` for one sent before
+   * names existed.
+   *
+   * What anything referring to a message refers to. Not the envelope id: the
+   * server assigns that, so a message still in the outbox has none — and that
+   * is exactly the window in which somebody wants to take one back.
+   */
+  client_id: string | null;
+  /**
+   * The `kind` of a payload this build could not read, when that is what
+   * arrived — otherwise `null`.
+   *
+   * Rule 7 reaches the UI here. A newer client can send a shape this one has
+   * never heard of, and the honest answer is to say so rather than to render
+   * whatever the bytes happen to look like.
+   */
+  unsupported: string | null;
 }
 
 /**

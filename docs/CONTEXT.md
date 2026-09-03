@@ -105,7 +105,7 @@ Each module owns its own `router()`, merged in `lib.rs`.
 
 | Module | Routes |
 |---|---|
-| `auth/` (`mod`, `password`, `tokens`, `bearer`, `salt`) | `/v1/auth/{register,login,refresh,logout,salt,change-password}` |
+| `auth/` (`mod`, `password`, `tokens`, `bearer`, `salt`) | `/v1/auth/{register,login,refresh,logout,salt,change-password,delete-account}` |
 | `delivery/` (`mod`, `epoch`) | `/v1/conversations*` (send, sync, members), `/v1/keypackages*` |
 | `posts.rs` (1206 ln) | `/v1/posts*`, `/v1/feed`, `/v1/comments/{id}`, `/v1/users/{handle}/posts` |
 | `profiles.rs` | `/v1/me`, `/v1/me/visibility`, `/v1/users/{handle}` |
@@ -124,7 +124,7 @@ without a regenerated `.sqlx` breaks an offline build — see
 
 ### Desktop shell (`apps/desktop/src-tauri/src`)
 
-80 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
+81 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
 crosses into the WebView is already decrypted, and nothing else does.
 
 | File | Commands | Owns |
@@ -132,7 +132,7 @@ crosses into the WebView is already decrypted, and nothing else does.
 | `feed.rs` (750 ln) | 23 | Posts, comments, votes, reactions. |
 | `conversations.rs` (1169 ln) | 22 | Messaging, attachments, `attachment_data_url`. |
 | `commands.rs` | 15 | Profile, settings, misc. |
-| `auth.rs` (665 ln) | 10 | Register, login, lock, PIN. |
+| `auth.rs` (665 ln) | 11 | Register, login, lock, PIN, delete the account. |
 | `meet.rs` | 10 | Meet&Greet: the map, the pin, intros, reporting. |
 | `client.rs` | — | Builds and holds the `nexo-client` instance. |
 | `windows.rs` (502 ln) | — | Window creation, DWM backdrop, the acrylic path. |
@@ -176,7 +176,7 @@ component reference.
 
 | Task | Open, in this order | Do not open |
 |---|---|---|
-| Add or change an API endpoint | `crates/protocol/src/lib.rs` → the server module → `crates/client/src/http.rs` → the `lib/*.ts` wrapper | `BRIEF.md` |
+| Add or change an API endpoint | the type first — `crates/protocol/src/lib.rs` for the encrypted path, `crates/client/src/feed.rs` for feed and profile — then the server module → `crates/client/src/http.rs` → the `lib/*.ts` wrapper | `BRIEF.md` |
 | Change what is stored on the client | `crates/store/src/lib.rs` (grep the table) → the caller in `crates/client` | — |
 | Change what is stored on the server | `apps/server/migrations/` (new file) → the module → regenerate `.sqlx` | — |
 | Anything MLS / group membership | `crates/crypto/src/mls.rs` → `crates/client/src/conversations.rs` → `apps/server/src/delivery/` | Do not touch OpenMLS internals |
@@ -238,7 +238,7 @@ Read cost matters. Sizes are approximate and current.
 | [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | 10 KB | What must ship beside the `.exe`. |
 | [`README.md`](../README.md) | 12 KB | Setup, prerequisites, troubleshooting. For humans on a new machine. |
 | [`THREAT-MODEL.md`](THREAT-MODEL.md) | 17 KB | Adversaries in and out of scope; what is deliberately not protected. |
-| [`TUTORIAL.md`](TUTORIAL.md) | 18 KB | How the pieces fit, explained end to end. |
+| [`TUTORIAL.md`](TUTORIAL.md) | 18 KB | Every value you personally have to supply: accounts, costs, domains, secrets — and which of them block you today. |
 | [`OPS.md`](OPS.md) | 19 KB | The Hetzner runbook. Deploy, TLS, backups, incidents. |
 | [`PLAN.md`](PLAN.md) | 22 KB | Milestones M0–M9 and the open risks. |
 | [`BRIEF.md`](BRIEF.md) | 28 KB | The original specification. The source of the §-numbers other docs cite. |
@@ -257,6 +257,13 @@ move.
 
 - **Pinned dependencies, everywhere.** `=1.0.229`, not `^1.0`. Rule 8. A bump is
   a deliberate act that goes through `cargo deny` and `cargo audit`.
+- **The local store's schema version is one constant.**
+  `crates/store/src/lib.rs` `SCHEMA_VERSION` and the last `PRAGMA
+  user_version` in `migrate()` must agree; a test fails if they drift. A
+  migration that adds a column with a bare `ALTER TABLE` is **not idempotent**,
+  so any test that rolls `user_version` back has to drop what the later
+  versions added — otherwise the step re-runs against a column that is already
+  there.
 - **`sqlx` is compile-time checked, offline by default.** `.cargo/config.toml`
   sets `SQLX_OFFLINE = "true"` for every cargo invocation, so `query!` macros
   check themselves against the committed `.sqlx/` cache and the Windows CI job

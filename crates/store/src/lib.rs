@@ -35,7 +35,7 @@ pub type StoredIdentity = (Zeroizing<Vec<u8>>, Vec<u8>);
 /// The schema version this build writes and expects.
 ///
 /// One constant, so a migration and the test that checks it cannot disagree.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// The file name the store always uses, under the app data directory.
 pub const STORE_FILE_NAME: &str = "store.db";
@@ -472,6 +472,36 @@ impl EncryptedStore {
                  COMMIT;",
             )?;
         }
+
+        if version < 11 {
+            // A name for a message, chosen by whoever sent it.
+            //
+            // Everything a person can later do *to* a message -- react to it,
+            // edit it, take it back -- has to say which one, and the envelope
+            // id cannot answer: the server assigns it, so a message still in
+            // the outbox has none, and that is precisely the window in which
+            // somebody wants to take a message back. This column holds the id
+            // that travels inside the ciphertext instead (`Payload::id`).
+            //
+            // Nullable, and it stays nullable. Every message already in this
+            // database was sent before names existed; giving them all a
+            // placeholder would make them all the same message as far as any
+            // reference is concerned. The partial unique index enforces the
+            // rule that matters -- two messages must not answer to one name --
+            // without pretending the old ones have one.
+            //
+            // The outbox carries it too, so a queued message can be named
+            // before the server has ever seen it.
+            self.connection.execute_batch(
+                "BEGIN;
+                 ALTER TABLE messages ADD COLUMN client_id TEXT;
+                 ALTER TABLE outbox   ADD COLUMN client_id TEXT;
+                 CREATE UNIQUE INDEX IF NOT EXISTS messages_client_id_idx
+                     ON messages (client_id) WHERE client_id IS NOT NULL;
+                 PRAGMA user_version = 11;
+                 COMMIT;",
+            )?;
+        }
         Ok(())
     }
 
@@ -635,10 +665,13 @@ impl EncryptedStore {
         }
     }
 
-    /// Records a decrypted message.
+    /// Records a decrypted message with nothing but a body.
     ///
     /// Keyed by the server's envelope id, so replaying a sync cannot duplicate
     /// anything -- which matters, because a reconnect replays by design.
+    ///
+    /// The short form, for a message that carries no file and answers to no
+    /// name. Anything else goes through [`EncryptedStore::insert`].
     pub fn insert_message(
         &self,
         envelope_id: i64,
@@ -647,42 +680,39 @@ impl EncryptedStore {
         body: &str,
         sent_at_ms: i64,
     ) -> Result<(), StoreError> {
-        self.insert_message_with_payload(
+        self.insert(&NewMessage {
             envelope_id,
             conversation_id,
             sender_device_id,
             body,
-            None,
+            payload: None,
             sent_at_ms,
-        )
+            client_id: None,
+        })
     }
 
-    /// Records a message along with the payload it was decoded from.
+    /// Records a message, all of it.
     ///
     /// `payload` is only set for a message that carries something the preview
-    /// cannot represent -- today, a file. See the v3 migration for why it must
-    /// be written down at arrival rather than recovered later.
-    pub fn insert_message_with_payload(
-        &self,
-        envelope_id: i64,
-        conversation_id: &str,
-        sender_device_id: Option<&str>,
-        body: &str,
-        payload: Option<&str>,
-        sent_at_ms: i64,
-    ) -> Result<(), StoreError> {
+    /// cannot represent -- a file, or a shape this build could not read. See
+    /// the v3 and v11 migrations for why both have to be written down at
+    /// arrival rather than recovered later: MLS will not decrypt that envelope
+    /// a second time.
+    pub fn insert(&self, message: &NewMessage<'_>) -> Result<(), StoreError> {
         self.connection.execute(
             "INSERT INTO messages
-                 (envelope_id, conversation_id, sender_device_id, body, payload, sent_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 (envelope_id, conversation_id, sender_device_id, body, payload,
+                  sent_at_ms, client_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT (envelope_id) DO NOTHING",
             rusqlite::params![
-                envelope_id,
-                conversation_id,
-                sender_device_id,
-                body,
-                payload,
-                sent_at_ms
+                message.envelope_id,
+                message.conversation_id,
+                message.sender_device_id,
+                message.body,
+                message.payload,
+                message.sent_at_ms,
+                message.client_id
             ],
         )?;
         Ok(())
@@ -733,8 +763,8 @@ impl EncryptedStore {
         conn.execute(
             "INSERT INTO outbox
                  (client_msg_id, conversation_id, ciphertext, epoch, is_commit,
-                  body, payload, queued_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                  body, payload, queued_at_ms, client_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT (client_msg_id) DO NOTHING",
             rusqlite::params![
                 item.client_msg_id,
@@ -744,7 +774,8 @@ impl EncryptedStore {
                 item.is_commit,
                 item.body,
                 item.payload,
-                item.queued_at_ms
+                item.queued_at_ms,
+                item.client_id
             ],
         )?;
         Ok(())
@@ -754,7 +785,7 @@ impl EncryptedStore {
     pub fn outbox(&self) -> Result<Vec<OutboxItem>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT client_msg_id, conversation_id, ciphertext, epoch, is_commit,
-                    body, payload, queued_at_ms, attempts, last_error
+                    body, payload, queued_at_ms, attempts, last_error, client_id
              FROM outbox ORDER BY seq",
         )?;
         let rows = statement.query_map([], |row| {
@@ -769,6 +800,7 @@ impl EncryptedStore {
                 queued_at_ms: row.get(7)?,
                 attempts: row.get(8)?,
                 last_error: row.get(9)?,
+                client_id: row.get(10)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -821,7 +853,7 @@ impl EncryptedStore {
     /// Messages in a conversation, oldest first.
     pub fn messages(&self, conversation_id: &str) -> Result<Vec<StoredMessage>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT envelope_id, sender_device_id, body, payload, sent_at_ms
+            "SELECT envelope_id, sender_device_id, body, payload, sent_at_ms, client_id
              FROM messages WHERE conversation_id = ?1 ORDER BY envelope_id",
         )?;
         let rows = statement.query_map([conversation_id], |row| {
@@ -831,6 +863,7 @@ impl EncryptedStore {
                 body: row.get(2)?,
                 payload: row.get(3)?,
                 sent_at_ms: row.get(4)?,
+                client_id: row.get(5)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1322,6 +1355,32 @@ pub struct StoredConversation {
     pub has_avatar: bool,
 }
 
+/// A message about to be written to the local history.
+///
+/// A struct rather than a seventh positional argument. Six was already at the
+/// edge -- `insert_message_with_payload(1, "c", None, "hi", None, 0)` is a
+/// line nobody reads without counting -- and it is the same reasoning that put
+/// `Context` in `crates/client/src/conversations.rs`.
+#[derive(Debug, Clone)]
+pub struct NewMessage<'a> {
+    /// The server's envelope id, which is also the sync cursor.
+    pub envelope_id: i64,
+    /// Which conversation it belongs to.
+    pub conversation_id: &'a str,
+    /// Which device sent it. `None` means ours.
+    pub sender_device_id: Option<&'a str>,
+    /// The plaintext, as the list and the bubble will show it.
+    pub body: &'a str,
+    /// The encoded payload, where the body alone is not enough.
+    pub payload: Option<&'a str>,
+    /// When it was sent -- the server's clock for anything incoming, ours for
+    /// our own. Nothing compares the two: only our own messages carry a local
+    /// time, and nobody else may act on those.
+    pub sent_at_ms: i64,
+    /// The sender's own name for it, from `Payload::id`.
+    pub client_id: Option<&'a str>,
+}
+
 /// A message as it sits in the local store, already decrypted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredMessage {
@@ -1335,6 +1394,11 @@ pub struct StoredMessage {
     pub payload: Option<String>,
     /// When the server received it.
     pub sent_at_ms: i64,
+    /// The sender's own name for it, when it has one.
+    ///
+    /// `None` for everything sent before names existed. Nothing can refer to
+    /// such a message, and the UI offers no action that would try.
+    pub client_id: Option<String>,
 }
 
 /// One message waiting to be sent.
@@ -1365,6 +1429,15 @@ pub struct OutboxItem {
     pub attempts: i64,
     /// Why the last attempt failed.
     pub last_error: Option<String>,
+    /// The sender's own name for the message, as it sits inside the
+    /// ciphertext.
+    ///
+    /// Distinct from `client_msg_id`, which is the server's idempotency key.
+    /// This one is how the group refers to the message; that one is how the
+    /// server refuses a duplicate. Keeping them apart means the server never
+    /// holds, in cleartext, the token that appears inside everyone's
+    /// ciphertext.
+    pub client_id: Option<String>,
 }
 
 /// The account this installation is signed in as.
@@ -1654,6 +1727,7 @@ mod tests {
             queued_at_ms: 1,
             attempts: 0,
             last_error: None,
+            client_id: None,
         }
     }
 
@@ -1915,7 +1989,15 @@ mod tests {
             let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
             store
                 .connection()
-                .execute_batch("DROP TABLE meet_pins; PRAGMA user_version = 9;")
+                // v11's columns go too: a rollback test has to restore the
+                // shape of the version it claims to be.
+                .execute_batch(
+                    "DROP TABLE meet_pins;
+                     DROP INDEX messages_client_id_idx;
+                     ALTER TABLE messages DROP COLUMN client_id;
+                     ALTER TABLE outbox   DROP COLUMN client_id;
+                     PRAGMA user_version = 9;",
+                )
                 .unwrap();
         }
         let store = EncryptedStore::open(dir.db(), &a_key(1)).unwrap();
@@ -2015,10 +2097,17 @@ mod tests {
             store
                 .connection()
                 .execute_batch(
+                    // Everything v9 and later added, because a rollback test
+                    // has to restore the *shape* of the version it claims to
+                    // be -- a bare `ADD COLUMN` re-run against a column that
+                    // is already there fails, and rightly so.
                     "DROP TRIGGER messages_fts_insert;
                      DROP TRIGGER messages_fts_delete;
                      DROP TRIGGER messages_fts_update;
                      DROP TABLE messages_fts;
+                     DROP INDEX messages_client_id_idx;
+                     ALTER TABLE messages DROP COLUMN client_id;
+                     ALTER TABLE outbox   DROP COLUMN client_id;
                      PRAGMA user_version = 8;",
                 )
                 .unwrap();
@@ -2032,6 +2121,76 @@ mod tests {
             1,
             "existing history must be searchable after the upgrade"
         );
+    }
+
+    /// A database from before names, opened by a build that has them.
+    ///
+    /// The upgrade must add the column without touching the rows: every
+    /// message already there was sent when there was no name to give it, and
+    /// inventing one would make them all answer to the same reference.
+    #[test]
+    fn a_v10_database_gains_the_column_and_keeps_its_messages() {
+        let dir = TempDir::new("schema-11");
+
+        {
+            let store = EncryptedStore::open(dir.db(), &a_key(2)).unwrap();
+            a_message(&store, 1, "from before names");
+            // Back to a v10 store: the column gone, the version rolled back.
+            store
+                .connection()
+                .execute_batch(
+                    "DROP INDEX messages_client_id_idx;
+                     ALTER TABLE messages DROP COLUMN client_id;
+                     ALTER TABLE outbox   DROP COLUMN client_id;
+                     PRAGMA user_version = 10;",
+                )
+                .unwrap();
+        }
+
+        let store = EncryptedStore::open(dir.db(), &a_key(2)).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+
+        let messages = store.messages("c1").unwrap();
+        assert_eq!(messages.len(), 1, "the message must survive the upgrade");
+        assert_eq!(messages[0].body, "from before names");
+        assert_eq!(
+            messages[0].client_id, None,
+            "an old message has no name, and must not be given a made-up one"
+        );
+    }
+
+    /// Two messages must not answer to one name.
+    ///
+    /// The index is the rule; a handler check would have a window between
+    /// deciding and writing that a retrying client drives straight through.
+    #[test]
+    fn a_name_cannot_be_used_twice() {
+        let dir = TempDir::new("client-id-unique");
+        let store = EncryptedStore::open(dir.db(), &a_key(3)).unwrap();
+
+        let insert = |envelope_id: i64, client_id: &str| {
+            store.insert(&NewMessage {
+                envelope_id,
+                conversation_id: "c1",
+                sender_device_id: None,
+                body: "hi",
+                payload: None,
+                sent_at_ms: 1_000,
+                client_id: Some(client_id),
+            })
+        };
+
+        insert(1, "the-same-name").unwrap();
+        assert!(
+            insert(2, "the-same-name").is_err(),
+            "a second message under one name must be refused"
+        );
+
+        // And the absence of a name is not a name: two of those are fine,
+        // which is what the partial index is for.
+        store.insert_message(3, "c1", None, "old one", 1).unwrap();
+        store.insert_message(4, "c1", None, "another", 2).unwrap();
+        assert_eq!(store.messages("c1").unwrap().len(), 3);
     }
 
     #[test]

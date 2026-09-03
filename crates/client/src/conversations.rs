@@ -679,11 +679,14 @@ pub fn send_message<T: Transport>(
         }
     };
 
-    // Encrypted before anything else, and exactly once. MLS ratchets forward
-    // on every encryption, so these bytes are the message -- a retry sends
-    // them again rather than producing new ones.
-    let ciphertext =
-        conversation.encrypt(ctx.provider, ctx.signer, &Payload::text(body).encode())?;
+    // Built before it is encrypted, because the name inside it has to be read
+    // back out: MLS ratchets forward on every encryption, so these bytes are
+    // the message and there is no second chance to look inside and learn what
+    // it was called. A retry sends the same bytes rather than producing new
+    // ones, so the name is stable too.
+    let payload = Payload::text(body);
+    let client_id = payload.id().map(|id| id.to_string());
+    let ciphertext = conversation.encrypt(ctx.provider, ctx.signer, &payload.encode())?;
 
     // Queued before it is sent, not after a failure. If this process dies
     // between encrypting and sending, the message is on disk and the ratchet
@@ -700,6 +703,7 @@ pub fn send_message<T: Transport>(
         queued_at_ms: now_ms(),
         attempts: 0,
         last_error: None,
+        client_id: client_id.clone(),
     };
     // One transaction, not two statements. The ratchet advanced when the
     // message was encrypted, so the queued ciphertext belongs to a generation
@@ -716,15 +720,18 @@ pub fn send_message<T: Transport>(
             // decrypt -- MLS does not let a sender decrypt its own ciphertext
             // -- so the local copy is written here, keyed by the server's
             // envelope id so a later sync cannot duplicate it.
-            ctx.store.insert_message(
-                accepted.envelope_id,
-                &conversation_id.to_string(),
-                None,
+            ctx.store.insert(&nexo_store::NewMessage {
+                envelope_id: accepted.envelope_id,
+                conversation_id: &conversation_id.to_string(),
+                sender_device_id: None,
                 body,
-                now_ms(),
-            )?;
+                payload: None,
+                sent_at_ms: now_ms(),
+                client_id: client_id.as_deref(),
+            })?;
             Ok(Sent::Delivered {
                 envelope_id: accepted.envelope_id,
+                client_id,
             })
         }
         Err(error) if error.is_offline() => {
@@ -733,7 +740,10 @@ pub fn send_message<T: Transport>(
             // Not an error to the caller. The message is written down, it will
             // go when the network returns, and telling someone their message
             // failed when it is safely queued is worse than useless.
-            Ok(Sent::Queued { client_msg_id })
+            Ok(Sent::Queued {
+                client_msg_id,
+                client_id,
+            })
         }
         Err(error) => {
             ctx.store
@@ -750,6 +760,8 @@ pub enum Sent {
     Delivered {
         /// The envelope id, which is also the local message's key.
         envelope_id: i64,
+        /// The name inside the ciphertext, for referring to it later.
+        client_id: Option<String>,
     },
     /// Written to the outbox, waiting for the network.
     ///
@@ -757,6 +769,12 @@ pub enum Sent {
     Queued {
         /// Its id in the outbox.
         client_msg_id: String,
+        /// The name inside the ciphertext.
+        ///
+        /// Carried even here, and this is the case it exists for: a queued
+        /// message has no envelope id, and taking a message back is most
+        /// useful in exactly the minutes it might still be sitting here.
+        client_id: Option<String>,
     },
 }
 
@@ -764,8 +782,17 @@ impl Sent {
     /// The envelope id, for a message that actually reached the server.
     pub fn envelope_id(&self) -> Option<i64> {
         match self {
-            Sent::Delivered { envelope_id } => Some(*envelope_id),
+            Sent::Delivered { envelope_id, .. } => Some(*envelope_id),
             Sent::Queued { .. } => None,
+        }
+    }
+
+    /// The name inside the ciphertext, whichever way it went out.
+    pub fn client_id(&self) -> Option<&str> {
+        match self {
+            Sent::Delivered { client_id, .. } | Sent::Queued { client_id, .. } => {
+                client_id.as_deref()
+            }
         }
     }
 }
@@ -1065,20 +1092,35 @@ pub fn sync<T: Transport>(
                             // this envelope a second time.
                             let stored = match &payload {
                                 Payload::Attachment { .. } => Some(payload.encode_string()),
+                                // Kept verbatim rather than re-encoded: this
+                                // build cannot represent what arrived, so
+                                // encoding it back would write "{}" over it.
+                                // And this is the only chance -- MLS will not
+                                // decrypt this envelope again, so a build that
+                                // learns the variant later reads the bytes
+                                // from here or never sees them at all.
+                                Payload::Unsupported { .. } => {
+                                    Some(String::from_utf8_lossy(&plaintext).into_owned())
+                                }
                                 // Text needs nothing beyond the body already in
                                 // `body`; a future variant that does will fail
                                 // to open its file until it is added here, which
                                 // is the safe direction for this to go wrong.
                                 _ => None,
                             };
-                            ctx.store.insert_message_with_payload(
-                                envelope.envelope_id,
-                                &id,
-                                sender.map(|s| s.to_string()).as_deref(),
-                                &body,
-                                stored.as_deref(),
-                                envelope.server_timestamp_ms,
-                            )?;
+                            // The sender's name for it, when they gave one.
+                            // Written now for the same reason the payload is:
+                            // this envelope will not decrypt again.
+                            let client_id = payload.id().map(|id| id.to_string());
+                            ctx.store.insert(&nexo_store::NewMessage {
+                                envelope_id: envelope.envelope_id,
+                                conversation_id: &id,
+                                sender_device_id: sender.map(|s| s.to_string()).as_deref(),
+                                body: &body,
+                                payload: stored.as_deref(),
+                                sent_at_ms: envelope.server_timestamp_ms,
+                                client_id: client_id.as_deref(),
+                            })?;
                             outcome.messages += 1;
                         }
                         Ok(Incoming::CommitApplied { .. }) => outcome.commits += 1,
@@ -1294,7 +1336,9 @@ pub fn send_attachment<T: Transport>(
         mime: mime.to_string(),
         size: sealed.size,
         body: body.map(str::to_string),
+        id: Some(uuid::Uuid::new_v4()),
     };
+    let client_id = payload.id().map(|id| id.to_string());
 
     let mut conversation = Conversation::load(ctx.provider, conversation_id, now_ms())?
         .ok_or(ConversationError::NotAMember)?;
@@ -1313,14 +1357,15 @@ pub fn send_attachment<T: Transport>(
     // builds its attachment view from the payload, so a message stored without
     // one has no picture to draw and no key to open the file with. The
     // recipient saw the image; the person who sent it did not.
-    ctx.store.insert_message_with_payload(
-        accepted.envelope_id,
-        &id,
-        None,
-        payload.preview(),
-        Some(&payload.encode_string()),
-        now_ms(),
-    )?;
+    ctx.store.insert(&nexo_store::NewMessage {
+        envelope_id: accepted.envelope_id,
+        conversation_id: &id,
+        sender_device_id: None,
+        body: payload.preview(),
+        payload: Some(&payload.encode_string()),
+        sent_at_ms: now_ms(),
+        client_id: client_id.as_deref(),
+    })?;
     mls_state::save(ctx.provider, ctx.store)?;
 
     Ok(accepted.envelope_id)

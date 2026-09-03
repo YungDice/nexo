@@ -19,6 +19,7 @@ import { Field } from "../../components/ui/Controls";
 import { EmptyState } from "../../components/ui/Feedback";
 import { Icon } from "../../components/ui/Icon";
 import { Panel } from "../../components/ui/Surface";
+import { blockPeer, peerHandle } from "./peer";
 import { clickSelection, pruneSelection } from "./selection";
 
 /**
@@ -348,12 +349,23 @@ export function ConversationList({
 /**
  * How long "mute" can mean.
  *
- * Four, not eight: every extra row is one more thing to read before making a
+ * Five, not eight: every extra row is one more thing to read before making a
  * small decision, and the difference between six hours and eight is not worth
- * a line in a menu. A week is the longest on offer because past that people
- * mean "permanently", which is the plain Mute entry above these.
+ * a line in a menu.
+ *
+ * "Until I turn it off" sits first, and it is exactly what the plain Mute
+ * entry above these has always done on click. It is spelled out because the
+ * behaviour was otherwise unfindable: a bare "Mute" beside four durations
+ * reads as "mute for how long?", and nobody discovers an option by not seeing
+ * it. Naming it costs one line and stops the most-wanted answer from being
+ * the hidden one.
+ *
+ * `Infinity` needs no special case anywhere downstream. It compares correctly
+ * against `Date.now()`, and `JSON.stringify` turns it into `null`, which the
+ * reader in `store.ts` already treats as "muted, no end".
  */
 const MUTE_DURATIONS: readonly { label: string; ms: number }[] = [
+  { label: "Until I turn it off", ms: Number.POSITIVE_INFINITY },
   { label: "For 1 hour", ms: 60 * 60 * 1000 },
   { label: "For 8 hours", ms: 8 * 60 * 60 * 1000 },
   { label: "Until tomorrow", ms: 24 * 60 * 60 * 1000 },
@@ -364,7 +376,9 @@ const MUTE_DURATIONS: readonly { label: string; ms: number }[] = [
  * The durations, as submenu entries under whichever Mute opened them.
  *
  * `Date.now()` is read when the entry is chosen rather than when the menu is
- * built, so a menu left open does not mute from the moment it appeared.
+ * built, so a menu left open does not mute from the moment it appeared. For
+ * the first entry the addition is `now + Infinity`, which is `Infinity` — the
+ * arithmetic carries it without being told to.
  */
 function timedMutes(apply: (until: number) => void): MenuItem[] {
   return MUTE_DURATIONS.map((option) => ({
@@ -405,6 +419,8 @@ function ConversationRow({
   const toggleFlag = useApp((s) => s.toggleConversationFlag);
   const mute = useApp((s) => s.muteConversation);
   const forget = useApp((s) => s.forgetConversation);
+  const account = useApp((s) => s.account);
+  const peer = peerHandle(conversation, account?.handle);
   const override = useApp((s) => s.conversationOverrides[conversation.id]);
   const muted = isMuted(override, now.getTime());
   const pinned = override?.pinned ?? false;
@@ -453,15 +469,31 @@ function ConversationRow({
           }
         : {
             // Click means "not now, indefinitely", which is what most muting
-            // is. The durations are behind the arrow rather than laid out
-            // beneath: four of them standing open turned a two-line decision
-            // into a six-line one and put the answer above the question.
+            // is. The choices are behind the arrow rather than laid out
+            // beneath: five of them standing open would turn a two-line
+            // decision into a seven-line one and put the answer above the
+            // question. The first of them says what this click does, so the
+            // shortcut is a shortcut rather than a secret.
             label: "Mute",
             icon: "bell-off",
             onSelect: () => mute(conversation.id, Number.POSITIVE_INFINITY),
             submenu: timedMutes((until) => mute(conversation.id, until)),
           },
       { label: "", separator: true },
+      // Only where there is somebody to name. A group has several people and
+      // no single answer, and a DM whose member list has not arrived yet has
+      // no answer at all -- in both cases the entry is absent rather than
+      // present and broken.
+      ...(peer
+        ? [
+            {
+              label: `Block ${conversation.title}`,
+              icon: "shield" as const,
+              danger: true,
+              onSelect: () => void blockPeer(peer, conversation.title),
+            },
+          ]
+        : []),
       {
         label: "Remove from this device",
         icon: "trash",

@@ -131,8 +131,19 @@ export function ProfilePage({ now }: { now: Date }) {
               onClick={() => void changeBanner()}
             />
             {/* §6.3: the avatar overlaps the lower-left of the banner, which
-                is the sidebar profile card's arrangement one size up. */}
-            <span className="ring-surface-2 absolute -bottom-10 left-5 rounded-full ring-4">
+                is the sidebar profile card's arrangement one size up.
+
+                It is also the control that changes it. The button that used to
+                do that sat in the row underneath, far from the thing it
+                acted on and giving no hint that the picture was changeable at
+                all; the banner beside it had the better idea already. */}
+            <button
+              type="button"
+              aria-label="Change picture"
+              disabled={live.saving}
+              onClick={() => void changePicture()}
+              className="group ring-surface-2 focus-visible:ring-accent absolute -bottom-10 left-5 rounded-full ring-4 outline-none"
+            >
               {me.avatar_key ? (
                 <RemoteImage
                   imageKey={me.avatar_key}
@@ -142,13 +153,15 @@ export function ProfilePage({ now }: { now: Date }) {
               ) : (
                 <Avatar seed={me.handle} name={me.display_name} size={88} />
               )}
-            </span>
+              {/* Answers to focus as well as to hover. A control that exists
+                  only under a pointer does not exist for everyone. */}
+              <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/55 opacity-0 transition-opacity duration-[var(--motion-fast)] ease-[var(--ease-state)] group-hover:opacity-100 group-focus-visible:opacity-100 group-disabled:opacity-0">
+                <Icon name="camera" size={22} className="text-white" />
+              </span>
+            </button>
           </div>
 
           <div className="flex items-start justify-end gap-2 pt-3">
-            <Button icon="camera" disabled={live.saving} onClick={() => void changePicture()}>
-              Change picture
-            </Button>
             <Button
               variant={editing ? "secondary" : "primary"}
               icon={editing ? "close" : "pencil"}

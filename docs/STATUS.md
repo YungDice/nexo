@@ -167,3 +167,57 @@ roughly where they are, wearing a character they built.
 dragged, under a transparent window with the DWM acrylic backdrop. WebGL,
 the worker and zoom all work; the banding is cosmetic and unresolved. Three
 candidate fixes were identified and none has been confirmed.
+
+### Since v0.1.18
+
+- **A payload this build cannot read is shown as one**, rather than rendered
+  as raw text. `Payload::decode` used to fall back to text for *any* parse
+  failure, including a `kind` from a newer client — so the first new variant
+  ever sent would have put JSON in a chat bubble on every installation that
+  had not updated. It now separates "tagged JSON I do not know" from "not JSON
+  at all"; the latter is still read as text, because the project's first
+  messages were bare UTF-8 and refusing them would be self-inflicted data
+  loss. The undecoded bytes are kept in the store — MLS will not decrypt that
+  envelope twice, so a later build reads what arrived today or never does.
+- **The conversation beside the feed can be chosen.** It still follows the most
+  recent by default; the header is now also a picker, and picking one suspends
+  the following until it is taken back. The choice does not survive a restart,
+  which is deliberate: a conversation sitting there for a week while everything
+  happens elsewhere is the silent staleness the default exists to avoid.
+- **The profile picture is changed from the picture.** Hovering or focusing the
+  avatar offers it, the way the banner already did. The button that used to do
+  this sat in the row underneath, away from the thing it acted on and giving no
+  hint the picture was changeable at all.
+- **"Until I turn it off" is a mute entry you can see.** It always was the
+  behaviour of a plain click on Mute; beside four durations, a bare "Mute" read
+  as "for how long?" instead. Naming it costs one line.
+- **A message has a name of its own** (protocol version 3, store schema 11).
+  `Payload::Text` and `Payload::Attachment` carry an optional `id` that the
+  sender mints before encrypting, and the store keeps it beside the message and
+  in the outbox. Nothing user-visible yet; it is what reacting to, editing or
+  taking back a message will refer to. Not the envelope id, because the server
+  assigns that and a message still in the outbox has none — which is exactly
+  the window in which somebody wants to take one back. Not the `client_msg_id`
+  either: that is the server's idempotency key, and a value that was both would
+  sit in the server's tables in cleartext *and* inside everyone's ciphertext.
+  Messages sent before this carry no name, keep working, and are simply not
+  offered the actions that need one.
+- **An account can be deleted.** `POST /v1/auth/delete-account`, a *Delete
+  account* group at the foot of Settings → Security, and the wipe of the local
+  store, its key and the unlock PIN that signing out already performed. The
+  dialog asks for two things doing two jobs: the handle typed out, which cannot
+  be answered by reflex and names which account is going, and the password,
+  which the server checks — a bearer token is possession of a session, the rule
+  change-password already applies to itself. The server talks first and the
+  machine is wiped second, the opposite of signing out and for the opposite
+  reason: a local wipe followed by a refusal would leave a live account nothing
+  here could reach. `docs/THREAT-MODEL.md` §2.9 has what deletion does and does
+  not reach.
+- **Blocking is reachable from the conversation.** It was already built and
+  already server-enforced, but only offered on their profile, on their pin on
+  the map, and in the undo list in Settings — none of which is where you are
+  when somebody starts being a problem. The conversation's own menu now offers
+  it, for a two-person conversation whose member list has arrived; a group and
+  a conversation that cannot name anybody get no entry rather than a broken
+  one. Not in the conversation header: that toolbar is for the things people
+  do often, which is the rule it already applies to mute durations.

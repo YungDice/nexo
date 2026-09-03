@@ -13,8 +13,9 @@ use uuid::Uuid;
 
 /// Wire protocol version. Bump on any breaking change to the types below.
 ///
-/// 2 adds the Meet&Greet types at the end of this file.
-pub const PROTOCOL_VERSION: u16 = 2;
+/// 2 adds the Meet&Greet types at the end of this file. 3 gives a message a
+/// name of its own, so a later reaction, edit or retraction can refer to it.
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// A conversation identifier. One MLS group per conversation; a 1:1 chat is a
 /// two-member group with no special-casing (§4.2).
@@ -64,6 +65,22 @@ pub enum Payload {
     Text {
         /// The message.
         body: String,
+        /// This sender's name for this message.
+        ///
+        /// Not the envelope id: that is the server's number, and a message
+        /// still sitting in the outbox does not have one — which is exactly
+        /// the window in which somebody wants to take a message back. Not the
+        /// `client_msg_id` either: that one is the server's idempotency key,
+        /// and a value that was both would sit in the server's tables in
+        /// cleartext *and* inside everyone's ciphertext.
+        ///
+        /// `None` for anything sent before this existed. Such a message cannot
+        /// be named, so it cannot be edited or retracted, and the menu does
+        /// not offer it — absence has to be representable for that to work,
+        /// which is why this is an `Option` rather than a defaulted `Uuid`
+        /// that would give every old message the same nil name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<Uuid>,
     },
     /// A file. The bytes live in object storage; the key to them is here.
     ///
@@ -90,6 +107,9 @@ pub enum Payload {
         /// An optional message sent with the file.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         body: Option<String>,
+        /// This sender's name for this message. See [`Payload::Text`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<Uuid>,
     },
     /// A change to what the conversation is called.
     ///
@@ -127,12 +147,52 @@ pub enum Payload {
         /// Plaintext size in bytes.
         size: u64,
     },
+    /// A payload this build cannot read.
+    ///
+    /// Produced only by [`Payload::decode`] and never sent — it is what a
+    /// client does *instead of* guessing. The alternative is what this used to
+    /// do: render the raw JSON as though someone had typed it, which turns
+    /// every future variant into a bubble full of punctuation on every
+    /// installation that has not updated yet.
+    ///
+    /// The `kind` is carried so the UI can say which thing is missing rather
+    /// than only that something is. The undecoded bytes are kept beside the
+    /// message by the client, because MLS will not decrypt that envelope a
+    /// second time: a build that learns the variant later can still read what
+    /// arrived today.
+    #[serde(skip)]
+    Unsupported {
+        /// The `kind` the sender used.
+        kind: String,
+    },
 }
 
 impl Payload {
-    /// A plain text message.
+    /// A plain text message, with a fresh name.
+    ///
+    /// Minted here rather than by the caller so that every message made this
+    /// way has one. The sender reads it back with [`Payload::id`] before
+    /// encrypting: MLS ratchets on encryption and those bytes *are* the
+    /// message, so there is no second chance to look inside and learn what it
+    /// was called.
     pub fn text(body: impl Into<String>) -> Self {
-        Self::Text { body: body.into() }
+        Self::Text {
+            body: body.into(),
+            id: Some(Uuid::new_v4()),
+        }
+    }
+
+    /// The sender's name for this message, when it has one.
+    ///
+    /// `None` for a payload that carries no name at all — a rename, a group
+    /// picture, something this build cannot read, or a message from before
+    /// names existed. Nothing can refer to those, and the UI offers no action
+    /// that would try.
+    pub fn id(&self) -> Option<Uuid> {
+        match self {
+            Payload::Text { id, .. } | Payload::Attachment { id, .. } => *id,
+            _ => None,
+        }
     }
 
     /// What to show in a conversation list, and in the bubble.
@@ -141,7 +201,7 @@ impl Payload {
     /// useful thing to render and the name is already inside the ciphertext.
     pub fn preview(&self) -> &str {
         match self {
-            Payload::Text { body } => body,
+            Payload::Text { body, .. } => body,
             Payload::Attachment { body, name, .. } => match body {
                 Some(body) if !body.is_empty() => body,
                 _ => name,
@@ -149,6 +209,10 @@ impl Payload {
             // Neither is something anyone said, so neither is a preview of the
             // conversation. The row keeps whatever came before it.
             Payload::Rename { .. } | Payload::GroupAvatar { .. } => "",
+            // Nor is this. Whatever it says, this build cannot read it, and
+            // guessing at a preview would be the same mistake in a smaller
+            // place.
+            Payload::Unsupported { .. } => "",
         }
     }
 
@@ -168,17 +232,44 @@ impl Payload {
 
     /// Decodes what came out of an MLS message.
     ///
-    /// Falls back to treating unrecognised bytes as text, because the very
-    /// first messages this project ever sent were bare UTF-8 with no envelope,
-    /// and refusing to read them would be a self-inflicted data loss.
+    /// Three outcomes, and the distinction between the last two is the point:
+    ///
+    /// - a payload this build knows;
+    /// - a JSON object naming a `kind` it cannot read — [`Payload::Unsupported`],
+    ///   which draws no bubble and says so;
+    /// - anything else — text, because the very first messages this project
+    ///   ever sent were bare UTF-8 with no envelope, and refusing to read them
+    ///   would be self-inflicted data loss.
+    ///
+    /// The middle case used to fall through to the last one. That made every
+    /// new variant a display bug on older installations, and it read the
+    /// sender's structure as if it were their prose — the opposite of failing
+    /// closed (rule 7).
     pub fn decode(bytes: &[u8]) -> Self {
         match serde_json::from_slice::<Payload>(bytes) {
             Ok(payload) => payload,
-            Err(_) => Payload::Text {
-                body: String::from_utf8_lossy(bytes).into_owned(),
+            Err(_) => match tagged_kind(bytes) {
+                Some(kind) => Payload::Unsupported { kind },
+                // No name, and there cannot be one: these bytes predate the
+                // idea. The actions that need a name are not offered on them.
+                None => Payload::Text {
+                    body: String::from_utf8_lossy(bytes).into_owned(),
+                    id: None,
+                },
             },
         }
     }
+}
+
+/// The `kind` of a JSON object, when the bytes are one.
+///
+/// Deliberately not a second attempt at the whole payload: all this decides is
+/// whether somebody sent a *tagged* thing, and pulling one string out of an
+/// untyped value cannot fail on fields this build has never heard of — which
+/// is exactly the case it exists to catch.
+fn tagged_kind(bytes: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    Some(value.get("kind")?.as_str()?.to_string())
 }
 
 /// Reduces a sender-supplied file name to something safe to write to disk.
@@ -469,6 +560,7 @@ mod tests {
             mime: "application/pdf".into(),
             size: 1234,
             body: Some("as promised".into()),
+            id: Some(Uuid::new_v4()),
         };
         assert_eq!(Payload::decode(&payload.encode()), payload);
     }
@@ -477,10 +569,111 @@ mod tests {
     fn bare_bytes_are_read_as_text() {
         // The first messages this project sent had no envelope. Refusing to
         // read them would be self-inflicted data loss.
+        // Spelled out rather than compared against `Payload::text`, which mints
+        // a name. These bytes predate the idea of one, and `None` is the part
+        // being asserted: a message nothing can refer to.
         assert_eq!(
             Payload::decode(b"just a message"),
-            Payload::text("just a message")
+            Payload::Text {
+                body: "just a message".into(),
+                id: None,
+            }
         );
+    }
+
+    #[test]
+    fn a_payload_without_an_id_still_reads() {
+        // Every message sent before version 3 looks like this. Refusing them,
+        // or reading them as something else, would break every history that
+        // already exists — which is the whole reason the field is optional.
+        let before = br#"{"kind":"text","body":"from before names"}"#;
+        assert_eq!(
+            Payload::decode(before),
+            Payload::Text {
+                body: "from before names".into(),
+                id: None,
+            }
+        );
+        assert_eq!(Payload::decode(before).id(), None);
+    }
+
+    #[test]
+    fn an_id_survives_the_round_trip() {
+        let payload = Payload::text("hello");
+        let id = payload.id().expect("text() mints one");
+        assert_eq!(Payload::decode(&payload.encode()).id(), Some(id));
+    }
+
+    #[test]
+    fn payloads_that_are_not_messages_have_no_id() {
+        // A rename changes shared state and is not a thing anyone can react
+        // to, edit or take back. Answering `None` is what stops the UI from
+        // offering those on it.
+        assert_eq!(
+            Payload::Rename {
+                title: "Trip".into()
+            }
+            .id(),
+            None
+        );
+        assert_eq!(
+            Payload::Unsupported {
+                kind: "reaction".into()
+            }
+            .id(),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unknown_kind_is_not_rendered_as_text() {
+        // What a newer build's payload looks like to this one. Reading it as
+        // prose would put raw JSON in a chat bubble on every installation that
+        // has not updated, which is what this used to do.
+        let from_the_future = br#"{"kind":"reaction","target":42,"emoji":"x"}"#;
+        assert_eq!(
+            Payload::decode(from_the_future),
+            Payload::Unsupported {
+                kind: "reaction".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_malformed_known_kind_also_fails_closed() {
+        // A `text` payload with no body is not a message someone typed; it is
+        // a payload that did not survive the trip. Same answer, because the
+        // honest thing to say about both is "this did not open".
+        assert_eq!(
+            Payload::decode(br#"{"kind":"text"}"#),
+            Payload::Unsupported {
+                kind: "text".into()
+            }
+        );
+    }
+
+    #[test]
+    fn json_that_is_not_a_tagged_payload_is_still_text() {
+        // Somebody typing JSON into the composer is sending prose that happens
+        // to have braces in it. Only a `kind` makes it a payload.
+        let typed = br#"{"hello": "world"}"#;
+        assert_eq!(
+            Payload::decode(typed),
+            Payload::Text {
+                body: r#"{"hello": "world"}"#.into(),
+                id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn an_unsupported_payload_previews_as_nothing() {
+        // It must not reach the conversation list. A row that shows the kind
+        // of a thing it cannot read is leaking structure into prose again.
+        let payload = Payload::Unsupported {
+            kind: "reaction".into(),
+        };
+        assert_eq!(payload.preview(), "");
     }
 
     #[test]
@@ -494,6 +687,7 @@ mod tests {
             mime: "image/jpeg".into(),
             size: 1,
             body: None,
+            id: None,
         };
         assert_eq!(payload.preview(), "holiday.jpg");
     }
@@ -509,6 +703,7 @@ mod tests {
             mime: "image/jpeg".into(),
             size: 1,
             body: Some("from the trip".into()),
+            id: None,
         };
         assert_eq!(payload.preview(), "from the trip");
     }
@@ -526,6 +721,7 @@ mod tests {
             mime: "application/pdf".into(),
             size: 10,
             body: None,
+            id: None,
         };
         let encoded = payload.encode();
         assert!(

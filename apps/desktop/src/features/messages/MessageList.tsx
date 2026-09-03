@@ -284,6 +284,8 @@ function Bubble({
 
         {message.undecryptable ? (
           <UndecryptableBubble />
+        ) : message.unsupported ? (
+          <UnsupportedBubble />
         ) : (
           <>
             {message.attachments?.some((a) => a.kind === "image") ? (
@@ -344,6 +346,33 @@ function Bubble({
  * permanently. There is no plaintext fallback, and skipping it silently would
  * hide exactly the event a user needs to know about.
  */
+/**
+ * A message that decrypted but whose shape this build does not know.
+ *
+ * Deliberately not the danger treatment of `UndecryptableBubble`: nothing
+ * failed and nothing is lost. Somebody is running a newer Nexo, the bytes are
+ * in the store, and the remedy is an update rather than asking them to resend.
+ *
+ * The kind is not shown. It is an internal name -- "reaction", "story" -- and
+ * putting it in front of someone would be leaking the wire format into prose
+ * to no purpose.
+ */
+function UnsupportedBubble() {
+  return (
+    <div className="rounded-bubble border-line bg-surface-3 flex items-start gap-2.5 border px-3.5 py-2.5">
+      <Icon name="refresh" size={16} className="text-text-lo mt-0.5 shrink-0" />
+      <span className="text-meta leading-relaxed">
+        <span className="text-text-hi block font-medium">
+          This message needs a newer version of Nexo
+        </span>
+        <span className="text-text-mid">
+          It arrived safely and is kept on this device. Updating will show it.
+        </span>
+      </span>
+    </div>
+  );
+}
+
 function UndecryptableBubble() {
   return (
     <div className="rounded-bubble border-danger/35 bg-danger/8 flex items-start gap-2.5 border px-3.5 py-2.5">

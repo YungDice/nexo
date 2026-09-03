@@ -78,6 +78,7 @@ impl Transport for Flaky {
         refresh(&str) -> SessionTokens;
         logout(&str) -> ();
         change_password(&str, &str, &str) -> ();
+        delete_account(&str) -> ();
         publish_key_packages(&[String]) -> ();
         key_package_count() -> (i64, i64);
         claim_key_package(&str) -> ClaimedKeyPackage;
@@ -199,6 +200,7 @@ fn a_rejection_is_reported_rather_than_hidden_behind_the_cache() {
             refresh(&str) -> SessionTokens;
             logout(&str) -> ();
             change_password(&str, &str, &str) -> ();
+        delete_account(&str) -> ();
             publish_key_packages(&[String]) -> ();
             key_package_count() -> (i64, i64);
             claim_key_package(&str) -> ClaimedKeyPackage;

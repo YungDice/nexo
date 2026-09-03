@@ -307,6 +307,11 @@ move.
   conversation may be). Never widen the first to fix the second, and never test
   for `"application/octet-stream"` instead of asking one of those two: that
   spelling silently accepts whatever the sniffer learns next.
+- **A `Transport` trait method needs an implementation everywhere the trait is
+  implemented**, not just in `http.rs`. Five places as of `list_stories`: the
+  real `HttpTransport`, `lib.rs`'s in-crate `FakeTransport`, and three
+  purpose-built fakes under `crates/client/tests/`. `grep -rn "impl Transport
+  for"` finds all of them; missing one is a compile error, not a silent gap.
 - **A menu's destructive entries sit last**, and `MenuItem` says so. The
   message menu is where that is easy to break, because its entries come and go
   with the message's state — it is built by `features/messages/menu.ts`, a pure

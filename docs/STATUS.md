@@ -440,3 +440,21 @@ decision rather than configuration.
   that does not produce a rejected request), then images, then text. A link
   without a scheme is now said while it can still be fixed rather than coming
   back as a refusal.
+
+### Since v0.1.20
+
+- **Stories name who posted them, and stop drawing the same person twice.** A
+  received story arrives over MLS, which names a device, not an account —
+  `author_handle` started blank and stayed that way forever, because nothing
+  ever called the reconciliation its own doc comment already promised.
+  `GET /v1/stories` already existed on the server for exactly this (it joins
+  against `users`, filtered to contacts and the unblocked — the same boundary
+  the fan-out itself respects) and the client never called it.
+  `stories::live` now does, matching by id and filling in only what was
+  blank; a failed request (offline) falls back to the unresolved list rather
+  than losing the read. On the strip, several posts from the same person used
+  to be drawn as separate, unlabelled circles — the flat list has no grouping
+  of its own — and are now one circle with a `×n` badge, opened with
+  Prev/Next in the order they were posted. The ring around each circle also
+  used to lose its top and bottom edge: the scroll row had no padding to draw
+  it into, and `overflow-x: auto` forces the vertical axis to clip too.

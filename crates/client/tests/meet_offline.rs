@@ -108,6 +108,7 @@ impl Transport for Flaky {
         story_upload_url(u64) -> (String, String);
         create_story(&str, i64) -> nexo_client::transport::StorySummary;
         story_url(i64) -> String;
+        list_stories() -> Vec<nexo_client::transport::StorySummary>;
     }
 
     fn register(
@@ -237,6 +238,7 @@ fn a_rejection_is_reported_rather_than_hidden_behind_the_cache() {
         story_upload_url(u64) -> (String, String);
         create_story(&str, i64) -> nexo_client::transport::StorySummary;
         story_url(i64) -> String;
+        list_stories() -> Vec<nexo_client::transport::StorySummary>;
         }
         fn register(
             &self,

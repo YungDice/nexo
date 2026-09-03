@@ -119,11 +119,47 @@ pub fn post<T: Transport>(
 /// The purge is inside `live_stories`, and it is the layer that matters: the
 /// server refusing to serve an expired story is worth little if the key is
 /// still on the reader's disk. This is also why it works offline.
+///
+/// A received story carries a device id, not a handle -- MLS names devices --
+/// so `StoredStory::author_handle` sits empty until something resolves it. It
+/// stays exactly that empty string forever unless this function fills it in,
+/// which is what the rest of the body does: `GET /v1/stories` is the server
+/// telling us, by story id, who a contact's story actually belongs to. The
+/// same call also answers, as a side effect, who currently has one live --
+/// which is the question a "this person has a story" ring needs.
+///
+/// The reconciliation is best-effort. A device offline reading its own cached
+/// stories is the point of storing them locally at all, so a failed request
+/// here falls back to the unresolved list rather than failing the whole read
+/// -- the same story, with a blank name instead of no story at all.
 pub fn live<T: Transport>(
     ctx: &Context<'_, T>,
     now_ms: i64,
 ) -> Result<Vec<StoredStory>, ConversationError> {
-    Ok(ctx.store.live_stories(now_ms)?)
+    let mut stories = ctx.store.live_stories(now_ms)?;
+
+    let Ok(listed) = ctx.transport.list_stories() else {
+        return Ok(stories);
+    };
+    // By id, not by device: the server's listing does not know about devices
+    // at all, and matching this way sidesteps needing a device-to-handle
+    // table that does not exist anywhere else in this codebase either.
+    let by_id: std::collections::HashMap<i64, String> = listed
+        .into_iter()
+        .map(|s| (s.id, s.author_handle))
+        .collect();
+    for story in &mut stories {
+        // Only ever fills a blank in. A row that already has a handle is our
+        // own copy, written with the handle the server gave at post time
+        // (`post`, above) -- there is nothing here to correct it with, since
+        // this listing does not distinguish "you" from any other contact.
+        if story.author_handle.is_empty()
+            && let Some(handle) = by_id.get(&story.id)
+        {
+            story.author_handle = handle.clone();
+        }
+    }
+    Ok(stories)
 }
 
 /// Fetch a story and open it.

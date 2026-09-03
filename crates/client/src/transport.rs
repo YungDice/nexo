@@ -368,6 +368,20 @@ pub trait Transport {
     /// A time-limited URL for a story's ciphertext.
     fn story_url(&self, id: i64) -> Result<String, TransportError>;
 
+    /// Every live story a contact of this account has posted, and this
+    /// account's own, as the *server* sees it right now.
+    ///
+    /// This is the reconciliation `stories::live` needs and did not do: an
+    /// incoming story arrives over MLS carrying a device id, not a handle --
+    /// MLS names devices -- so a received story sat forever with an empty
+    /// `author_handle` until something matched it back to a person. The
+    /// server already knows the answer, because `GET /v1/stories` joins
+    /// against `users` to serve exactly this list, filtered to contacts and
+    /// the unblocked (`stories.rs`, server side) -- the same boundary the
+    /// fan-out already respects, so asking for it again here tightens
+    /// nothing and leaks nothing.
+    fn list_stories(&self) -> Result<Vec<StorySummary>, TransportError>;
+
     /// Find people by handle or display name. Public accounts only.
     fn search_users(&self, term: &str) -> Result<Vec<SearchResult>, TransportError>;
 

@@ -778,6 +778,10 @@ impl Transport for HttpTransport {
         Ok(answer.url)
     }
 
+    fn list_stories(&self) -> Result<Vec<StorySummary>, TransportError> {
+        self.get_auth("/v1/stories")
+    }
+
     fn search_users(&self, term: &str) -> Result<Vec<SearchResult>, TransportError> {
         self.get_auth(&format!("/v1/users?q={}", query_escape(term)))
     }

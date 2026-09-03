@@ -293,6 +293,11 @@ move.
 - **`pnpm server` does not work** — `server` is one of pnpm's own commands. The
   script is `dev:server`.
 - **Port 1420 is fixed on purpose** so Tauri and Vite cannot disagree about it.
+- **A post's kind is derived, never chosen.** `features/home/compose.ts` reads
+  it off the draft, and its order (link, then images, then text) is not a
+  preference: `posts.rs` refuses a link on an image or text post, so any other
+  order builds requests the server rejects. Change one and the other has to
+  move with it.
 - **Two different questions decide what an attachment is**, and only one of
   them is about safety. `lib/media.ts` reads the sender's declared MIME to pick
   a *layout* — that value is guessed from a file extension and is not evidence.

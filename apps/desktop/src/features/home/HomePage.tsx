@@ -9,12 +9,8 @@ import { RemoteImage } from "../../components/ui/RemoteImage";
 import { Stories } from "./Stories";
 import { EmojiPicker } from "../../components/ui/EmojiPicker";
 import { CommentThread } from "./CommentThread";
-import {
-  uploadImage,
-  type FeedSort,
-  type Post,
-  type PostKind,
-} from "../../lib/feed";
+import { compose } from "./compose";
+import { uploadImage, type FeedSort, type Post } from "../../lib/feed";
 import { asFeedError } from "../../lib/feed";
 import { Avatar } from "../../components/ui/Avatar";
 import { Button, IconButton } from "../../components/ui/Button";
@@ -270,17 +266,21 @@ const FEED_SORTS: { sort: FeedSort; label: string }[] = [
   { sort: "top", label: "Top" },
 ];
 
-/** The three kinds, in the order they are offered. */
-const POST_KINDS: {
-  kind: PostKind;
-  label: string;
-  icon: "messages" | "link" | "image";
-}[] = [
-  { kind: "text", label: "Text", icon: "messages" },
-  { kind: "link", label: "Link", icon: "link" },
-  { kind: "image", label: "Image", icon: "image" },
-];
-
+/**
+ * One editor, not three.
+ *
+ * This used to open on a row of tabs -- Text, Link, Image -- that had to be
+ * chosen before anything was written. They were a mode where a derivation
+ * would do: whether a post is a link post is entirely answered by whether it
+ * has a link in it. Choosing first meant deciding what you were going to write
+ * before you wrote it, and then being stuck: a "text" post could hold a
+ * picture, but adding one did not make it an image post, and an "image" post
+ * refused to be given a link at all.
+ *
+ * Now there is one box. Write, attach up to four pictures, add a link if there
+ * is one, and what kind of post that adds up to is worked out in `compose.ts`
+ * against the rules the server enforces.
+ */
 function PostComposer({
   onPost,
 }: {
@@ -288,9 +288,12 @@ function PostComposer({
 }) {
   const me = useApp((s) => s.account);
   const myAvatarKey = useApp((s) => s.myAvatarKey);
-  const [kind, setKind] = useState<PostKind>("text");
   const [title, setTitle] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
+  // Whether the link field is on screen. Not a mode: it is a field being
+  // offered, and it stays offered while it has anything in it so a typed link
+  // cannot be hidden by a stray click and silently posted.
+  const [linking, setLinking] = useState(false);
   const [body, setBody] = useState("");
   const [images, setImages] = useState<
     { path: string; name: string; url: string }[]
@@ -298,16 +301,7 @@ function PostComposer({
   const [busy, setBusy] = useState(false);
   const remaining = MAX_POST - body.length;
 
-  // What each kind needs before Post means anything. A link post is its link
-  // and an image post is its image; a text post is whatever was written.
-  const ready =
-    kind === "link"
-      ? linkUrl.trim().length > 0
-      : kind === "image"
-        ? images.length > 0
-        : body.trim().length > 0 ||
-          images.length > 0 ||
-          title.trim().length > 0;
+  const draft = compose({ title, body, linkUrl, images: images.length });
 
   const addImage = async () => {
     // §6.2: up to four.
@@ -317,7 +311,7 @@ function PostComposer({
   };
 
   const post = async () => {
-    if (!ready || busy) return;
+    if (!draft.ready || busy) return;
     setBusy(true);
     try {
       // Uploaded first, so a post never references an object that failed to
@@ -331,12 +325,13 @@ function PostComposer({
         body: body.trim(),
         mediaKeys: keys,
         title: title.trim() || null,
-        kind,
-        linkUrl: kind === "link" ? linkUrl.trim() : null,
+        kind: draft.kind,
+        linkUrl: draft.linkUrl,
       });
       setBody("");
       setTitle("");
       setLinkUrl("");
+      setLinking(false);
       setImages([]);
     } catch (error) {
       await notify("Couldn't post that", asFeedError(error).message);
@@ -347,31 +342,6 @@ function PostComposer({
 
   return (
     <div className="rounded-panel border border-line bg-fill p-3">
-      {/* What kind of post this is, chosen before it is written: the fields
-          below change with it, and a validation message afterwards explaining
-          that a link post needs a link is worse than a field that was always
-          there. */}
-      <div className="mb-3 flex gap-1" role="tablist" aria-label="Post type">
-        {POST_KINDS.map((option) => (
-          <button
-            key={option.kind}
-            type="button"
-            role="tab"
-            aria-selected={kind === option.kind}
-            onClick={() => setKind(option.kind)}
-            className={cn(
-              "rounded-control flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium transition-colors duration-[var(--motion-fast)]",
-              kind === option.kind
-                ? "bg-accent text-white"
-                : "text-text-mid hover:bg-fill-hover",
-            )}
-          >
-            <Icon name={option.icon} size={13} />
-            {option.label}
-          </button>
-        ))}
-      </div>
-
       <input
         value={title}
         maxLength={MAX_TITLE}
@@ -381,13 +351,14 @@ function PostComposer({
         className="text-text-hi placeholder:text-text-lo rounded-control mb-2 w-full bg-surface-3 px-3 py-2 text-body font-medium outline-none focus:ring-1 focus:ring-accent"
       />
 
-      {kind === "link" ? (
+      {linking || linkUrl ? (
         <input
           value={linkUrl}
           onChange={(event) => setLinkUrl(event.target.value)}
           aria-label="Link"
           placeholder="https://example.com"
           spellCheck={false}
+          autoFocus
           className="text-text-hi placeholder:text-text-lo rounded-control mb-2 w-full bg-surface-3 px-3 py-2 font-mono text-[12px] outline-none focus:ring-1 focus:ring-accent"
         />
       ) : null}
@@ -460,13 +431,28 @@ function PostComposer({
           />
           <IconButton
             name="link"
-            label="Make this a link post"
+            label={linking || linkUrl ? "Remove the link" : "Add a link"}
             size={17}
-            active={kind === "link"}
-            onClick={() => setKind("link")}
+            active={!!linkUrl}
+            onClick={() => {
+              // Toggling it off clears the field. Leaving a typed link behind
+              // a hidden field would post it without anybody seeing it.
+              if (linking || linkUrl) {
+                setLinkUrl("");
+                setLinking(false);
+              } else {
+                setLinking(true);
+              }
+            }}
           />
         </div>
         <div className="flex items-center gap-3">
+          {/* Said while it can still be fixed, rather than as a refusal after
+              the fact. The server checks the same thing and has to; this is
+              so somebody who typed example.com hears it now. */}
+          {draft.problem ? (
+            <span className="text-warning text-[11px]">{draft.problem}</span>
+          ) : null}
           <span
             className={cn(
               "font-mono text-[11px]",
@@ -477,7 +463,7 @@ function PostComposer({
           </span>
           <Button
             variant="primary"
-            disabled={busy || !ready}
+            disabled={busy || !draft.ready}
             onClick={() => void post()}
           >
             {busy ? "Posting\u2026" : "Post"}

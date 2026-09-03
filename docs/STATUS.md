@@ -428,3 +428,15 @@ decision rather than configuration.
   Typing a handle out in full still works and has to: a private account is
   absent from every search by design and the *server* is what leaves it out, so
   the empty result says so rather than implying nobody is there.
+- **The feed composer is one editor.** It opened on a row of tabs — Text, Link,
+  Image — that had to be chosen before anything was written, which meant
+  deciding what you were going to write before writing it and then being stuck:
+  a "text" post could hold a picture but adding one did not make it an image
+  post, and an "image" post refused a link outright. There is one box now.
+  Write, attach up to four pictures, add a link if there is one; what kind of
+  post that adds up to is derived, in `compose.ts`, against the rules
+  `posts.rs` enforces — a link wins (the server lets a link post carry images
+  and refuses to let an image post have a link, so the order is the only one
+  that does not produce a rejected request), then images, then text. A link
+  without a scheme is now said while it can still be fixed rather than coming
+  back as a refusal.

@@ -334,3 +334,109 @@ their own route to their own prefix.
 deletes attachments whose messages are still in people's conversations — those
 bubbles would keep their file name and lose their file — so it is a product
 decision rather than configuration.
+
+### Since v0.1.19
+
+- **A notice that happens twice is said once and counted.** Refresh and "check
+  for updates" are buttons people press again when nothing appears to happen,
+  and every press used to add another identical toast until the corner of the
+  window was a column of the same sentence covering the thing being refreshed.
+  An identical notice now increments a `×n` beside its title and starts its
+  five seconds over, so it outlives the last press rather than the first; a run
+  of *different* notices is capped at three, oldest out.
+- **The emoji picker opens at once.** It took seconds. All 1,914 emoji are in
+  the DOM on purpose — the group rail scrolls one list rather than swapping
+  nine — but the cost was never the elements, it was the glyphs: the browser
+  rasterised the entire standard set out of the system emoji font before it
+  could paint the first row. Each group now carries `content-visibility: auto`
+  with an intrinsic size, so an off-screen group is laid out and painted when
+  it is scrolled to, and the grids are memoised so typing in the search box no
+  longer rebuilds every button.
+- **The two deletions are the last two entries of a message's menu**, in that
+  order: the one that only touches this device, then the one that asks every
+  other device. "Delete for everyone" used to sit in the middle, above React
+  and Pin, which put the most far-reaching entry where the hand lands first and
+  broke the rule `MenuItem` states for itself — destructive entries sit last.
+  The menu is now built by a pure function with the order under test, because
+  the entries appear and disappear with the message's state and "last" means
+  something different in each case.
+- **Pictures in a conversation arrive at the size they were sent at.** They were
+  drawn as a background image inside a forced 4:3 box, so anything that was not
+  4:3 — most photographs — sat letterboxed in a corner of a box sized for
+  something else, inside a column capped at 64%. They are now real `img`
+  elements at their own ratio, up to 440px tall, and a message carrying media
+  gets a wider column than a message carrying a paragraph.
+- **Video and sound play in the bubble.** An mp4 gets a player, and so does an
+  mp3, an m4a or an ogg. A `.wav` or a `.flac` is shown as a voice message
+  instead — those are what a recorder writes before anything has compressed it.
+  That is a reading of what arrives, not a fact about it: there is no recorder
+  in the app yet, so nothing marks a file as speech, and when there is one the
+  payload should say so and the extension list becomes the fallback.
+- **The byte-sniffer knows sound**: WAV, FLAC, Ogg, MP3 and the M4A family,
+  which used to be called `video/mp4` because it wears MP4's boxes — a player
+  with a black rectangle where the picture would be. What a *story* or a profile
+  picture may be did not widen with it: those ask `is_renderable`, a
+  conversation asks `is_playable`, and five call sites that asked "is this not
+  `application/octet-stream`?" now name what they want, because that spelling
+  would have accepted sound the moment the sniffer learned it.
+- Two smaller things found on the way: the cropper accepted a video (it tested
+  for "anything the sniffer knew" and got one frame of nothing to crop), and the
+  RIFF and ISO branches guarded a `[8..12]` slice with `len() > 12`, so a file
+  that was exactly its own header fell through to "unknown".
+- **A picture in the viewer zooms and drags.** The zoom was there and did half a
+  job: past 100% you were looking at the middle of the picture with no way to
+  reach the rest of it. Dragging moves it now, the wheel zooms about the cursor
+  rather than the middle (zoom about the middle is the version where you point
+  at a face, zoom, and the face leaves the screen), a double-click toggles 200%,
+  and the picture is held inside the frame so it cannot be thrown off the edge.
+  The arrow keys pan while zoomed and step through the conversation's media at
+  rest, so panning is not a mouse-only feature next to zoom controls that are
+  not. The zoom buttons are disabled on a video, where they never did anything.
+- **Pinning works on every kind of message, and the panel shows what was
+  pinned.** Pinning a photograph already worked and looked like it had not: the
+  pinned list rendered the message body or, failing that, the literal words
+  "(no text)", so a pinned picture, video, voice message or file appeared as a
+  row saying nothing. Each now shows its own mark and a line that describes it —
+  a caption where there is one, the file name where there is not, "Voice
+  message" for a recording whose name says nothing, and what happened to a
+  message that was taken back or could not be opened.
+- **Home's chat pane switches conversation by sliding the chat aside.** The
+  header opened a dropdown before, capped at eight entries because a menu does
+  not scroll — somebody with two hundred conversations could not reach most of
+  them from here. A panel slides across the pane instead, showing the Messages
+  tab's own rows (the component is exported and reused, so "looks like the chat
+  tab" stays true when a pin mark or a preview rule changes there), scrolling,
+  searchable by name, with "Most recent" as the first row rather than a control
+  somewhere else. It covers the chat and nothing else: the feed keeps its width
+  and its scroll position, which is the difference between switching a
+  conversation and navigating away from what you were reading.
+- **A story starts from the plus on your profile picture.** It was reachable
+  only from the dashed circle at the head of the Home strip. The badge is a
+  sibling of the avatar button rather than something inside it — the picture is
+  itself the control that changes the picture, and a button inside a button is
+  neither valid nor clickable. Small and in the corner so the two are not
+  confused: the circle changes the picture, the badge posts a story, and both
+  say which they are out loud, because a plus over a photograph could mean
+  either. Posting moves to the Stories tab rather than raising a toast; the
+  story is a better confirmation than a sentence saying it worked, and it is
+  where taking it back happens.
+- **Adding somebody filters as you type.** The box wanted an exact handle and
+  showed nothing at all while you typed it, so one wrong letter told you
+  nothing until the conversation failed to start. It now searches as you type —
+  debounced, and each request numbered so a slow answer for "al" cannot land
+  after a fast one for "alice" and replace the right list with a stale one.
+  Typing a handle out in full still works and has to: a private account is
+  absent from every search by design and the *server* is what leaves it out, so
+  the empty result says so rather than implying nobody is there.
+- **The feed composer is one editor.** It opened on a row of tabs — Text, Link,
+  Image — that had to be chosen before anything was written, which meant
+  deciding what you were going to write before writing it and then being stuck:
+  a "text" post could hold a picture but adding one did not make it an image
+  post, and an "image" post refused a link outright. There is one box now.
+  Write, attach up to four pictures, add a link if there is one; what kind of
+  post that adds up to is derived, in `compose.ts`, against the rules
+  `posts.rs` enforces — a link wins (the server lets a link post carry images
+  and refuses to let an image post have a link, so the order is the only one
+  that does not produce a rejected request), then images, then text. A link
+  without a scheme is now said while it can still be fixed rather than coming
+  back as a refusal.

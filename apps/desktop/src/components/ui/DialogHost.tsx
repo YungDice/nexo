@@ -42,7 +42,17 @@ export function DialogHost() {
             >
               <Icon name="info" size={15} className="text-accent-soft mt-0.5 shrink-0" />
               <div className="min-w-0 flex-1">
-                <p className="text-text-hi text-meta font-medium">{toast.title}</p>
+                <p className="text-text-hi text-meta font-medium">
+                  {toast.title}
+                  {toast.repeats > 1 ? (
+                    // Says the thing happened again rather than saying it
+                    // again. Somebody pressing Refresh four times gets one
+                    // notice that counts, and can still see it counted.
+                    <span className="text-text-lo ml-1.5 font-mono text-[11px] font-normal">
+                      ×{toast.repeats}
+                    </span>
+                  ) : null}
+                </p>
                 <p className="text-text-mid mt-0.5 text-[11px] leading-relaxed">{toast.body}</p>
               </div>
               <IconButton

@@ -387,7 +387,15 @@ function timedMutes(apply: (until: number) => void): MenuItem[] {
   }));
 }
 
-function ConversationRow({
+/**
+ * One row of the conversation list.
+ *
+ * Exported because Home's chat pane shows the same list when you switch
+ * conversations there, and "looks like the chat tab" is only true for as long
+ * as it *is* the chat tab's row. A second implementation would drift the first
+ * time a pin mark, a mute mark or a preview rule changed here.
+ */
+export function ConversationRow({
   conversation,
   last,
   now,

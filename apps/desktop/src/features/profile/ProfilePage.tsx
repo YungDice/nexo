@@ -28,6 +28,7 @@ import { Button, IconButton } from "../../components/ui/Button";
 import { FactRow, Field, Tabs, TextArea } from "../../components/ui/Controls";
 import { PrivacyPanel } from "./PrivacyPanel";
 import { Stories } from "../home/Stories";
+import { pickAndPostStory } from "../home/story";
 import {
   Callout,
   EmptyState,
@@ -62,6 +63,13 @@ export interface ProfileEdits {
  */
 export function ProfilePage({ now }: { now: Date }) {
   const [tab, setTab] = useState<Tab>("posts");
+  const [posting, setPosting] = useState(false);
+  // Bumped after a story is posted from the avatar, and used as the strip's
+  // `key`. The strip loads on mount and reading it is also what purges the
+  // expired ones, so remounting it is both the refresh and the sweep -- and it
+  // is the only way to reach a list that belongs to a component this one does
+  // not otherwise talk to.
+  const [storiesEpoch, setStoriesEpoch] = useState(0);
   const [editing, setEditing] = useState(false);
   const live = useProfile();
   const me = live.profile;
@@ -87,6 +95,29 @@ export function ProfilePage({ now }: { now: Date }) {
 
   const changeBanner = () => void pickFor("banner");
   const changePicture = () => void pickFor("avatar");
+
+  /**
+   * Posts a story from the plus on the picture.
+   *
+   * Success moves to the Stories tab rather than raising a toast. The story
+   * itself is the confirmation, and it is more informative than a sentence
+   * saying it worked -- you can see what went out, and take it back from
+   * there. A failure does need saying, since nothing else would show it.
+   */
+  async function addStory() {
+    setPosting(true);
+    try {
+      const result = await pickAndPostStory();
+      if (result.posted) {
+        setStoriesEpoch((n) => n + 1);
+        setTab("stories");
+      } else if (result.problem) {
+        await notify("Couldn't post that story", result.problem);
+      }
+    } finally {
+      setPosting(false);
+    }
+  }
 
   if (live.loading || !me) {
     return (
@@ -156,12 +187,13 @@ export function ProfilePage({ now }: { now: Date }) {
                 do that sat in the row underneath, far from the thing it
                 acted on and giving no hint that the picture was changeable at
                 all; the banner beside it had the better idea already. */}
+            <div className="absolute -bottom-10 left-5">
             <button
               type="button"
               aria-label="Change picture"
               disabled={live.saving}
               onClick={() => void changePicture()}
-              className="group ring-surface-2 focus-visible:ring-accent absolute -bottom-10 left-5 rounded-full ring-4 outline-none"
+              className="group ring-surface-2 focus-visible:ring-accent block rounded-full ring-4 outline-none"
             >
               {me.avatar_key ? (
                 <RemoteImage
@@ -178,6 +210,28 @@ export function ProfilePage({ now }: { now: Date }) {
                 <Icon name="camera" size={22} className="text-white" />
               </span>
             </button>
+
+            {/* Adding to your story, on the picture, because that is where
+                people look for it -- and a *sibling* of the button rather
+                than inside it, since the picture is itself the control that
+                changes it and a button inside a button is neither valid nor
+                clickable.
+
+                Small, and in the corner, so the two are not mistaken for each
+                other: the whole circle changes the picture, this one badge
+                posts a story. Both say which they are out loud, because a
+                plus over a photograph could mean either. */}
+            <button
+              type="button"
+              aria-label="Add to your story"
+              title="Add to your story — your contacts can see it for 24 hours"
+              disabled={live.saving || posting}
+              onClick={() => void addStory()}
+              className="bg-accent ring-surface-2 focus-visible:ring-accent absolute right-0 bottom-0 flex size-7 items-center justify-center rounded-full text-white ring-4 outline-none transition-transform duration-[var(--motion-fast)] ease-[var(--ease-state)] hover:scale-110 focus-visible:scale-110 disabled:opacity-60"
+            >
+              <Icon name="plus" size={15} />
+            </button>
+            </div>
           </div>
 
           <div className="flex items-start justify-end gap-2 pt-3">
@@ -297,7 +351,7 @@ export function ProfilePage({ now }: { now: Date }) {
                     have kept it. Pictures and video.
                   </p>
                 </div>
-                <Stories canPost />
+                <Stories canPost key={storiesEpoch} />
               </section>
             ) : null}
             {tab === "privacy" ? (

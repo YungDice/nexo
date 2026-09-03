@@ -509,7 +509,10 @@ pub async fn read_image_for_crop(path: String) -> Result<String, FeedErrorView> 
     }
     // Sniffed, never taken from the extension. This goes into the page.
     let mime = sniff_mime(&bytes);
-    if mime == "application/octet-stream" {
+    // Named rather than "anything the sniffer recognised". It used to be the
+    // latter, which let a video into the cropper -- and a cropper holding a
+    // video shows one frame of nothing and crops it.
+    if !mime.starts_with("image/") {
         return Err(FeedErrorView {
             kind: "not_an_image",
             message: "That file is not an image.".into(),
@@ -554,7 +557,10 @@ pub async fn upload_image_bytes(
                 ),
             ));
         }
-        if sniff_mime(&bytes) == "application/octet-stream" {
+        // A picture or a video, said in those words. "Not octet-stream" meant
+        // the same thing only for as long as those were the sole things the
+        // sniffer knew; now that it knows sound, the test has to be the claim.
+        if !is_renderable(sniff_mime(&bytes)) {
             return Err(failure("not_an_image", "That is not an image."));
         }
 
@@ -641,19 +647,51 @@ pub(crate) fn sniff_mime(bytes: &[u8]) -> &'static str {
         "image/gif"
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         "image/jpeg"
-    } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         "image/webp"
-    } else if bytes.len() > 12 && &bytes[4..8] == b"ftyp" {
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        // Same container as WebP above, different payload. The two are told
+        // apart by the four bytes at 8, which is the only place they differ.
+        "audio/wav"
+    } else if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
         // ISO base media: MP4 and everything wearing its box structure. The
-        // brand at 8..12 distinguishes them, and the WebView plays what it
-        // plays either way, so the container is as specific as this needs.
-        "video/mp4"
+        // brand at 8..12 is what says whether there are pictures in it -- the
+        // M4A family is the same boxes carrying only sound, and calling one of
+        // those a video gives the page a player with a black rectangle where
+        // the picture would be.
+        match &bytes[8..12] {
+            b"M4A " | b"M4B " | b"M4P " => "audio/mp4",
+            _ => "video/mp4",
+        }
     } else if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
-        // EBML, which in practice means WebM or Matroska.
+        // EBML, which in practice means WebM or Matroska. It carries sound on
+        // its own too, but nothing in the header says so without parsing the
+        // tracks, so it stays a video and the page gets a player either way.
         "video/webm"
+    } else if bytes.starts_with(b"fLaC") {
+        "audio/flac"
+    } else if bytes.starts_with(b"OggS") {
+        // Vorbis or Opus inside; both play, and which one is a matter for the
+        // decoder rather than for this.
+        "audio/ogg"
+    } else if bytes.starts_with(b"ID3") || is_mp3_frame(bytes) {
+        "audio/mpeg"
     } else {
         "application/octet-stream"
     }
+}
+
+/// Whether these bytes open with an MP3 frame header.
+///
+/// Only the four combinations a real encoder emits, rather than the loose
+/// "eleven set bits" test. Loose is wrong here: this function decides what the
+/// page is told a file is, and `FF Ex` matches plenty of things that are not
+/// audio at all. An MP3 with no ID3 tag and an unusual bitrate falls through to
+/// `application/octet-stream` and is offered as a file, which is a worse guess
+/// but not a wrong claim.
+fn is_mp3_frame(bytes: &[u8]) -> bool {
+    matches!(bytes.first().copied(), Some(0xFF))
+        && matches!(bytes.get(1).copied(), Some(0xFB | 0xFA | 0xF3 | 0xF2))
 }
 
 /// Whether these bytes are something the page may be handed to render.
@@ -663,6 +701,18 @@ pub(crate) fn sniff_mime(bytes: &[u8]) -> &'static str {
 /// inlined. An HTML file arriving as an "image" is the case this exists for.
 pub(crate) fn is_renderable(mime: &str) -> bool {
     mime.starts_with("image/") || mime.starts_with("video/")
+}
+
+/// Whether these bytes are something a *conversation* may hand to the page.
+///
+/// Wider than [`is_renderable`] by exactly one thing: sound. A conversation
+/// carries whatever somebody sends, and a voice message that arrives as a file
+/// row to be saved and opened elsewhere is a voice message the app failed to
+/// play. A story is a picture or a video and nothing else, and a profile
+/// picture is a picture, so both keep the narrower test -- widening one of
+/// these by widening the other is how a rule stops meaning what it says.
+pub(crate) fn is_playable(mime: &str) -> bool {
+    is_renderable(mime) || mime.starts_with("audio/")
 }
 
 /// Whether these bytes begin like an image format the app accepts.
@@ -746,5 +796,78 @@ mod tests {
     fn the_image_ceiling_matches_the_brief() {
         // §6.3: a banner is at most 4 MB.
         const { assert!(MAX_IMAGE_BYTES == 4 * 1024 * 1024) };
+    }
+
+    #[test]
+    fn sound_is_recognised_by_its_header() {
+        assert_eq!(sniff_mime(b"RIFF\0\0\0\0WAVEfmt "), "audio/wav");
+        assert_eq!(sniff_mime(b"fLaC\0\0\0\x22"), "audio/flac");
+        assert_eq!(sniff_mime(b"OggS\0\x02\0\0"), "audio/ogg");
+        assert_eq!(sniff_mime(b"ID3\x03\0\0\0"), "audio/mpeg");
+        assert_eq!(sniff_mime(&[0xFF, 0xFB, 0x90, 0x00]), "audio/mpeg");
+        assert_eq!(sniff_mime(b"\0\0\0\x20ftypM4A \0\0\0\0"), "audio/mp4");
+    }
+
+    #[test]
+    fn a_header_that_is_exactly_twelve_bytes_still_counts() {
+        // The guard says `>= 12` because the slice it protects is `8..12`.
+        // With `> 12` a file that is exactly its own header fell through to
+        // "unknown", which is a wrong answer rather than a cautious one --
+        // and `looks_like_an_image` below had it right all along.
+        assert_eq!(sniff_mime(b"RIFF\0\0\0\0WEBP"), "image/webp");
+        assert_eq!(sniff_mime(b"RIFF\0\0\0\0WAVE"), "audio/wav");
+    }
+
+    #[test]
+    fn the_two_riff_formats_are_told_apart() {
+        // WebP and WAV share a container and differ in four bytes. Getting
+        // this backwards hands the page a picture element full of sound.
+        assert_eq!(sniff_mime(b"RIFF\0\0\0\0WEBPVP8 "), "image/webp");
+        assert_eq!(sniff_mime(b"RIFF\0\0\0\0WAVEfmt "), "audio/wav");
+        // Neither: an AVI is a video this cannot play, and guessing would be
+        // worse than offering it as a file.
+        assert_eq!(
+            sniff_mime(b"RIFF\0\0\0\0AVI LIST"),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn an_m4a_is_not_called_a_video() {
+        // Same boxes as an MP4. Calling it one gives the page a player with a
+        // black rectangle where the picture would be.
+        assert_eq!(sniff_mime(b"\0\0\0\x20ftypM4A \0\0\0\0"), "audio/mp4");
+        assert_eq!(sniff_mime(b"\0\0\0\x20ftypisom\0\0\0\0"), "video/mp4");
+        assert_eq!(sniff_mime(b"\0\0\0\x20ftypmp42\0\0\0\0"), "video/mp4");
+    }
+
+    #[test]
+    fn a_story_still_refuses_sound() {
+        // The sniffer knowing about audio must not quietly widen what a story
+        // or a profile picture may be. `is_renderable` is what those ask.
+        assert!(!is_renderable("audio/wav"));
+        assert!(!is_renderable("application/octet-stream"));
+        assert!(is_renderable("image/png"));
+        assert!(is_renderable("video/mp4"));
+        // A conversation asks the wider question, and gets a different answer.
+        assert!(is_playable("audio/wav"));
+        assert!(is_playable("image/png"));
+        assert!(!is_playable("application/octet-stream"));
+    }
+
+    #[test]
+    fn a_truncated_sound_header_does_not_panic() {
+        for header in [
+            &b"RIFF\0\0\0\0WAVE"[..],
+            &b"fLaC"[..],
+            &b"OggS"[..],
+            &b"ID3"[..],
+            &b"\0\0\0\x20ftypM4A "[..],
+            &[0xFF, 0xFB][..],
+        ] {
+            for n in 0..=header.len() {
+                let _ = sniff_mime(&header[..n]);
+            }
+        }
     }
 }

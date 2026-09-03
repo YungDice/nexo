@@ -42,7 +42,9 @@ import { IconButton } from "../../components/ui/Button";
 import { Icon } from "../../components/ui/Icon";
 import { DeliveryTick } from "./ConversationList";
 import { Lightbox } from "./Lightbox";
-import { useContextMenu, type MenuItem } from "../../components/ui/ContextMenu";
+import { useContextMenu } from "../../components/ui/ContextMenu";
+import { messageMenuItems } from "./menu";
+import { isPlayable } from "../../lib/media";
 
 /** Messages from the same person inside five minutes are one run (§6.1). */
 const RUN_WINDOW_MS = 5 * 60_000;
@@ -282,6 +284,9 @@ function Bubble({
   const [picking, setPicking] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
 
+  // Widens the column below. Computed once here rather than asked twice.
+  const hasMedia = !!message.attachments?.some((a) => isPlayable(a.kind));
+
   // Read at the moment the menu is built, from the message's own send time --
   // never frozen when the conversation opened. A menu opened at 9:58 must stop
   // offering these two minutes later, not stay valid for ever.
@@ -310,68 +315,27 @@ function Bubble({
       : "Unknown sender";
   const authorSeed = mine ? (account?.handle ?? "me") : message.authorId;
 
-  // N7: what a right-click on a message can usefully do. Copy only when there
-  // is text to copy -- an image with no caption has nothing, and an entry that
-  // copies "" is worse than no entry.
-  const { onContextMenu, menu } = useContextMenu(() => {
-    const items: MenuItem[] = [];
-    if (message.body) {
-      items.push({
-        label: "Copy text",
-        icon: "file",
-        onSelect: () => void copyText(message.body),
-      });
-    }
-    // A queued message has no envelope id yet, and that is what a pin and a
-    // local delete are keyed by. Offering either would act on a number the
-    // server has not assigned.
-    // Only our own, only while the window is open, and only if the message has
-    // a name to refer to. The entries are **absent** past ten minutes rather
-    // than greyed out: an action that is gone was never offered, while a
-    // disabled one invites the question of how to get it back.
-    if (mine && message.clientId && !message.retracted && withinWindow) {
-      items.push({
-        label: "Edit",
-        icon: "file",
-        onSelect: () => setEditing(message.body),
-      });
-      items.push({
-        label: "Delete for everyone",
-        icon: "close",
-        danger: true,
-        onSelect: () => void askToRetract(),
-      });
-    }
-    // Reacting needs the name inside the ciphertext, which a message sent
-    // before names existed does not have. The entry is simply absent there
-    // rather than shown and refused.
-    if (message.clientId) {
-      items.push({
-        label: "React",
-        icon: "emoji",
-        onSelect: () => setPicking(true),
-      });
-    }
-    // A queued message has no envelope id yet -- the server assigns it, and
-    // that is what a pin and a local delete are keyed by. `state === "sending"`
-    // is how the UI already names that condition.
-    if (message.state !== "sending") {
-      const envelopeId = Number(message.id);
-      items.push({
-        // Named for what it is. "Pin" alone would imply everyone sees it.
-        label: message.pinned ? "Unpin from this device" : "Pin on this device",
-        icon: "shield",
-        onSelect: () => void onPinnedChange(envelopeId, !message.pinned),
-      });
-      items.push({
-        label: "Delete for me",
-        icon: "close",
-        danger: true,
-        onSelect: () => void onDeleteForMe(envelopeId),
-      });
-    }
-    return items;
-  });
+  const { onContextMenu, menu } = useContextMenu(() =>
+    messageMenuItems(
+      {
+        hasBody: !!message.body,
+        mine,
+        clientId: message.clientId,
+        retracted: !!message.retracted,
+        withinWindow,
+        queued: message.state === "sending",
+        pinned: !!message.pinned,
+      },
+      {
+        copy: () => void copyText(message.body),
+        edit: () => setEditing(message.body),
+        react: () => setPicking(true),
+        togglePin: () => void onPinnedChange(Number(message.id), !message.pinned),
+        deleteForMe: () => void onDeleteForMe(Number(message.id)),
+        deleteForEveryone: () => void askToRetract(),
+      },
+    ),
+  );
   const authorHandle = mine
     ? (account?.handle ?? "")
     : conversation.kind === "dm"
@@ -401,10 +365,18 @@ function Bubble({
       </span>
 
       {/* The column shrinks to its content: a two-word reply is a two-word
-          bubble, not a bubble stretched to the width of the column. */}
+          bubble, not a bubble stretched to the width of the column.
+
+          Media gets a wider ceiling than text, and that is not a nicety. The
+          measure that makes a paragraph readable is the one that makes a
+          photograph a thumbnail; 64% of a column that is itself beside a
+          context panel left pictures at a size you had to open to see. Text
+          keeps its measure, pictures get room, and a caption under a picture
+          reads fine at the wider one. */}
       <div
         className={cn(
-          "flex max-w-[min(520px,64%)] flex-col gap-1",
+          "flex flex-col gap-1",
+          hasMedia ? "max-w-[min(560px,80%)]" : "max-w-[min(520px,64%)]",
           mine ? "items-end" : "items-start",
         )}
       >
@@ -420,14 +392,15 @@ function Bubble({
           <UnsupportedBubble />
         ) : (
           <>
-            {message.attachments?.some((a) => a.kind === "image") ? (
-              <ImageGrid
-                attachments={message.attachments.filter(
-                  (a) => a.kind === "image",
-                )}
-                onOpen={onOpenMedia}
-              />
-            ) : null}
+            {message.attachments
+              ?.filter((a) => isPlayable(a.kind))
+              .map((attachment) => (
+                <AttachedMedia
+                  key={attachment.id}
+                  attachment={attachment}
+                  onOpen={onOpenMedia}
+                />
+              ))}
 
             <LinkPreviewCard message={message} />
 
@@ -623,41 +596,20 @@ function UndecryptableBubble() {
   );
 }
 
-function ImageGrid({
-  attachments,
-  onOpen,
-}: {
-  attachments: Attachment[];
-  onOpen: (envelopeId: number) => void;
-}) {
-  return (
-    <div
-      className={cn(
-        "grid gap-1 overflow-hidden rounded-panel",
-        attachments.length === 1 ? "grid-cols-1" : "grid-cols-2",
-      )}
-    >
-      {attachments.map((attachment) => (
-        <AttachedImage
-          key={attachment.id}
-          attachment={attachment}
-          onOpen={onOpen}
-        />
-      ))}
-    </div>
-  );
-}
-
 /**
- * One attached image, decrypted and drawn.
+ * One attachment the app can play or draw, decrypted.
  *
  * The envelope id is all the WebView gets; Rust downloads the ciphertext,
- * decrypts it, verifies the tag and the digest, and only then hands back bytes
- * — as a `data:` URL, because the CSP allows no remote image host. Until that
- * returns, and if it never does, the generated field stands in: a message that
- * carried a picture should still occupy the space it occupies.
+ * decrypts it, verifies the tag and the digest, sniffs the *bytes* to decide
+ * what it really is, and only then hands back a `data:` URL — the CSP allows
+ * no remote host of any kind, so inline is the only route there is.
+ *
+ * One component for four shapes rather than four components, because the part
+ * that is actually difficult is the same in all of them: fetch once, survive
+ * being unmounted mid-fetch, and show something honest while there is nothing
+ * to show. What differs is the element at the end.
  */
-function AttachedImage({
+function AttachedMedia({
   attachment,
   onOpen,
 }: {
@@ -665,54 +617,196 @@ function AttachedImage({
   onOpen: (envelopeId: number) => void;
 }) {
   const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setUrl(null);
+    setFailed(null);
     void attachmentDataUrl(Number(attachment.id))
       .then((next) => {
         if (!cancelled) setUrl(next);
       })
-      .catch(() => {
-        // Left as the field. Rule 7: the failure shows as "no picture here",
-        // never as a broken-image glyph or a dialog nobody asked for.
+      .catch((error) => {
+        // Rule 7: said, not swallowed, and not as a broken-image glyph either.
+        // A file too large to inline is the common case and has a real answer
+        // -- save it -- so the row below says so and stays usable.
+        if (!cancelled) setFailed(asConversationError(error).message);
       });
     return () => {
       cancelled = true;
     };
   }, [attachment.id]);
 
+  const viewable = attachment.kind === "image" || attachment.kind === "video";
   const { onContextMenu, menu } = useContextMenu(() => [
+    ...(viewable
+      ? [
+          {
+            label: "View",
+            icon: "eye" as const,
+            onSelect: () => onOpen(Number(attachment.id)),
+          },
+        ]
+      : []),
     {
-      label: "View",
-      icon: "eye",
-      onSelect: () => onOpen(Number(attachment.id)),
-    },
-    {
-      label: "Save picture as…",
-      icon: "download",
+      label: "Save as…",
+      icon: "download" as const,
       onSelect: () => void saveTo(attachment),
     },
   ]);
 
+  // Nothing to play and a reason why. The file row is the working answer for
+  // it: it can still be saved and opened in something that can hold it.
+  if (failed) {
+    return (
+      <div className="flex flex-col gap-1">
+        <FileRow attachment={attachment} />
+        <span className="text-text-lo px-1 text-[11px]">{failed}</span>
+      </div>
+    );
+  }
+
+  if (attachment.kind === "image") {
+    return (
+      <>
+        {menu}
+        <button
+          type="button"
+          onClick={() => onOpen(Number(attachment.id))}
+          onContextMenu={onContextMenu}
+          aria-label={`Open ${attachment.name}`}
+          title={attachment.name}
+          className="rounded-panel overflow-hidden bg-surface-3"
+        >
+          {url ? (
+            // An <img>, not a background. The element used to be a div with a
+            // background image inside a forced 4:3 box, which meant every
+            // picture that was not 4:3 -- most of them, phones being what they
+            // are -- was letterboxed into a corner of a box sized for
+            // something else. The browser knows the real ratio; letting it use
+            // it is what makes a picture arrive at the size it was sent at.
+            <img
+              src={url}
+              alt={attachment.name}
+              className="max-h-[440px] w-auto max-w-full cursor-zoom-in object-contain"
+            />
+          ) : (
+            // The generated field, while there is nothing yet. A message that
+            // carried a picture should hold the space it is going to need.
+            <span
+              className="block aspect-[4/3] w-[280px]"
+              style={{ background: fieldFor(attachment.id) }}
+            />
+          )}
+        </button>
+      </>
+    );
+  }
+
+  if (attachment.kind === "video") {
+    return (
+      <>
+        {menu}
+        <div
+          onContextMenu={onContextMenu}
+          className="rounded-panel overflow-hidden bg-surface-3"
+        >
+          {url ? (
+            // `controls` and nothing else: no autoplay, because a conversation
+            // that starts talking when you scroll past it is the thing people
+            // turn media off to avoid. `preload="metadata"` so the first frame
+            // and the duration are there without decoding the whole file.
+            <video
+              src={url}
+              controls
+              preload="metadata"
+              className="max-h-[440px] w-full max-w-full"
+              aria-label={attachment.name}
+            />
+          ) : (
+            <span
+              className="block aspect-video w-[320px]"
+              style={{ background: fieldFor(attachment.id) }}
+            />
+          )}
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       {menu}
-      <button
-        type="button"
-        onClick={() => onOpen(Number(attachment.id))}
+      <SoundRow
+        attachment={attachment}
+        url={url}
         onContextMenu={onContextMenu}
-        aria-label={`Open ${attachment.name}`}
-        title={attachment.name}
-        // Fitted rather than cropped: a picture somebody sent is not the
-        // app's to trim. The lightbox shows it full size either way.
-        className="aspect-[4/3] w-full min-w-36 cursor-zoom-in bg-contain bg-center bg-no-repeat bg-surface-3"
-        style={
-          url
-            ? { backgroundImage: `url(${url})` }
-            : { background: fieldFor(attachment.id) }
-        }
       />
     </>
+  );
+}
+
+/**
+ * Sound, in one of two dresses.
+ *
+ * A voice message is round, narrow and named for what it is, because that is
+ * what people expect one to look like and because its name -- `recording.wav`,
+ * or worse -- says nothing worth reading. A track keeps its file name above the
+ * player, because with music the name *is* the content.
+ *
+ * Both use the browser's own controls. A custom scrubber would mean owning
+ * seeking, buffering and keyboard access to save one row of chrome, and the
+ * native one is already reachable by keyboard and already speaks the platform's
+ * language for "play".
+ */
+function SoundRow({
+  attachment,
+  url,
+  onContextMenu,
+}: {
+  attachment: Attachment;
+  url: string | null;
+  onContextMenu: (event: React.MouseEvent) => void;
+}) {
+  const voice = attachment.kind === "voice";
+  return (
+    <div
+      onContextMenu={onContextMenu}
+      className={cn(
+        "bg-surface-2 ring-line flex flex-col gap-1.5 p-2.5 ring-1",
+        voice ? "rounded-bubble w-[320px]" : "rounded-panel w-[340px]",
+      )}
+    >
+      <span className="flex items-center gap-2">
+        <Icon
+          name={voice ? "mic" : "music"}
+          size={14}
+          className="text-accent-soft shrink-0"
+        />
+        <span className="text-text-hi min-w-0 flex-1 truncate text-[12px]">
+          {voice ? "Voice message" : attachment.name}
+        </span>
+        <span className="text-text-lo shrink-0 font-mono text-[11px]">
+          {fileSize(attachment.size)}
+        </span>
+      </span>
+      {url ? (
+        <audio
+          src={url}
+          controls
+          preload="metadata"
+          className="h-8 w-full"
+          aria-label={voice ? `Voice message, ${attachment.name}` : attachment.name}
+        />
+      ) : (
+        // Held at the height the player will take, so the bubble does not jump
+        // under the cursor the moment the bytes arrive.
+        <span className="text-text-lo flex h-8 items-center text-[11px]">
+          Decrypting…
+        </span>
+      )}
+    </div>
   );
 }
 

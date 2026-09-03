@@ -149,6 +149,8 @@ features/{auth,home,meet,messages,profile,settings}  The five destinations plus 
               home/Stories.tsx is the stories strip; stories have no destination of
               their own, because their audience is contacts.
 lib/          Typed wrappers around invoke(): auth, conversations, feed, profiles, blocks, meet.
+              media.ts is the exception -- no invoke, just the rule that picks
+              which player a bubble draws for an attachment.
 mock/         The data every surface reads where the network does not exist yet.
 ```
 
@@ -262,11 +264,12 @@ move.
   a deliberate act that goes through `cargo deny` and `cargo audit`.
 - **The local store's schema version is one constant.**
   `crates/store/src/lib.rs` `SCHEMA_VERSION` and the last `PRAGMA
-  user_version` in `migrate()` must agree; a test fails if they drift. A
-  migration that adds a column with a bare `ALTER TABLE` is **not idempotent**,
-  so any test that rolls `user_version` back has to drop what the later
-  versions added — otherwise the step re-runs against a column that is already
-  there.
+  user_version` in `migrate()` must agree; a test fails if they drift. Add a
+  column with the `add_column` helper, never a bare `ALTER TABLE ... ADD
+  COLUMN`: the helper checks `PRAGMA table_info` first, so a step that runs
+  twice is harmless. Rollback tests still put the shape back along with the
+  version — a test claiming to be a v9 store while carrying v11's columns is
+  testing something that never existed.
 - **`sqlx` is compile-time checked, offline by default.** `.cargo/config.toml`
   sets `SQLX_OFFLINE = "true"` for every cargo invocation, so `query!` macros
   check themselves against the committed `.sqlx/` cache and the Windows CI job
@@ -290,6 +293,24 @@ move.
 - **`pnpm server` does not work** — `server` is one of pnpm's own commands. The
   script is `dev:server`.
 - **Port 1420 is fixed on purpose** so Tauri and Vite cannot disagree about it.
+- **A post's kind is derived, never chosen.** `features/home/compose.ts` reads
+  it off the draft, and its order (link, then images, then text) is not a
+  preference: `posts.rs` refuses a link on an image or text post, so any other
+  order builds requests the server rejects. Change one and the other has to
+  move with it.
+- **Two different questions decide what an attachment is**, and only one of
+  them is about safety. `lib/media.ts` reads the sender's declared MIME to pick
+  a *layout* — that value is guessed from a file extension and is not evidence.
+  What the page may actually be handed is decided in Rust from the bytes:
+  `feed::sniff_mime`, then `is_renderable` (a picture or a video — what a story
+  or a profile picture may be) or `is_playable` (also sound — what a
+  conversation may be). Never widen the first to fix the second, and never test
+  for `"application/octet-stream"` instead of asking one of those two: that
+  spelling silently accepts whatever the sniffer learns next.
+- **A menu's destructive entries sit last**, and `MenuItem` says so. The
+  message menu is where that is easy to break, because its entries come and go
+  with the message's state — it is built by `features/messages/menu.ts`, a pure
+  function whose order is asserted in `menu.test.ts` rather than read.
 - **Design values live in tokens**, not in components. A hex code in a `.tsx` is
   a bug. Tokens are authored in `packages/design-tokens/tokens.css`;
   `tokens.json` is generated from it and a test fails when the two drift.

@@ -3,14 +3,13 @@ import { useCallback, useEffect, useState } from "react";
 import { Avatar } from "../../components/ui/Avatar";
 import { Callout } from "../../components/ui/Feedback";
 import { Modal } from "../../components/ui/Modal";
-import { pickFile } from "../../lib/native";
 import {
   asMeetError,
   listStories,
   openStory,
-  postStory,
   type Story,
 } from "../../lib/meet";
+import { pickAndPostStory } from "./story";
 
 /**
  * The stories strip: other people's stories, on Home.
@@ -59,16 +58,11 @@ export function Stories({ canPost = false }: { canPost?: boolean }) {
   }, [load]);
 
   async function add() {
-    // `media`, not `images`: a story can be a video, and the sniffer has
-    // understood MP4 and WebM all along — only the dialog was refusing them.
-    const picked = await pickFile({ title: "Post a story", media: true });
-    if (!picked) return;
     setBusy(true);
     try {
-      await postStory(picked.path);
-      await load();
-    } catch (error) {
-      setProblem(asMeetError(error).message);
+      const result = await pickAndPostStory();
+      if (result.posted) await load();
+      else if (result.problem) setProblem(result.problem);
     } finally {
       setBusy(false);
     }

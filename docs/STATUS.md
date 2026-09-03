@@ -410,3 +410,13 @@ decision rather than configuration.
   somewhere else. It covers the chat and nothing else: the feed keeps its width
   and its scroll position, which is the difference between switching a
   conversation and navigating away from what you were reading.
+- **A story starts from the plus on your profile picture.** It was reachable
+  only from the dashed circle at the head of the Home strip. The badge is a
+  sibling of the avatar button rather than something inside it — the picture is
+  itself the control that changes the picture, and a button inside a button is
+  neither valid nor clickable. Small and in the corner so the two are not
+  confused: the circle changes the picture, the badge posts a story, and both
+  say which they are out loud, because a plus over a photograph could mean
+  either. Posting moves to the Stories tab rather than raising a toast; the
+  story is a better confirmation than a sentence saying it worked, and it is
+  where taking it back happens.

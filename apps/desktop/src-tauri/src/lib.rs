@@ -14,6 +14,7 @@ mod feed;
 mod media;
 mod meet;
 mod preview;
+mod stream;
 mod windows;
 
 /// Start the app.
@@ -37,6 +38,7 @@ pub fn run() {
         .manage(auth::SessionState::default())
         .manage(windows::WindowPrefs::default())
         .manage(client::ClientState::default())
+        .manage(stream::StreamState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
@@ -115,6 +117,16 @@ pub fn run() {
             conversations::open_view_once,
             conversations::attachment_stream_info,
             conversations::send_sticker,
+            stream::drain_stream,
+            stream::typing,
+            conversations::draft,
+            conversations::set_draft,
+            conversations::conversations_with_drafts,
+            conversations::list_folders,
+            conversations::create_folder,
+            conversations::rename_folder,
+            conversations::delete_folder,
+            conversations::set_folder_member,
             conversations::save_attachment,
             conversations::flush_outbox,
             conversations::outbox_count,
@@ -142,6 +154,8 @@ pub fn run() {
             meet::story_open,
             feed::feed,
             feed::posts_by,
+            feed::set_following,
+            feed::follow_state,
             feed::create_post,
             feed::delete_post,
             feed::react,

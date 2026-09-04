@@ -185,8 +185,30 @@ export function asFeedError(error: unknown): FeedError {
 export function feed(
   before?: number,
   sort: FeedSort = "new",
+  following = false,
 ): Promise<FeedPage> {
-  return invoke<FeedPage>("feed", { before: before ?? null, sort });
+  return invoke<FeedPage>("feed", { before: before ?? null, sort, following });
+}
+
+/** Whether an account is followed, and how many follow it. */
+export interface FollowState {
+  following: boolean;
+  followers: number;
+}
+
+/**
+ * Follows an account, or stops.
+ *
+ * Rejects identically for a handle that does not exist, one that blocked you,
+ * and a private one — the server will not say which, and the UI must not guess
+ * on its behalf.
+ */
+export function setFollowing(handle: string, follow: boolean): Promise<void> {
+  return invoke<void>("set_following", { handle, follow });
+}
+
+export function followState(handle: string): Promise<FollowState> {
+  return invoke<FollowState>("follow_state", { handle });
 }
 
 export function postsBy(handle: string, before?: number): Promise<FeedPage> {

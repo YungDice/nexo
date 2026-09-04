@@ -42,6 +42,9 @@ export interface LiveFeed {
   /** How the feed is ordered. Changing it starts the pages over. */
   sort: FeedSort;
   setSort: (sort: FeedSort) => void;
+  /** Whether the feed is narrowed to accounts this person follows. */
+  following: boolean;
+  setFollowing: (following: boolean) => void;
   /** Casts, changes or withdraws a vote. Applied optimistically. */
   castVote: (id: number, value: number) => Promise<void>;
 }
@@ -58,6 +61,10 @@ export interface NewPostInput {
 export function useFeed(): LiveFeed {
   const [posts, setPosts] = useState<Post[]>([]);
   const [sort, setSortState] = useState<FeedSort>("new");
+  // Which feed. Not persisted: which slice of the world somebody was reading
+  // is session state, and opening the app into a filtered view they set days
+  // ago is how a feed comes to look empty for no visible reason.
+  const [following, setFollowingState] = useState(false);
   const [cursor, setCursor] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -73,7 +80,7 @@ export function useFeed(): LiveFeed {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      const page = await feedCall(undefined, sort);
+      const page = await feedCall(undefined, sort, following);
       setPosts(page.posts);
       setCursor(page.next_cursor);
       setHasMore(page.next_cursor !== null);
@@ -84,14 +91,14 @@ export function useFeed(): LiveFeed {
       inFlight.current = false;
       setLoading(false);
     }
-  }, [sort]);
+  }, [sort, following]);
 
   const loadMore = useCallback(async () => {
     if (inFlight.current || cursor === null) return;
     inFlight.current = true;
     setLoadingMore(true);
     try {
-      const page = await feedCall(cursor, sort);
+      const page = await feedCall(cursor, sort, following);
       // Deduplicated on merge: a post deleted between two pages shifts the
       // window, and without this the same post can arrive twice and React
       // warns about duplicate keys.
@@ -108,7 +115,7 @@ export function useFeed(): LiveFeed {
       inFlight.current = false;
       setLoadingMore(false);
     }
-  }, [cursor, sort]);
+  }, [cursor, sort, following]);
 
   useEffect(() => {
     void refresh();
@@ -146,6 +153,19 @@ export function useFeed(): LiveFeed {
     // an id under `new`, an offset under the others. Clearing the pages is
     // what makes the change a fresh first page rather than a mixed list.
     setSortState((current) => {
+      if (current === next) return current;
+      setPosts([]);
+      setCursor(null);
+      setHasMore(true);
+      setLoading(true);
+      return next;
+    });
+  }, []);
+
+  const setFollowing = useCallback((next: boolean) => {
+    // Same reasoning as `setSort`: the cursor belongs to the old list, and
+    // paging on with it would mix two feeds together.
+    setFollowingState((current) => {
       if (current === next) return current;
       setPosts([]);
       setCursor(null);
@@ -220,6 +240,8 @@ export function useFeed(): LiveFeed {
       toggleReaction,
       sort,
       setSort,
+      following,
+      setFollowing,
       castVote,
     }),
     [
@@ -235,6 +257,8 @@ export function useFeed(): LiveFeed {
       toggleReaction,
       sort,
       setSort,
+      following,
+      setFollowing,
       castVote,
     ],
   );

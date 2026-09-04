@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Recording } from "./useRecorder";
 import { pickFile } from "../../lib/native";
 import { useApp } from "../../app/store";
+import { useTyping } from "../../app/useTyping";
 import { useConversations } from "../../app/useConversations";
 import { useLayout } from "../../app/useLayout";
 import { searchable, useUserSearch } from "../../app/useUserSearch";
@@ -119,6 +120,7 @@ export function MessagesPage({ now }: { now: Date }) {
           onSendVoice={live.sendVoice}
           onSendReply={live.sendReply}
           onSendOnce={live.sendOnce}
+          onSendSticker={live.sendSticker}
           onCompare={openContextPanel}
           onChanged={() => void live.refresh()}
           onDismissKeyChange={async () => {
@@ -398,6 +400,7 @@ function ChatPane({
   onSendVoice,
   onSendReply,
   onSendOnce,
+  onSendSticker,
   onCompare,
   onDismissKeyChange,
   onChanged,
@@ -411,6 +414,7 @@ function ChatPane({
   onSendVoice: (recording: Recording) => Promise<void>;
   onSendReply: (body: string, target: string) => Promise<void>;
   onSendOnce: (path: string) => Promise<void>;
+  onSendSticker: (pack: string, stickerId: string) => Promise<void>;
   /// Opens the details panel, where the safety number is.
   onCompare: () => void;
   /// Clears the warning without claiming anything was verified.
@@ -422,6 +426,7 @@ function ChatPane({
   // thread must not survive into another, where its target does not exist.
   const [replyingTo, setReplyingTo] = useState<Message | undefined>(undefined);
   const conversationId = conversation.id;
+  const typing = useTyping(conversationId);
   useEffect(() => setReplyingTo(undefined), [conversationId]);
 
   // The picker restricts to what a view-once can be; Rust sniffs the bytes and
@@ -485,7 +490,8 @@ function ChatPane({
                 else void onSend(body);
               }}
               onSendVoice={(recording) => void onSendVoice(recording)}
-              conversationTitle={conversation.title}
+              conversationId={conversation.id}
+            conversationTitle={conversation.title}
             />
           </div>
         </div>
@@ -498,6 +504,21 @@ function ChatPane({
             onChanged={onChanged}
             onReply={setReplyingTo}
           />
+          {typing ? (
+            // Above the composer, where the next message will appear -- the
+            // place somebody is already looking. In the header it would be a
+            // status about the conversation rather than a thing happening in it.
+            <div className="text-text-lo flex items-center gap-1.5 px-3 pb-1 text-meta">
+              <span className="flex gap-0.5" aria-hidden>
+                <span className="bg-text-lo size-1 rounded-full motion-safe:animate-pulse" />
+                <span className="bg-text-lo size-1 rounded-full motion-safe:animate-pulse [animation-delay:150ms]" />
+                <span className="bg-text-lo size-1 rounded-full motion-safe:animate-pulse [animation-delay:300ms]" />
+              </span>
+              {conversation.kind === "dm"
+                ? `${conversation.title} is typing…`
+                : "Someone is typing…"}
+            </div>
+          ) : null}
           <Composer
             onSend={(body, attachment) => {
               if (attachment) void onSendFile(attachment.path, body);
@@ -520,11 +541,12 @@ function ChatPane({
             }
             onCancelReply={() => setReplyingTo(undefined)}
             onSendSticker={(pack, stickerId) =>
-              void onSendStickerMessage(pack, stickerId)
+              void onSendSticker(pack, stickerId)
             }
             {...(conversation.kind === "dm"
               ? { onSendViewOnce: () => void pickAndSendOnce() }
               : {})}
+            conversationId={conversation.id}
             conversationTitle={conversation.title}
           />
         </>

@@ -722,3 +722,169 @@ decision rather than configuration.
   never depends on the store honouring `Range`; `http.rs` overrides it with a
   real ranged request, and handles a 200 answer by slicing — a store that
   ignores the header is slow rather than wrong.
+
+### Stickers (wave 6)
+
+- **Twelve stickers, drawn in the repo as inline SVG**, in the same idiom as the
+  icon set and for the same reason: rule 3 wants everything bundled, and inline
+  SVG is the strongest form of that — there is no request to make, so no third
+  party learns which sticker you sent or that you were browsing them at two in
+  the morning.
+
+  **A sticker sends a name, not a picture.** `Payload::Sticker { pack, id }` is
+  a few bytes inside the ciphertext; sending art would mean an upload, an object
+  in the bucket, a key and a download. That is the only reason sending one feels
+  free, and it means the server learns nothing from a sticker it does not learn
+  from any other message — no object appears in storage at all.
+
+  The cost of naming rather than sending is that an old build cannot draw a
+  sticker added after it shipped. It says so, in the shape `UnsupportedBubble`
+  already uses, rather than drawing nothing.
+
+  **Nothing in a pack can execute**: these are components compiled into the app,
+  not data interpreted at runtime, so there is no format for a hostile pack to
+  abuse. Colour is deliberate — `README.md` says the interface stays neutral
+  while content keeps its colour, and a sticker is content somebody chose.
+
+  Six of them animate in CSS, and every one holds a readable pose under
+  `prefers-reduced-motion`: a joke that only works while it moves is not a
+  picture, and somebody who turned movement off is owed a picture.
+
+  The picker mirrors `EmojiPicker` — same shell, same search, same recents —
+  because they are the same interaction, and closes after one pick where the
+  emoji picker stays open: an emoji joins a sentence, a sticker *is* the message.
+
+### GIF search — not built, and why
+
+Asked for alongside stickers, and it is the one thing in this round that the
+invariants refuse rather than merely complicate.
+
+- The CSP names **no remote host** in `img-src` or `connect-src`. That is rule
+  3's enforcement point, not an oversight.
+- `THREAT-MODEL.md` §2.3 already decided this class of question for link
+  previews, and its list of what the client will not do ends with **"and no
+  image fetch."**
+- A GIF search is strictly worse than a link preview. A preview reacts to a link
+  somebody else sent; a search sends **what you type**, keystroke by keystroke,
+  plus your IP, to Tenor or Giphy. It would also need a provider API key shipped
+  in the binary, where it is extractable by anyone who wants it.
+
+A design that would fit the repo does exist, and it is the shape §2.3 already
+chose: fetch in **Rust** rather than in the page (so the CSP does not move, and
+results reach the WebView as `data:` URLs), off by default, with the setting
+saying plainly what it leaks — and the API key supplied by the operator, listed
+in `TUTORIAL.md` beside the other values you have to provide.
+
+That is a threat-model decision and a new credential, so it is the owners' to
+make rather than something to slip in under a feature request. Until then the
+expressive need is met by the bundled pack, which is the half of engine 6 that
+actually carries the network effect.
+
+### Folders (wave 7, first part)
+
+- **Folders are local and never leave the device.** How somebody files their own
+  conversations is a reading of who matters to them; the server has no use for
+  it and no business holding it. That also makes this the cheapest feature in
+  the app to be sure about — it changes the threat model not at all.
+
+  Membership is a table rather than a column (schema 18), so a conversation can
+  sit in more than one folder, and filing something twice is a no-op instead of
+  a duplicate row.
+
+  **Deleting a folder never touches what is in it.** Filing is not owning, and
+  there is a test that says so rather than a comment.
+
+  The rail is absent until there is a folder: a row of chips reading "All" and
+  nothing else is a control that does nothing. Folders are therefore made from
+  the conversation you want to file, which also means naming one and filing that
+  conversation happen in a single step rather than two.
+
+  A folder narrows what search covers rather than the other way round — somebody
+  looking at "Work" who types into the box expects to search Work.
+
+### Archive and drafts (wave 7, rest)
+
+- **Archive** is a flag beside pinned and muted, in the same local store, and it
+  means the third thing those two do not: muting is about interruption,
+  removing is about the history, and archiving is about the list you look at all
+  day. An archived conversation still notifies and still exists. A message
+  arriving does **not** unarchive it — that would make the feature useless for
+  the one case it exists for, a chat that keeps talking and that you have
+  finished with. The chip appears only when something is behind it, and leaving
+  the archive when it empties is automatic: standing in an empty room with no
+  door is worse than being returned to the list.
+
+- **Drafts live in the encrypted store, not in the page.** The app store's own
+  header says nothing persisted in the WebView is a secret, and a half-written
+  message plainly is one — it is the same words the message would have carried,
+  so it gets the same protection the sent ones get. Schema 19, one row per
+  conversation, replaced in place: there is no history of drafts and there
+  should not be, since keeping the versions somebody typed and deleted would be
+  keeping the sentences they thought better of. Clearing one deletes the row
+  rather than storing a blank, so an abandoned draft leaves nothing behind.
+  Saved on a 400 ms delay, because this is a write to an encrypted database and
+  one per keystroke would be one per keystroke.
+
+### The follow graph (wave 8)
+
+- **The feed can be narrowed to people you follow.** A `follows` table, two
+  routes, and a bound parameter on the three feed queries — not three more
+  copies of them, because `query_as!` can only check a statement that exists in
+  the source, and a filter kept in step in six places will eventually be applied
+  in five.
+
+  **Following changes what you are shown, never what you may see.** Every post
+  the Following view can return is one the Everyone view would have returned to
+  the same caller: both run the same block list. There is a test for exactly
+  that, because a Following feed is easy to write in a way that reaches past a
+  block and nothing in the UI would ever reveal it.
+
+  Three relations now exist and are kept apart on purpose: a **block** is mutual
+  by effect, a **contact** means sharing a conversation and gates stories, and a
+  **follow** is one-sided and grants nothing. Blocked, private and non-existent
+  all answer `404` — a `403` would confirm an account is there, which is what
+  being absent from search exists to prevent. Unfollowing deliberately skips
+  that check: somebody blocked after following must still be able to remove
+  their own edge, or the row would be stranded.
+
+  **This is a new disclosure**, and `THREAT-MODEL.md` §2.14 says so rather than
+  filing it under §2.2. Conversation metadata accumulates as a by-product of
+  routing; a follow is a deliberate, dated statement of interest in somebody you
+  may never have messaged. A follower *count* is public because the posts
+  already are; a follower *list* is offered by no route.
+
+### The live socket (wave 4, unblocked)
+
+- **`/v1/stream` has a client now.** It had none: the server has relayed typing
+  since M4 and nothing ever connected, which is why the earlier estimate of
+  "an afternoon" for typing indicators was wrong by an order of magnitude.
+
+  `tungstenite`, not `tokio-tungstenite`: Argon2id and SQLCipher block
+  regardless, so a runtime would buy a function colour and no concurrency. One
+  thread owns the socket, behind the same `http` feature as the ureq transport
+  so a shell bringing its own network stack is not handed one.
+
+  **It adds promptness, never correctness.** The server's own module says the
+  socket is not the source of truth, and this keeps to it: the 4-second poll
+  continues underneath, `sync` repairs anything missed, and a socket that never
+  connects leaves the app behaving exactly as it did before. That is why nothing
+  in it reports failure to the user, and why the backoff is polite rather than
+  aggressive.
+
+  The connection follows the session rather than being started by login:
+  `drain_stream` connects when there is a session and disconnects when there is
+  not, so signing in, locking and signing out all take care of themselves and
+  `auth.rs` never learns that sockets exist. Locking closing it matters — a
+  socket still delivering into a locked app is a session that did not end.
+
+  Authenticated with an `Authorization` header. A browser would have to put the
+  token in the URL, where every proxy logs it; a Rust client does not have to
+  make that trade.
+
+- **Typing indicators, finally.** Throttled rather than debounced — debouncing
+  would send nothing until somebody *stopped*, which is the opposite of the
+  point. There is no stop event: each notice lasts a few seconds and lapses, so
+  silence is what stopped means, and a sender who closes the window mid-word
+  cannot leave "typing…" on screen for ever. The `presence` preference now
+  governs both sending and showing, rather than being read by a control that
+  did nothing.

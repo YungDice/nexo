@@ -28,8 +28,8 @@ use serde::Deserialize;
 use ureq::Agent;
 
 use crate::feed::{
-    Comment, FeedApi, FeedPage, MyProfile, NewPost, Post, Profile, ProfileEdit, ReactionCount,
-    VoteResult,
+    Comment, FeedApi, FeedPage, FollowState, MyProfile, NewPost, Post, Profile, ProfileEdit,
+    ReactionCount, VoteResult,
 };
 use crate::transport::{
     Accepted, ClaimedKeyPackage, ConversationSummary, Envelope, InviteSummary, MintedInvite,
@@ -973,6 +973,7 @@ impl FeedApi for HttpTransport {
         before: Option<i64>,
         limit: Option<i64>,
         sort: Option<&str>,
+        following: bool,
     ) -> Result<FeedPage, TransportError> {
         let mut path = paged("/v1/feed", before, limit);
         if let Some(sort) = sort {
@@ -980,7 +981,33 @@ impl FeedApi for HttpTransport {
             path.push_str("sort=");
             path.push_str(sort);
         }
+        // Only sent when it is on: the parameter's absence is what the server
+        // reads as "everybody", and sending `following=false` everywhere would
+        // put a flag in every request that means what leaving it out means.
+        if following {
+            path.push(if path.contains('?') { '&' } else { '?' });
+            path.push_str("following=true");
+        }
         self.get_auth(&path)
+    }
+
+    fn set_following(&self, handle: &str, follow: bool) -> Result<(), TransportError> {
+        // Escaped, not interpolated -- the same reason `posts_by` gives: a
+        // handle is `[a-z0-9_]` today and this must not silently become an
+        // injection point if that ever widens.
+        let path = format!("/v1/users/{}/follow", escape(handle));
+        if follow {
+            // The route takes no body; `send_json(&())` is how this client
+            // sends an empty one everywhere else.
+            self.post_auth::<(), serde_json::Value>(&path, &())
+                .map(|_| ())
+        } else {
+            self.delete_auth(&path)
+        }
+    }
+
+    fn follow_state(&self, handle: &str) -> Result<FollowState, TransportError> {
+        self.get_auth(&format!("/v1/users/{}/follow-state", escape(handle)))
     }
 
     fn posts_by(

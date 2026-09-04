@@ -314,6 +314,68 @@ export function sendSticker(
   return invoke<Message>("send_sticker", { conversationId, pack, stickerId });
 }
 
+/**
+ * A folder, and what somebody filed in it.
+ *
+ * Local to this device, always. Folders are never sent anywhere: how somebody
+ * organises their own conversations is a reading of who matters to them, and
+ * the server has no use for it and no business holding it.
+ */
+export interface Folder {
+  id: number;
+  name: string;
+  conversations: string[];
+}
+
+/**
+ * What was typed into a conversation and not sent.
+ *
+ * Kept in the encrypted store rather than in the page: a half-written message
+ * is the same words the message would have carried, so it gets the same
+ * protection the sent ones get.
+ */
+export function draft(conversationId: string): Promise<string | null> {
+  return invoke<string | null>("draft", { conversationId });
+}
+
+/** Saves an unsent message. An empty body clears it. */
+export function setDraft(conversationId: string, body: string): Promise<void> {
+  return invoke<void>("set_draft", { conversationId, body });
+}
+
+export function conversationsWithDrafts(): Promise<string[]> {
+  return invoke<string[]>("conversations_with_drafts");
+}
+
+export function listFolders(): Promise<Folder[]> {
+  return invoke<Folder[]>("list_folders");
+}
+
+export function createFolder(name: string): Promise<number> {
+  return invoke<number>("create_folder", { name });
+}
+
+export function renameFolder(folderId: number, name: string): Promise<void> {
+  return invoke<void>("rename_folder", { folderId, name });
+}
+
+/** Removes the folder. Everything filed in it stays exactly where it was. */
+export function deleteFolder(folderId: number): Promise<void> {
+  return invoke<void>("delete_folder", { folderId });
+}
+
+export function setFolderMember(
+  folderId: number,
+  conversationId: string,
+  member: boolean,
+): Promise<void> {
+  return invoke<void>("set_folder_member", {
+    folderId,
+    conversationId,
+    member,
+  });
+}
+
 export function syncConversation(conversationId: string): Promise<SyncResult> {
   return invoke<SyncResult>("sync_conversation", { conversationId });
 }

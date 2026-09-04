@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT p.id, p.author_id, p.body, p.media_keys, p.title, p.kind, p.link_url,\n                    (EXTRACT(EPOCH FROM p.created_at) * 1000)::BIGINT AS \"created_at_ms!\",\n                    u.handle::TEXT AS \"handle!\", u.display_name, u.avatar_key,\n                    COALESCE(v.score, 0) AS \"score!\",\n                    COALESCE(mv.value, 0::SMALLINT) AS \"my_vote!\",\n                    COALESCE(c.total, 0) AS \"comment_count!\"\n             FROM posts p\n             JOIN users u ON u.id = p.author_id\n             LEFT JOIN (SELECT post_id, SUM(value)::BIGINT AS score\n                        FROM post_votes GROUP BY post_id) v ON v.post_id = p.id\n             LEFT JOIN post_votes mv ON mv.post_id = p.id AND mv.user_id = $3\n             LEFT JOIN (SELECT post_id, COUNT(*)::BIGINT AS total\n                        FROM post_comments WHERE deleted_at IS NULL\n                        GROUP BY post_id) c ON c.post_id = p.id\n             WHERE p.deleted_at IS NULL AND p.id < $1\n               AND NOT (p.author_id = ANY($4))\n             ORDER BY p.id DESC\n             LIMIT $2",
+  "query": "SELECT p.id, p.author_id, p.body, p.media_keys, p.title, p.kind, p.link_url,\n                    (EXTRACT(EPOCH FROM p.created_at) * 1000)::BIGINT AS \"created_at_ms!\",\n                    u.handle::TEXT AS \"handle!\", u.display_name, u.avatar_key,\n                    COALESCE(v.score, 0) AS \"score!\",\n                    COALESCE(mv.value, 0::SMALLINT) AS \"my_vote!\",\n                    COALESCE(c.total, 0) AS \"comment_count!\"\n             FROM posts p\n             JOIN users u ON u.id = p.author_id\n             LEFT JOIN (SELECT post_id, SUM(value)::BIGINT AS score\n                        FROM post_votes GROUP BY post_id) v ON v.post_id = p.id\n             LEFT JOIN post_votes mv ON mv.post_id = p.id AND mv.user_id = $3\n             LEFT JOIN (SELECT post_id, COUNT(*)::BIGINT AS total\n                        FROM post_comments WHERE deleted_at IS NULL\n                        GROUP BY post_id) c ON c.post_id = p.id\n             WHERE p.deleted_at IS NULL AND p.id < $1\n               AND NOT (p.author_id = ANY($4))\n               AND (NOT $5 OR EXISTS (SELECT 1 FROM follows f\n                                       WHERE f.follower_id = $3\n                                         AND f.followed_id = p.author_id))\n             ORDER BY p.id DESC\n             LIMIT $2",
   "describe": {
     "columns": [
       {
@@ -79,7 +79,8 @@
         "Int8",
         "Int8",
         "Int8",
-        "Int8Array"
+        "Int8Array",
+        "Bool"
       ]
     },
     "nullable": [
@@ -99,5 +100,5 @@
       null
     ]
   },
-  "hash": "c45cb2a3cd8a02444d4b2e6ac3897962e641d2868648952187a2caa1a4ac3749"
+  "hash": "c3df286c56192a7bc2c37fc78fefeb7a8ca55b6832e6a6de4b609283e0e4615c"
 }

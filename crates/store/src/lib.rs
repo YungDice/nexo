@@ -35,7 +35,7 @@ pub type StoredIdentity = (Zeroizing<Vec<u8>>, Vec<u8>);
 /// The schema version this build writes and expects.
 ///
 /// One constant, so a migration and the test that checks it cannot disagree.
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 19;
 
 /// The file name the store always uses, under the app data directory.
 pub const STORE_FILE_NAME: &str = "store.db";
@@ -699,6 +699,74 @@ impl EncryptedStore {
                  COMMIT;",
             )?;
         }
+
+        if version < 18 {
+            // Folders, and which conversations are in them.
+            //
+            // **Local, and only local.** Nothing about this reaches the server:
+            // how somebody files their own conversations is not routing
+            // metadata, and sending it would hand over a reading of who matters
+            // to them that the server has no use for and no business holding.
+            // That also makes this the cheapest feature in the app to be sure
+            // about -- it changes the threat model not at all.
+            //
+            // A membership row rather than a column on `conversations`, because
+            // a conversation can sit in more than one folder. The primary key
+            // is the pair, so filing something twice is a no-op instead of a
+            // duplicate.
+            //
+            // `ON DELETE CASCADE` is spelled out even though nothing deletes a
+            // folder yet: without it, removing one would leave rows pointing at
+            // an id that is gone, and the list would quietly filter to nothing.
+            self.connection.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS folders (
+                     id         INTEGER PRIMARY KEY,
+                     name       TEXT    NOT NULL,
+                     position   INTEGER NOT NULL DEFAULT 0,
+                     created_at_ms INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS folder_members (
+                     folder_id       INTEGER NOT NULL
+                         REFERENCES folders (id) ON DELETE CASCADE,
+                     conversation_id TEXT    NOT NULL,
+                     PRIMARY KEY (folder_id, conversation_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS folder_members_conversation_idx
+                     ON folder_members (conversation_id);
+                 PRAGMA user_version = 18;
+                 COMMIT;",
+            )?;
+        }
+
+        if version < 19 {
+            // Unsent messages.
+            //
+            // **Here rather than in the WebView**, and that is the whole design
+            // decision. The app store's own header says nothing persisted in
+            // the page is a secret; a half-written message plainly is one. It
+            // is the same words the message would have carried had it been
+            // sent, so it gets the same protection the sent ones get -- which
+            // means SQLCipher, not `localStorage`.
+            //
+            // One row per conversation, replaced in place. There is no history
+            // of drafts and there should not be: a draft is what you would
+            // send now, and keeping the versions of it somebody typed and
+            // deleted would be keeping the sentences they thought better of.
+            //
+            // Deleted when emptied rather than stored blank, so an abandoned
+            // draft leaves nothing behind at all.
+            self.connection.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS drafts (
+                     conversation_id TEXT PRIMARY KEY,
+                     body            TEXT NOT NULL,
+                     updated_at_ms   INTEGER NOT NULL
+                 );
+                 PRAGMA user_version = 19;
+                 COMMIT;",
+            )?;
+        }
         Ok(())
     }
 
@@ -1172,6 +1240,150 @@ impl EncryptedStore {
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The unsent message for a conversation, if there is one.
+    pub fn draft(&self, conversation_id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT body FROM drafts WHERE conversation_id = ?1",
+                [conversation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// Every conversation that has one, so the list can mark them in one read.
+    pub fn conversations_with_drafts(&self) -> Result<Vec<String>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT conversation_id FROM drafts")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Saves what somebody has typed but not sent.
+    ///
+    /// An empty body deletes the row rather than storing a blank one: a draft
+    /// somebody cleared is a draft that should leave nothing behind, and a
+    /// conversation with an empty draft would still be marked as having one.
+    pub fn set_draft(
+        &self,
+        conversation_id: &str,
+        body: &str,
+        now_ms: i64,
+    ) -> Result<(), StoreError> {
+        if body.trim().is_empty() {
+            self.connection.execute(
+                "DELETE FROM drafts WHERE conversation_id = ?1",
+                [conversation_id],
+            )?;
+            return Ok(());
+        }
+        self.connection.execute(
+            "INSERT INTO drafts (conversation_id, body, updated_at_ms)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (conversation_id) DO UPDATE
+                 SET body = excluded.body, updated_at_ms = excluded.updated_at_ms",
+            rusqlite::params![conversation_id, body, now_ms],
+        )?;
+        Ok(())
+    }
+
+    /// A folder somebody made, and what is in it.
+    ///
+    /// Local by construction — see the schema-18 migration.
+    pub fn create_folder(&self, name: &str, now_ms: i64) -> Result<i64, StoreError> {
+        // Appended rather than inserted: a new folder goes at the end of the
+        // rail, where somebody expects to find the thing they just made.
+        let position: i64 = self
+            .connection
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM folders",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        self.connection.execute(
+            "INSERT INTO folders (name, position, created_at_ms) VALUES (?1, ?2, ?3)",
+            rusqlite::params![name, position, now_ms],
+        )?;
+        Ok(self.connection.last_insert_rowid())
+    }
+
+    /// Renames a folder. A name is the whole of what a folder is to a person.
+    pub fn rename_folder(&self, id: i64, name: &str) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE folders SET name = ?2 WHERE id = ?1",
+            rusqlite::params![id, name],
+        )?;
+        Ok(())
+    }
+
+    /// Removes a folder. Its memberships go with it, never its conversations.
+    pub fn delete_folder(&self, id: i64) -> Result<(), StoreError> {
+        // Deleted explicitly rather than left to the cascade: SQLite enforces
+        // `ON DELETE CASCADE` only with `PRAGMA foreign_keys` on, and whether
+        // that is set is not this statement's business to depend on.
+        self.connection
+            .execute("DELETE FROM folder_members WHERE folder_id = ?1", [id])?;
+        self.connection
+            .execute("DELETE FROM folders WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Puts a conversation in a folder, or takes it out.
+    ///
+    /// Filing something already filed is a no-op rather than an error: the
+    /// caller wanted it in the folder, and it is.
+    pub fn set_folder_member(
+        &self,
+        folder_id: i64,
+        conversation_id: &str,
+        member: bool,
+    ) -> Result<(), StoreError> {
+        if member {
+            self.connection.execute(
+                "INSERT INTO folder_members (folder_id, conversation_id)
+                 VALUES (?1, ?2)
+                 ON CONFLICT (folder_id, conversation_id) DO NOTHING",
+                rusqlite::params![folder_id, conversation_id],
+            )?;
+        } else {
+            self.connection.execute(
+                "DELETE FROM folder_members WHERE folder_id = ?1 AND conversation_id = ?2",
+                rusqlite::params![folder_id, conversation_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Every folder, in rail order, with what each one holds.
+    pub fn folders(&self) -> Result<Vec<StoredFolder>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, name FROM folders ORDER BY position, id")?;
+        let rows: Vec<(i64, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut folders = Vec::with_capacity(rows.len());
+        for (id, name) in rows {
+            let mut members = self
+                .connection
+                .prepare("SELECT conversation_id FROM folder_members WHERE folder_id = ?1")?;
+            let conversations = members
+                .query_map([id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            folders.push(StoredFolder {
+                id,
+                name,
+                conversations,
+            });
+        }
+        Ok(folders)
     }
 
     /// Remembers a view-once message and the key that opens it.
@@ -1945,6 +2157,17 @@ pub struct SearchHit {
     pub sent_at_ms: i64,
     /// Whether this device sent it.
     pub outgoing: bool,
+}
+
+/// A folder somebody made, and the conversations they filed in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredFolder {
+    /// The row id, which is what the UI refers to a folder by.
+    pub id: i64,
+    /// What they called it.
+    pub name: String,
+    /// Conversation ids, unordered — the list orders by activity, as always.
+    pub conversations: Vec<String>,
 }
 
 /// A view-once message, and the key that opens it exactly once.
@@ -3346,6 +3569,142 @@ mod tests {
             received_at_ms: 1_000,
             opened_at_ms: None,
         }
+    }
+
+    #[test]
+    fn a_draft_survives_being_written_and_read_back() {
+        let dir = TempDir::new("drafts");
+        let store = EncryptedStore::open(dir.db(), &a_key(30)).unwrap();
+        store.set_draft("c1", "half a thought", 1_000).unwrap();
+        assert_eq!(
+            store.draft("c1").unwrap().as_deref(),
+            Some("half a thought")
+        );
+    }
+
+    #[test]
+    fn clearing_a_draft_leaves_nothing_behind() {
+        // Not a blank row: a conversation with an empty draft would still be
+        // marked as having one, and a draft somebody cleared should be gone.
+        let dir = TempDir::new("drafts-clear");
+        let store = EncryptedStore::open(dir.db(), &a_key(31)).unwrap();
+        store.set_draft("c1", "typed", 1_000).unwrap();
+        store.set_draft("c1", "", 2_000).unwrap();
+        assert_eq!(store.draft("c1").unwrap(), None);
+        assert!(store.conversations_with_drafts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn whitespace_alone_is_not_a_draft() {
+        let dir = TempDir::new("drafts-space");
+        let store = EncryptedStore::open(dir.db(), &a_key(32)).unwrap();
+        store
+            .set_draft(
+                "c1", "   
+ ", 1_000,
+            )
+            .unwrap();
+        assert_eq!(store.draft("c1").unwrap(), None);
+    }
+
+    #[test]
+    fn a_draft_is_replaced_rather_than_accumulated() {
+        // There is no history of drafts on purpose: keeping the versions
+        // somebody typed and deleted would be keeping the sentences they
+        // thought better of.
+        let dir = TempDir::new("drafts-replace");
+        let store = EncryptedStore::open(dir.db(), &a_key(33)).unwrap();
+        store.set_draft("c1", "first", 1_000).unwrap();
+        store.set_draft("c1", "second", 2_000).unwrap();
+        assert_eq!(store.draft("c1").unwrap().as_deref(), Some("second"));
+        assert_eq!(store.conversations_with_drafts().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn drafts_are_kept_apart_per_conversation() {
+        let dir = TempDir::new("drafts-many");
+        let store = EncryptedStore::open(dir.db(), &a_key(34)).unwrap();
+        store.set_draft("c1", "for one", 1_000).unwrap();
+        store.set_draft("c2", "for another", 1_000).unwrap();
+        assert_eq!(store.draft("c1").unwrap().as_deref(), Some("for one"));
+        assert_eq!(store.draft("c2").unwrap().as_deref(), Some("for another"));
+        assert_eq!(store.conversations_with_drafts().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_folder_holds_conversations_without_owning_them() {
+        let dir = TempDir::new("folders");
+        let store = EncryptedStore::open(dir.db(), &a_key(20)).unwrap();
+
+        let work = store.create_folder("Work", 1_000).unwrap();
+        store.set_folder_member(work, "c1", true).unwrap();
+        store.set_folder_member(work, "c2", true).unwrap();
+
+        let folders = store.folders().unwrap();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].name, "Work");
+        assert_eq!(folders[0].conversations.len(), 2);
+    }
+
+    #[test]
+    fn a_conversation_can_sit_in_two_folders() {
+        // Why membership is a table rather than a column.
+        let dir = TempDir::new("folders-two");
+        let store = EncryptedStore::open(dir.db(), &a_key(21)).unwrap();
+        let a = store.create_folder("Work", 1_000).unwrap();
+        let b = store.create_folder("Urgent", 1_000).unwrap();
+        store.set_folder_member(a, "c1", true).unwrap();
+        store.set_folder_member(b, "c1", true).unwrap();
+
+        let folders = store.folders().unwrap();
+        assert!(folders.iter().all(|f| f.conversations == vec!["c1"]));
+    }
+
+    #[test]
+    fn filing_something_twice_is_not_an_error() {
+        let dir = TempDir::new("folders-twice");
+        let store = EncryptedStore::open(dir.db(), &a_key(22)).unwrap();
+        let f = store.create_folder("Work", 1_000).unwrap();
+        store.set_folder_member(f, "c1", true).unwrap();
+        store.set_folder_member(f, "c1", true).unwrap();
+        assert_eq!(store.folders().unwrap()[0].conversations.len(), 1);
+    }
+
+    #[test]
+    fn deleting_a_folder_keeps_every_conversation_in_it() {
+        // The one thing a folder must never do. Filing is not owning.
+        let dir = TempDir::new("folders-delete");
+        let store = EncryptedStore::open(dir.db(), &a_key(23)).unwrap();
+        store
+            .insert_message(1, "c1", None, "still here", 1_000)
+            .unwrap();
+        let f = store.create_folder("Work", 1_000).unwrap();
+        store.set_folder_member(f, "c1", true).unwrap();
+
+        store.delete_folder(f).unwrap();
+
+        assert!(store.folders().unwrap().is_empty());
+        assert_eq!(
+            store.messages("c1").unwrap().len(),
+            1,
+            "deleting a folder must not touch what was in it"
+        );
+    }
+
+    #[test]
+    fn folders_come_back_in_the_order_they_were_made() {
+        let dir = TempDir::new("folders-order");
+        let store = EncryptedStore::open(dir.db(), &a_key(24)).unwrap();
+        store.create_folder("First", 1_000).unwrap();
+        store.create_folder("Second", 1_001).unwrap();
+        store.create_folder("Third", 1_002).unwrap();
+        let names: Vec<String> = store
+            .folders()
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["First", "Second", "Third"]);
     }
 
     #[test]

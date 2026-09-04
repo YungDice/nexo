@@ -100,15 +100,48 @@ where
     })?
 }
 
-/// A page of the global feed, newest first.
+/// A page of the feed, newest first.
+///
+/// `following` narrows it to accounts the caller follows. It narrows what is
+/// shown and never widens what may be seen: the server applies the same block
+/// list either way, so every post this can return is one the unfiltered feed
+/// would have returned to the same caller.
 #[tauri::command]
 pub async fn feed(
     state: State<'_, ClientState>,
     before: Option<i64>,
     sort: Option<String>,
+    following: Option<bool>,
 ) -> Result<FeedPage, FeedErrorView> {
     with_client(&state, move |client| {
-        Ok(client.transport.feed(before, None, sort.as_deref())?)
+        Ok(client
+            .transport
+            .feed(before, None, sort.as_deref(), following.unwrap_or(false))?)
+    })
+    .await
+}
+
+/// Follows an account, or stops following it.
+#[tauri::command]
+pub async fn set_following(
+    state: State<'_, ClientState>,
+    handle: String,
+    follow: bool,
+) -> Result<(), FeedErrorView> {
+    with_client(&state, move |client| {
+        Ok(client.transport.set_following(&handle, follow)?)
+    })
+    .await
+}
+
+/// Whether an account is followed, and how many follow it.
+#[tauri::command]
+pub async fn follow_state(
+    state: State<'_, ClientState>,
+    handle: String,
+) -> Result<nexo_client::feed::FollowState, FeedErrorView> {
+    with_client(&state, move |client| {
+        Ok(client.transport.follow_state(&handle)?)
     })
     .await
 }

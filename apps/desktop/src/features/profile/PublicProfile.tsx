@@ -4,11 +4,20 @@ import { useApp } from "../../app/store";
 import { relativeTime } from "../../lib/format";
 import { openUrl } from "../../lib/native";
 import { fieldFor } from "../../lib/palette";
-import { asFeedError, postsBy, profile as profileCall, type Post, type Profile } from "../../lib/feed";
+import {
+  asFeedError,
+  followState,
+  postsBy,
+  profile as profileCall,
+  setFollowing,
+  type FollowState,
+  type Post,
+  type Profile,
+} from "../../lib/feed";
 import { Avatar } from "../../components/ui/Avatar";
 import { Button } from "../../components/ui/Button";
 import { block, listBlocks, unblock } from "../../lib/blocks";
-import { confirm } from "../../lib/native";
+import { confirm, notify } from "../../lib/native";
 import { Callout, EmptyState, Skeleton } from "../../components/ui/Feedback";
 import { Icon } from "../../components/ui/Icon";
 import { Panel } from "../../components/ui/Surface";
@@ -34,6 +43,44 @@ export function PublicProfile({ handle, now }: { handle: string; now: Date }) {
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+
+  // Follow state comes from the server rather than being assumed: the button
+  // has to say what is true for *this* account, and a locally guessed "Follow"
+  // on somebody already followed is the sort of small lie people stop trusting
+  // the rest of the screen over.
+  const [follow, setFollow] = useState<FollowState | null>(null);
+  const [followBusy, setFollowBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setFollow(null);
+    void followState(handle)
+      .then((next) => {
+        if (!cancelled) setFollow(next);
+      })
+      .catch(() => {
+        // Blocked, private, or gone -- the server answers all three the same
+        // way on purpose. The button stays absent rather than guessing which.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [handle]);
+
+  async function toggleFollow() {
+    if (!follow || followBusy) return;
+    setFollowBusy(true);
+    const next = !follow.following;
+    try {
+      await setFollowing(handle, next);
+      // Recomputed rather than incremented: the count is the server's, and two
+      // devices following at once would otherwise drift apart from it.
+      setFollow(await followState(handle));
+    } catch (error) {
+      await notify("Nexo", asFeedError(error).message);
+    } finally {
+      setFollowBusy(false);
+    }
+  }
   const [viewingStory, setViewingStory] = useState(false);
   // The same local list Home's strip and the reader's own ring read --
   // whatever this device currently holds a live story for. If `handle` is
@@ -199,6 +246,14 @@ export function PublicProfile({ handle, now }: { handle: string; now: Date }) {
         <div className="flex items-start justify-end gap-2 pt-3">
           {profile?.is_me ? null : (
           <>
+          <Button
+            variant={follow?.following ? "secondary" : "primary"}
+            icon="user"
+            disabled={!profile || followBusy}
+            onClick={() => void toggleFollow()}
+          >
+            {follow?.following ? "Following" : "Follow"}
+          </Button>
           <Button icon="messages" disabled={!profile || starting} onClick={() => void message()}>
             {starting ? "Opening…" : "Message"}
           </Button>

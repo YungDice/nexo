@@ -23,6 +23,10 @@ pub mod outbox;
 pub mod pin;
 pub mod session;
 pub mod stories;
+// Behind the same feature as the HTTP transport, and for the same reason: a
+// shell that brings its own network stack should not be handed one.
+#[cfg(feature = "http")]
+pub mod stream;
 pub mod transport;
 
 pub use session::{Session, SessionError};

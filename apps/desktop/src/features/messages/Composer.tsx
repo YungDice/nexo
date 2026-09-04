@@ -4,8 +4,20 @@ import { EmojiPicker } from "../../components/ui/EmojiPicker";
 import { StickerPicker } from "../../components/ui/StickerPicker";
 import { Icon } from "../../components/ui/Icon";
 import { pickFile, type PickedFile } from "../../lib/native";
+import { useApp } from "../../app/store";
+import { draft, setDraft } from "../../lib/conversations";
+import { sendTyping } from "../../lib/stream";
 import { formatDuration, useRecorder, type Recording } from "./useRecorder";
 
+
+/**
+ * How often a typing notice goes out while somebody keeps typing.
+ *
+ * The server relays these to everybody in the conversation, so one per
+ * keystroke would be one broadcast per keystroke for a detail that is only
+ * worth knowing roughly.
+ */
+const TYPING_EVERY_MS = 3000;
 
 /**
  * The composer (§6.1).
@@ -26,6 +38,7 @@ export function Composer({
   onCancelReply,
   onSendViewOnce,
   onSendSticker,
+  conversationId,
   conversationTitle,
 }: {
   onSend: (body: string, attachment?: PickedFile) => void;
@@ -43,6 +56,11 @@ export function Composer({
   onSendViewOnce?: (() => void) | undefined;
   /** Sends a sticker by name. Nothing is uploaded. */
   onSendSticker?: ((pack: string, stickerId: string) => void) | undefined;
+  /**
+   * Which conversation this composer belongs to, so an unsent message survives
+   * leaving it. Absent where there is nothing to remember against.
+   */
+  conversationId?: string | undefined;
   conversationTitle: string;
 }) {
   const [value, setValue] = useState("");
@@ -53,6 +71,67 @@ export function Composer({
   const emojiWrap = useRef<HTMLDivElement>(null);
   const stickerWrap = useRef<HTMLDivElement>(null);
   const recorder = useRecorder();
+
+  // Restoring what was typed and not sent.
+  //
+  // Losing a paragraph by clicking the wrong conversation is a small betrayal
+  // people remember, and the fix is cheap. The load is guarded by `wanted` so
+  // a slow read for a conversation somebody has already left cannot overwrite
+  // what they are typing in the one they moved to.
+  const wanted = useRef<string | undefined>(conversationId);
+  wanted.current = conversationId;
+  useEffect(() => {
+    if (!conversationId) return;
+    let cancelled = false;
+    void draft(conversationId)
+      .then((saved) => {
+        if (!cancelled && wanted.current === conversationId) setValue(saved ?? "");
+      })
+      .catch(() => {
+        // Signed out or locked. An empty box is the right fallback -- better
+        // than a banner about a feature nobody asked for by name.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
+  // Telling the other side you are typing.
+  //
+  // Throttled rather than debounced, and the difference matters: debouncing
+  // would send nothing until somebody *stopped*, which is the opposite of what
+  // a typing indicator is for. The server's notice expires on its own, so
+  // there is nothing to send when typing ends -- silence is the stop.
+  //
+  // Honours the same preference the presence toggle already owned, rather than
+  // adding a second switch for the same idea.
+  const showPresence = useApp((s) => s.preferences.presence);
+  const lastTyping = useRef(0);
+  useEffect(() => {
+    if (!conversationId || !showPresence || !value) return;
+    const now = Date.now();
+    if (now - lastTyping.current < TYPING_EVERY_MS) return;
+    lastTyping.current = now;
+    void sendTyping(conversationId).catch(() => {
+      // The socket is allowed to be down. A typing notice that did not go is
+      // invisible rather than wrong.
+    });
+  }, [conversationId, showPresence, value]);
+
+  // Saved on a delay rather than per keystroke: this is a write to an
+  // encrypted database, and one per character typed would be a write per
+  // character typed. Cleared on send, where `setValue("")` runs this with an
+  // empty body and the row is deleted.
+  useEffect(() => {
+    if (!conversationId) return;
+    const id = conversationId;
+    const timer = window.setTimeout(() => {
+      void setDraft(id, value).catch(() => {
+        // Nothing to tell the user: they are still looking at what they typed.
+      });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [conversationId, value]);
 
   useEffect(() => {
     const el = box.current;

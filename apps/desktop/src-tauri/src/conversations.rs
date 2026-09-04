@@ -1213,8 +1213,176 @@ pub async fn send_sticker(
             reactions: Vec::new(),
             reply: None,
             view_once: None,
-            sticker: Some(StickerView { pack, id: sticker_id }),
+            sticker: Some(StickerView {
+                pack,
+                id: sticker_id,
+            }),
         })
+    })
+    .await
+}
+
+/// What somebody typed into a conversation and has not sent.
+///
+/// Read and written through Rust rather than kept in the page, because it is
+/// message content: the same words the message would have carried, so it gets
+/// the same protection the sent ones get. See the schema-19 migration.
+#[tauri::command]
+pub async fn draft(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+) -> Result<Option<String>, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        client
+            .store
+            .draft(&id.to_string())
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))
+    })
+    .await
+}
+
+/// Saves an unsent message. An empty body clears it.
+#[tauri::command]
+pub async fn set_draft(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    body: String,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        client
+            .store
+            .set_draft(&id.to_string(), &body, now_ms())
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))
+    })
+    .await
+}
+
+/// Which conversations have an unsent message waiting, for the list to mark.
+#[tauri::command]
+pub async fn conversations_with_drafts(
+    state: State<'_, ClientState>,
+) -> Result<Vec<String>, ConversationErrorView> {
+    with_client(&state, move |client| {
+        client
+            .store
+            .conversations_with_drafts()
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))
+    })
+    .await
+}
+
+/// A folder as the rail draws it.
+#[derive(Debug, Clone, Serialize)]
+pub struct FolderView {
+    pub id: i64,
+    pub name: String,
+    /// Which conversations are filed here.
+    pub conversations: Vec<String>,
+}
+
+/// Every folder on this device.
+///
+/// Local, always — folders never reach the server. How somebody files their own
+/// conversations is a reading of who matters to them, and the server has no use
+/// for it and no business holding it.
+#[tauri::command]
+pub async fn list_folders(
+    state: State<'_, ClientState>,
+) -> Result<Vec<FolderView>, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let folders = client
+            .store
+            .folders()
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
+        Ok(folders
+            .into_iter()
+            .map(|f| FolderView {
+                id: f.id,
+                name: f.name,
+                conversations: f.conversations,
+            })
+            .collect())
+    })
+    .await
+}
+
+/// Makes a folder.
+#[tauri::command]
+pub async fn create_folder(
+    state: State<'_, ClientState>,
+    name: String,
+) -> Result<i64, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(failure("invalid_request", "A folder needs a name."));
+        }
+        // Long enough for anything anyone means, short enough that the rail
+        // stays a rail. Truncated rather than refused: somebody who pasted a
+        // sentence meant the beginning of it.
+        let name: String = name.chars().take(40).collect();
+        client
+            .store
+            .create_folder(&name, now_ms())
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))
+    })
+    .await
+}
+
+/// Renames a folder.
+#[tauri::command]
+pub async fn rename_folder(
+    state: State<'_, ClientState>,
+    folder_id: i64,
+    name: String,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(failure("invalid_request", "A folder needs a name."));
+        }
+        let name: String = name.chars().take(40).collect();
+        client
+            .store
+            .rename_folder(folder_id, &name)
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))
+    })
+    .await
+}
+
+/// Removes a folder. The conversations in it are untouched.
+#[tauri::command]
+pub async fn delete_folder(
+    state: State<'_, ClientState>,
+    folder_id: i64,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        client
+            .store
+            .delete_folder(folder_id)
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))
+    })
+    .await
+}
+
+/// Files a conversation in a folder, or takes it out.
+#[tauri::command]
+pub async fn set_folder_member(
+    state: State<'_, ClientState>,
+    folder_id: i64,
+    conversation_id: String,
+    member: bool,
+) -> Result<(), ConversationErrorView> {
+    with_client(&state, move |client| {
+        // Parsed to reject nonsense, then stored as the string the rest of the
+        // schema uses for a conversation id.
+        let id = parse_id(&conversation_id)?;
+        client
+            .store
+            .set_folder_member(folder_id, &id.to_string(), member)
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))
     })
     .await
 }

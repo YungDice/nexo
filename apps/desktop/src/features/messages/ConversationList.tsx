@@ -5,8 +5,13 @@ import { cn } from "../../lib/cn";
 import { relativeTime } from "../../lib/format";
 import {
   asConversationError,
+  createFolder,
   deleteConversation,
+  deleteFolder,
+  listFolders,
   searchMessages,
+  setFolderMember,
+  type Folder,
 } from "../../lib/conversations";
 import { confirm, notify } from "../../lib/native";
 
@@ -34,7 +39,10 @@ interface Bulk {
   ids: string[];
   /** Whether every selected conversation is already pinned, for the label. */
   allPinned: boolean;
+  /** Same, for the archive: the entry says which way it will go. */
+  allArchived: boolean;
   pin: (pinned: boolean) => void;
+  archive: (archived: boolean) => void;
   mute: (until: number | null) => void;
   remove: () => Promise<void>;
   clear: () => void;
@@ -42,6 +50,61 @@ interface Bulk {
 
 function countLabel(n: number): string {
   return n === 1 ? "this conversation" : `these ${n} conversations`;
+}
+
+/**
+ * One folder in the rail.
+ *
+ * The delete control appears on hover rather than always, and only on a real
+ * folder — "All" is not a folder and cannot be removed. A permanently visible
+ * bin next to something you click all day is how folders get deleted by
+ * accident.
+ */
+function FolderChip({
+  label,
+  count,
+  active,
+  onClick,
+  onRemove,
+}: {
+  label: string;
+  count?: number;
+  active: boolean;
+  onClick: () => void;
+  onRemove?: () => void | Promise<void>;
+}) {
+  return (
+    <span className="group relative shrink-0">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-pressed={active}
+        className={cn(
+          "rounded-control px-2.5 py-1 text-meta whitespace-nowrap",
+          active
+            ? "bg-accent text-on-accent font-medium"
+            : "text-text-mid hover:bg-fill",
+        )}
+      >
+        {label}
+        {count !== undefined ? (
+          <span className={cn("ml-1.5 tabular-nums", active ? "opacity-80" : "text-text-lo")}>
+            {count}
+          </span>
+        ) : null}
+      </button>
+      {onRemove ? (
+        <button
+          type="button"
+          aria-label={`Delete the folder ${label}`}
+          onClick={() => void onRemove()}
+          className="bg-surface-2 text-text-lo hover:text-text-hi ring-line absolute -top-1 -right-1 hidden size-4 items-center justify-center rounded-full ring-1 group-hover:flex"
+        >
+          <Icon name="close" size={9} />
+        </button>
+      ) : null}
+    </span>
+  );
 }
 
 /**
@@ -75,6 +138,37 @@ export function ConversationList({
   const mute = useApp((s) => s.muteConversation);
   const forget = useApp((s) => s.forgetConversation);
   const [query, setQuery] = useState("");
+
+  // Folders, read from the local store. They never reach the server -- how
+  // somebody files their own conversations is a reading of who matters to them.
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [folder, setFolder] = useState<number | null>(null);
+  // Archived conversations are hidden, not gone. The rail's own chip is the
+  // only way to them, and it appears only when there is something behind it.
+  const [showArchived, setShowArchived] = useState(false);
+  const reloadFolders = useCallback(() => {
+    void listFolders()
+      .then(setFolders)
+      // Not signed in yet, or the store is locked. A rail with no folders is a
+      // working list, so this is not worth a banner.
+      .catch(() => setFolders([]));
+  }, []);
+  useEffect(reloadFolders, [reloadFolders]);
+
+  // A folder that has been deleted must not keep filtering the list to nothing.
+  useEffect(() => {
+    if (folder !== null && !folders.some((f) => f.id === folder)) setFolder(null);
+  }, [folders, folder]);
+
+  // Naming a new folder, and filing the conversation that prompted it in one
+  // step: somebody who chose "New folder…" from a conversation's menu meant to
+  // put *that* conversation in it, and asking again would be asking twice.
+  const [naming, setNaming] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+  const promptForFolder = useCallback((conversationId: string) => {
+    setNewName("");
+    setNaming(conversationId);
+  }, []);
 
   // Multi-selection, the two ways every file list has done it for thirty
   // years: Ctrl adds and removes one, Shift takes everything between the last
@@ -125,6 +219,16 @@ export function ConversationList({
         last: lastMessages[base.id],
       }))
       .filter(({ conversation }) => {
+        // Archived is a view, not a filter that stacks: looking at the archive
+        // means looking at exactly the archive.
+        const archived = overrides[conversation.id]?.archived ?? false;
+        if (archived !== showArchived) return false;
+        // The folder narrows what is searched rather than the other way round:
+        // somebody in "Work" who searches expects to search Work.
+        if (folder !== null) {
+          const chosen = folders.find((f) => f.id === folder);
+          if (!chosen?.conversations.includes(conversation.id)) return false;
+        }
         if (!lowered) return true;
         // A name match needs no index; a body match comes from FTS5.
         return (
@@ -152,7 +256,31 @@ export function ConversationList({
           (a.conversation.lastMessageAt?.getTime() ?? 0)
         );
       });
-  }, [term, matching, overrides, conversations, lastMessages]);
+  }, [
+    term,
+    matching,
+    overrides,
+    conversations,
+    lastMessages,
+    folder,
+    folders,
+    showArchived,
+  ]);
+
+  // How many are put away, so the chip can say and can be absent when there
+  // are none. Counted over every conversation rather than over `rows`, which
+  // has already had the archived ones removed.
+  const archivedCount = useMemo(
+    () =>
+      conversations.filter((c) => overrides[c.id]?.archived ?? false).length,
+    [conversations, overrides],
+  );
+
+  // Leaving the archive when it empties: standing in an empty room with no
+  // door is worse than being returned to the list.
+  useEffect(() => {
+    if (showArchived && archivedCount === 0) setShowArchived(false);
+  }, [showArchived, archivedCount]);
 
   const order = useMemo(() => rows.map((row) => row.conversation.id), [rows]);
 
@@ -195,9 +323,17 @@ export function ConversationList({
     () => ({
       ids: [...selected],
       allPinned: [...selected].every((id) => overrides[id]?.pinned ?? false),
+      allArchived: [...selected].every((id) => overrides[id]?.archived ?? false),
       pin: (pinned: boolean) => {
         for (const id of selected) {
           if ((overrides[id]?.pinned ?? false) !== pinned) toggleFlag(id, "pinned");
+        }
+        clearSelection();
+      },
+      archive: (archived: boolean) => {
+        for (const id of selected) {
+          if ((overrides[id]?.archived ?? false) !== archived)
+            toggleFlag(id, "archived");
         }
         clearSelection();
       },
@@ -265,6 +401,100 @@ export function ConversationList({
           onClick={onStart}
         />
       </div>
+
+      {/*
+        The folder rail. Absent entirely until there is a folder, because a row
+        of chips saying "All" and nothing else is a control that does nothing —
+        and the plus lives in the list's own menu rather than sitting here
+        permanently advertising a feature most people will not want.
+      */}
+      {naming !== null ? (
+        <form
+          className="flex items-center gap-2 border-b border-[var(--hairline)] px-3 pb-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const name = newName.trim();
+            if (!name) return;
+            const conversationId = naming;
+            setNaming(null);
+            void createFolder(name)
+              .then((id) => setFolderMember(id, conversationId, true))
+              .then(reloadFolders)
+              .catch((error) => notify("Nexo", asConversationError(error).message));
+          }}
+        >
+          <input
+            autoFocus
+            value={newName}
+            onChange={(event) => setNewName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setNaming(null);
+            }}
+            placeholder="Folder name"
+            aria-label="Name the new folder"
+            className="rounded-control bg-surface-3 text-text-hi placeholder:text-text-lo min-w-0 flex-1 px-2 py-1 text-meta outline-none focus:ring-1 focus:ring-accent"
+          />
+          <button
+            type="submit"
+            disabled={!newName.trim()}
+            className="text-accent-soft text-meta disabled:opacity-50"
+          >
+            Create
+          </button>
+          <button
+            type="button"
+            onClick={() => setNaming(null)}
+            className="text-text-lo hover:text-text-hi text-meta"
+          >
+            Cancel
+          </button>
+        </form>
+      ) : null}
+
+      {folders.length > 0 || archivedCount > 0 ? (
+        <div className="flex items-center gap-1 overflow-x-auto border-b border-[var(--hairline)] px-3 pb-2">
+          <FolderChip
+            label="All"
+            active={folder === null && !showArchived}
+            onClick={() => {
+              setFolder(null);
+              setShowArchived(false);
+            }}
+          />
+          {folders.map((f) => (
+            <FolderChip
+              key={f.id}
+              label={f.name}
+              count={f.conversations.length}
+              active={folder === f.id && !showArchived}
+              onClick={() => {
+                setShowArchived(false);
+                setFolder(folder === f.id ? null : f.id);
+              }}
+              onRemove={async () => {
+                const ok = await confirm(
+                  `Delete “${f.name}”?`,
+                  "The folder goes. Every conversation in it stays exactly where it was.",
+                );
+                if (!ok) return;
+                await deleteFolder(f.id);
+                reloadFolders();
+              }}
+            />
+          ))}
+          {archivedCount > 0 ? (
+            <FolderChip
+              label="Archived"
+              count={archivedCount}
+              active={showArchived}
+              onClick={() => {
+                setFolder(null);
+                setShowArchived((open) => !open);
+              }}
+            />
+          ) : null}
+        </div>
+      ) : null}
 
       {selected.size > 0 ? (
         <div className="flex items-center gap-2 border-y border-[var(--hairline)] bg-fill px-3 py-2">
@@ -335,6 +565,15 @@ export function ConversationList({
                   // one: a right-click on an unselected row is about that row,
                   // whatever else happens to be highlighted elsewhere.
                   bulk={selected.has(conversation.id) && selected.size > 1 ? bulk : null}
+                  folders={folders}
+                  onFile={(folderId, conversationId, member) => {
+                    void setFolderMember(folderId, conversationId, member).then(
+                      reloadFolders,
+                    );
+                  }}
+                  onNewFolder={(conversationId) => {
+                    void promptForFolder(conversationId);
+                  }}
                   index={index}
                 />
               </li>
@@ -406,6 +645,9 @@ export function ConversationRow({
   onRemoved,
   bulk,
   index,
+  folders = [],
+  onFile,
+  onNewFolder,
 }: {
   conversation: Conversation;
   last: Message | undefined;
@@ -418,6 +660,10 @@ export function ConversationRow({
   /** Set when this row is one of several selected; the menu then acts on all. */
   bulk: Bulk | null;
   index: number;
+  /** Folders this row can be filed into. Empty where filing is not offered. */
+  folders?: Folder[];
+  onFile?: (folderId: number, conversationId: string, member: boolean) => void;
+  onNewFolder?: (conversationId: string) => void;
 }) {
   // No profile directory yet (M7), so there is nobody to look up: the avatar
   // is seeded from the conversation and presence is simply not shown rather
@@ -432,6 +678,7 @@ export function ConversationRow({
   const override = useApp((s) => s.conversationOverrides[conversation.id]);
   const muted = isMuted(override, now.getTime());
   const pinned = override?.pinned ?? false;
+  const archived = override?.archived ?? false;
 
   // A row's own actions. Leaving the group is still absent on purpose --
   // leaving an MLS group is a self-removal the core does not have, and an
@@ -446,6 +693,11 @@ export function ConversationRow({
           label: bulk.allPinned ? `Unpin ${n}` : `Pin ${n} to the top`,
           icon: "pin",
           onSelect: () => bulk.pin(!bulk.allPinned),
+        },
+        {
+          label: bulk.allArchived ? `Move ${n} out of the archive` : `Archive ${n}`,
+          icon: "panel",
+          onSelect: () => bulk.archive(!bulk.allArchived),
         },
         {
           label: `Mute ${n}`,
@@ -468,6 +720,41 @@ export function ConversationRow({
         label: pinned ? "Unpin" : "Pin to the top",
         icon: "pin",
         onSelect: () => toggleFlag(conversation.id, "pinned"),
+      },
+      {
+        label: archived ? "Move out of the archive" : "Archive",
+        icon: "panel",
+        onSelect: () => toggleFlag(conversation.id, "archived"),
+      },
+      {
+        // Where folders are made as well as used: a rail that only appears
+        // once a folder exists needs somewhere to make the first one, and the
+        // natural place is on the thing you want to file.
+        label: "File in",
+        icon: "panel",
+        onSelect: () => onNewFolder?.(conversation.id),
+        submenu: [
+          ...folders.map((f) => ({
+            label: f.conversations.includes(conversation.id)
+              ? `Remove from ${f.name}`
+              : f.name,
+            icon: "panel" as const,
+            onSelect: () =>
+              onFile?.(
+                f.id,
+                conversation.id,
+                !f.conversations.includes(conversation.id),
+              ),
+          })),
+          ...(folders.length > 0
+            ? [{ label: "", separator: true as const }]
+            : []),
+          {
+            label: "New folder…",
+            icon: "plus" as const,
+            onSelect: () => onNewFolder?.(conversation.id),
+          },
+        ],
       },
       muted
         ? {

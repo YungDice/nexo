@@ -265,6 +265,7 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
           />
 
           <Composer
+            conversationId={conversation.id}
             conversationTitle={conversation.title}
             onSend={(body, attachment) => {
               if (attachment)
@@ -285,7 +286,7 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
             }
             onCancelReply={() => setReplyingTo(undefined)}
             onSendSticker={(pack, stickerId) =>
-              void onSendStickerMessage(pack, stickerId)
+              void live.sendSticker(pack, stickerId)
             }
             {...(conversation.kind === "dm"
               ? {

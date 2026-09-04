@@ -185,7 +185,7 @@ because the key is gone, and the UI never claims more than that.
 
 ---
 
-## Wave 4 — Typing indicators *(queue 4)* — **blocked, re-estimated**
+## Wave 4 — Typing indicators *(queue 4)* — **done, after building the socket it needed**
 
 **This wave was mis-scoped when the plan was written, and the estimate below
 was wrong.** `apps/server/src/stream/mod.rs:158` does relay a `Typing` event —
@@ -317,7 +317,7 @@ scrubs without a full download, and a truncated stream refuses to play at all.
 
 ---
 
-## Wave 6 — Stickers and custom emoji *(queue 6, engine 6)*
+## Wave 6 — Stickers and custom emoji *(queue 6, engine 6)* — **done (stickers); GIF search refused, see STATUS**
 
 Cheap, heavily used, and the one item people evangelise. No server intelligence
 and no crypto risk: a sticker reference is content like any other.
@@ -345,7 +345,7 @@ in a pack can execute.
 
 ---
 
-## Wave 7 — The control surface *(engine 7)*
+## Wave 7 — The control surface *(engine 7)* — **done**
 
 None of this acquires a user; all of it prevents the moment a heavy user
 decides the app is unmanageable. Its value scales with how much traffic the
@@ -372,7 +372,7 @@ conversation stays out of the list until it matters, and folders filter.
 
 ---
 
-## Wave 8 — A follow graph on the feed *(engine 3)*
+## Wave 8 — A follow graph on the feed *(engine 3)* — **done**
 
 The largest wave, and the one that changes what the product is: a reason to open
 the app when nobody has messaged you.

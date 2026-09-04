@@ -22,6 +22,7 @@ pub mod auth;
 pub mod blocks;
 pub mod db;
 pub mod delivery;
+pub mod follows;
 pub mod health;
 pub mod limits;
 pub mod media;
@@ -58,6 +59,7 @@ pub fn router(state: AppState) -> Router {
         .merge(posts::router())
         .merge(reports::router())
         .merge(stories::router())
+        .merge(follows::router())
         .merge(stream::router())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

@@ -19,6 +19,17 @@ export type Route = "home" | "messages" | "meet" | "profile" | "settings";
 export interface ConversationOverride {
   mutedUntil?: number | null;
   pinned?: boolean;
+  /**
+   * Out of the way without being gone.
+   *
+   * Distinct from muting, which is about interruption, and from removing, which
+   * is about the history: an archived conversation still notifies and still
+   * exists, it simply is not in the list you look at all day. A conversation
+   * that receives a message stays archived — unarchiving on arrival would make
+   * the feature useless for the one case it exists for, which is a chat that
+   * keeps talking and that you have finished with.
+   */
+  archived?: boolean;
 }
 
 /**
@@ -265,7 +276,7 @@ interface AppState {
   setListDrawer: (open: boolean) => void;
   setHomeSearchQuery: (query: string) => void;
   setBackdropReport: (report: BackdropReport) => void;
-  toggleConversationFlag: (id: string, flag: "pinned") => void;
+  toggleConversationFlag: (id: string, flag: "pinned" | "archived") => void;
   /** `until` is a timestamp, or `null` to unmute. `Infinity` never expires. */
   muteConversation: (id: string, until: number | null) => void;
   /** Drops every choice made about a conversation that no longer exists. */

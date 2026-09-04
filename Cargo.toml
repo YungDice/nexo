@@ -68,6 +68,19 @@ dotenvy = "=0.15.7"
 # Tauri tree already carries, so the desktop gains no new crypto stack and no
 # cmake dependency.
 ureq = { version = "=3.4.0", features = ["json"] }
+# The live socket, and blocking like everything else in this client.
+#
+# `tungstenite` rather than `tokio-tungstenite`: the async one would drag a
+# runtime into a crate whose whole point is that it blocks -- Argon2id and
+# SQLCipher block regardless, so a runtime would buy a function colour and no
+# concurrency. This one is a `TcpStream` and a state machine, run on a thread.
+#
+# rustls with webpki roots, matching ureq's stack rather than adding a second
+# TLS implementation to the binary.
+tungstenite = { version = "=0.30.0", default-features = false, features = [
+    "rustls-tls-webpki-roots",
+    "handshake",
+] }
 
 # --- client local store (M2) ---
 # SQLCipher, whole-file encryption of messages, MLS state and cached profiles

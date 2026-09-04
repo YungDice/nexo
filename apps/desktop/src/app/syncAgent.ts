@@ -5,6 +5,7 @@ import {
   syncAll,
   type SyncResult,
 } from "../lib/conversations";
+import { drainStream } from "../lib/stream";
 import { setTrayUnread, toastMessage } from "../lib/native";
 import { totalUnread, useApp, isMuted } from "./store";
 
@@ -156,8 +157,32 @@ async function handleArrivals(result: SyncResult): Promise<void> {
  * that is the reconnect in "delivers on reconnect", and waiting up to a full
  * poll interval to notice it would be an eternity next to the event.
  */
+/**
+ * How often the live socket is drained.
+ *
+ * Far shorter than the sync interval, and it costs nothing to be: this is a
+ * `try_recv` on a channel in Rust, not a request. Four seconds is far too slow
+ * for "is somebody typing right now", which is the one thing the socket carries
+ * that is only true for a few seconds at a time.
+ */
+const STREAM_DRAIN_MS = 500;
+
 export function startSyncAgent(): () => void {
   const timer = window.setInterval(() => void syncNow(), SYNC_INTERVAL_MS);
+
+  // The live socket rides on this loop rather than owning a timer of its own.
+  //
+  // It is also what opens the socket: `drain_stream` connects when there is a
+  // session and disconnects when there is not, so signing in, locking and
+  // signing out all take care of themselves without `auth.rs` knowing sockets
+  // exist. A second, faster timer is what makes typing feel live — four
+  // seconds is far too slow for "is someone typing right now".
+  const streamTimer = window.setInterval(() => {
+    void drainStream().catch(() => {
+      // The socket is allowed to fail; the poll above is what keeps the app
+      // correct. Nothing here is worth telling anybody about.
+    });
+  }, STREAM_DRAIN_MS);
   const onOnline = () => void syncNow();
   window.addEventListener("online", onOnline);
 
@@ -182,6 +207,7 @@ export function startSyncAgent(): () => void {
 
   return () => {
     window.clearInterval(timer);
+    window.clearInterval(streamTimer);
     window.removeEventListener("online", onOnline);
     window.removeEventListener("focus", onFocus);
     unsubscribe();

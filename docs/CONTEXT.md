@@ -73,6 +73,7 @@ crates/crypto        MLS, the identity keypair, safety numbers, attachment crypt
 crates/platform      The OS seam: SecureStore, and the Windows DPAPI backing.
 crates/store         The client's SQLCipher database.
 crates/client        Session logic, portable across Windows and Android.
+                     `http` feature adds the ureq transport *and* the WebSocket.
 apps/server          axum API + MLS Delivery Service (Linux aarch64).
 apps/desktop/src-tauri   The Windows shell: Tauri commands, windowing, IPC.
 apps/desktop/src     React 19 client.
@@ -125,13 +126,13 @@ without a regenerated `.sqlx` breaks an offline build — see
 
 ### Desktop shell (`apps/desktop/src-tauri/src`)
 
-97 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
+110 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
 crosses into the WebView is already decrypted, and nothing else does.
 
 | File | Commands | Owns |
 |---|---|---|
-| `feed.rs` (750 ln) | 23 | Posts, comments, votes, reactions. |
-| `conversations.rs` | 31 | Messaging, replies, attachments, voice messages, view-once media, reactions, pinning, local delete, edit and retract. |
+| `feed.rs` (750 ln) | 25 | Posts, comments, votes, reactions. |
+| `conversations.rs` | 40 | Messaging, replies, attachments, voice messages, view-once media, reactions, pinning, local delete, edit and retract. |
 | `commands.rs` | 15 | Profile, settings, misc. |
 | `auth.rs` (665 ln) | 11 | Register, login, lock, PIN, delete the account. |
 | `meet.rs` | 17 | Meet&Greet: the map, the pin, intros, reporting, search, invitations, stories. |
@@ -139,6 +140,7 @@ crosses into the WebView is already decrypted, and nothing else does.
 | `windows.rs` (502 ln) | — | Window creation, DWM backdrop, the acrylic path. |
 | `preview.rs` (534 ln) | — | Link previews. Off by default, on purpose. |
 | `media.rs` | — | The `nexo-media` URI scheme: decrypted video, one byte range at a time. |
+| `stream.rs` | 2 | The live socket: opens it with the session, forwards typing to the page. |
 
 ### Frontend (`apps/desktop/src`)
 
@@ -189,6 +191,7 @@ component reference.
 
 | Task | Open, in this order | Do not open |
 |---|---|---|
+| Add a route the server already has but nothing calls | check `apps/server/src/` first — `/v1/stream` sat unused for months, and `follows` was the opposite case |
 | Add or change an API endpoint | the type first — `crates/protocol/src/lib.rs` for the encrypted path, `crates/client/src/feed.rs` for feed and profile — then the server module → `crates/client/src/http.rs` → the `lib/*.ts` wrapper | `BRIEF.md` |
 | Change what is stored on the client | `crates/store/src/lib.rs` (grep the table) → the caller in `crates/client` | — |
 | Change what is stored on the server | `apps/server/migrations/` (new file) → the module → regenerate `.sqlx` | — |
@@ -283,6 +286,13 @@ move.
   A consequence worth knowing: anything that reaches `send_attachment` claiming
   a `video/` type gets the segmented encoding, which is why the voice command
   forces `audio/` even though `MediaRecorder` sometimes says `video/webm`.
+- **Nothing in the page may reach a third party, and the CSP is what says so.**
+  `img-src` and `connect-src` name no remote host, which is rule 3's
+  enforcement point and not an oversight to be widened when a feature wants it.
+  `THREAT-MODEL.md` §2.3 already worked this through once for link previews and
+  ended with "no image fetch" — so a feature that wants remote pictures (GIF
+  search is the standing example) is a threat-model decision before it is a
+  frontend one. Stickers are drawn in the repo for exactly this reason.
 - **A new kind of media needs a CSP directive, and fails silently without one.**
   The CSP in `tauri.conf.json` is the whole policy: Tauri appends script and
   style hashes to it and touches nothing else, so an absent directive falls back

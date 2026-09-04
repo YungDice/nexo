@@ -174,6 +174,12 @@ pub struct FeedQuery {
     pub limit: Option<i64>,
     /// `new` (default), `top`, or `hot`.
     pub sort: Option<String>,
+    /// Only posts by accounts the caller follows.
+    ///
+    /// Absent or `false` is the feed as it always was: everybody. This narrows
+    /// what is shown and never widens what may be seen — the block list applies
+    /// either way.
+    pub following: Option<bool>,
 }
 
 /// How a feed page is ordered.
@@ -220,6 +226,17 @@ async fn feed(
     // in step four times.
     let hidden = crate::blocks::hidden_authors(&state.db, caller.user_id).await?;
 
+    // The Following view, as a bound parameter rather than three more copies of
+    // three already-long queries. `query_as!` can only check a statement that
+    // exists in the source, so every variant would have to be written out --
+    // and a filter that has to be kept in step in six places is a filter that
+    // will eventually be applied in five.
+    //
+    // It narrows what is *shown*, never what may be seen: every post this can
+    // return is one the Everyone view would return to the same caller, because
+    // both run through the same block list above.
+    let following = query.following.unwrap_or(false);
+
     // One query per order rather than SQL assembled at runtime: `query_as!`
     // checks the statement against the database at compile time, and it can
     // only do that for a statement that exists in the source.
@@ -243,12 +260,16 @@ async fn feed(
                         GROUP BY post_id) c ON c.post_id = p.id
              WHERE p.deleted_at IS NULL AND p.id < $1
                AND NOT (p.author_id = ANY($4))
+               AND (NOT $5 OR EXISTS (SELECT 1 FROM follows f
+                                       WHERE f.follower_id = $3
+                                         AND f.followed_id = p.author_id))
              ORDER BY p.id DESC
              LIMIT $2",
                 before,
                 limit,
                 caller.user_id,
-                &hidden
+                &hidden,
+                following
             )
             .fetch_all(&state.db)
             .await?
@@ -273,12 +294,16 @@ async fn feed(
                         GROUP BY post_id) c ON c.post_id = p.id
              WHERE p.deleted_at IS NULL
                AND NOT (p.author_id = ANY($4))
+               AND (NOT $5 OR EXISTS (SELECT 1 FROM follows f
+                                       WHERE f.follower_id = $3
+                                         AND f.followed_id = p.author_id))
              ORDER BY COALESCE(v.score, 0) DESC, p.id DESC
              LIMIT $2 OFFSET $1",
                 offset,
                 limit,
                 caller.user_id,
-                &hidden
+                &hidden,
+                following
             )
             .fetch_all(&state.db)
             .await?
@@ -303,6 +328,9 @@ async fn feed(
                         GROUP BY post_id) c ON c.post_id = p.id
              WHERE p.deleted_at IS NULL
                AND NOT (p.author_id = ANY($4))
+               AND (NOT $5 OR EXISTS (SELECT 1 FROM follows f
+                                       WHERE f.follower_id = $3
+                                         AND f.followed_id = p.author_id))
              ORDER BY
                  sign(COALESCE(v.score, 0))
                    * log(greatest(abs(COALESCE(v.score, 0)), 1))
@@ -312,7 +340,8 @@ async fn feed(
                 offset,
                 limit,
                 caller.user_id,
-                &hidden
+                &hidden,
+                following
             )
             .fetch_all(&state.db)
             .await?

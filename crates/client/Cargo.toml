@@ -28,6 +28,7 @@ serde_json.workspace = true
 # trace of why.
 tracing.workspace = true
 ureq = { workspace = true, optional = true }
+tungstenite = { workspace = true, optional = true }
 
 [dev-dependencies]
 # tests/live_auth.rs defines a fake keystore that needs an error type.
@@ -36,4 +37,4 @@ thiserror.workspace = true
 [features]
 # The HTTP transport. Off by default so the crate stays free of a network stack
 # for any shell that wants to bring its own (brief 12).
-http = ["dep:ureq"]
+http = ["dep:ureq", "dep:tungstenite"]

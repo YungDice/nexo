@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n             EXISTS (SELECT 1 FROM follows WHERE follower_id = $1 AND followed_id = $2)\n                 AS \"following!\",\n             (SELECT COUNT(*) FROM follows WHERE followed_id = $2)::BIGINT\n                 AS \"followers!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "following!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "followers!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "c22103626a284da9bb1d38d2247e0dac7541f9045da66106d6653b451e6a0aac"
+}

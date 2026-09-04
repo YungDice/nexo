@@ -132,6 +132,20 @@ pub struct ReactionCount {
     pub count: i64,
 }
 
+/// Whether an account is followed, and by how many.
+///
+/// The count is public because the posts already are: anyone who can read
+/// somebody's posts can count the people reacting to them. **Who** the
+/// followers are is not offered by any route — a follower list is a social
+/// graph handed out on request, which is a different decision from a number.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FollowState {
+    /// Whether the caller follows this account.
+    pub following: bool,
+    /// How many accounts follow it.
+    pub followers: i64,
+}
+
 /// A page of the feed.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FeedPage {
@@ -241,7 +255,18 @@ pub trait FeedApi {
         before: Option<i64>,
         limit: Option<i64>,
         sort: Option<&str>,
+        following: bool,
     ) -> Result<FeedPage, TransportError>;
+
+    /// Follows an account, or stops.
+    ///
+    /// Refused identically for a handle that does not exist, one that blocked
+    /// you, and a private one — the server will not say which, and neither
+    /// does this.
+    fn set_following(&self, handle: &str, follow: bool) -> Result<(), TransportError>;
+
+    /// Whether this account is followed, and how many follow it.
+    fn follow_state(&self, handle: &str) -> Result<FollowState, TransportError>;
 
     /// One person's posts.
     fn posts_by(

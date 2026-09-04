@@ -135,8 +135,45 @@ export function HomePage({ now }: { now: Date }) {
 
             <PostComposer onPost={live.post} />
 
-            {/* Ordering, not filtering: every post is still here, and which one
-              is at the top is the whole difference between them. */}
+            {/* Who, then how. These two rows do different jobs and are kept
+              apart because of it: the first chooses whose posts are in the
+              list, the second chooses their order. Merging them into one strip
+              of five chips would read as five orderings, one of which
+              mysteriously removes most of the feed. */}
+            <div className="flex gap-1" role="tablist" aria-label="Whose posts">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={!live.following}
+                onClick={() => live.setFollowing(false)}
+                className={cn(
+                  "rounded-control px-2.5 py-1.5 text-[11px] font-medium transition-colors duration-[var(--motion-fast)]",
+                  !live.following
+                    ? "bg-fill-active text-text-hi"
+                    : "text-text-lo hover:bg-fill-hover",
+                )}
+              >
+                Everyone
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={live.following}
+                onClick={() => live.setFollowing(true)}
+                className={cn(
+                  "rounded-control px-2.5 py-1.5 text-[11px] font-medium transition-colors duration-[var(--motion-fast)]",
+                  live.following
+                    ? "bg-fill-active text-text-hi"
+                    : "text-text-lo hover:bg-fill-hover",
+                )}
+              >
+                Following
+              </button>
+            </div>
+
+            {/* Ordering, not filtering: every post the row above admits is
+              still here, and which one is at the top is the whole difference
+              between them. */}
             <div
               className="flex gap-1"
               role="tablist"
@@ -190,6 +227,16 @@ export function HomePage({ now }: { now: Date }) {
                   icon="search"
                   title="No matches"
                   body={`Nothing loaded so far matches "${query.trim()}".`}
+                />
+              ) : live.following ? (
+                /* A different emptiness, and it needs a different sentence.
+                   "Be the first to post" is wrong here — the feed is full, this
+                   person just follows nobody who has written, and telling them
+                   to post would answer a question they did not ask. */
+                <EmptyState
+                  icon="user"
+                  title="Nothing from anyone you follow"
+                  body="Open somebody's profile and follow them, or switch to Everyone."
                 />
               ) : (
                 /* §6.2: an empty state that invites the first post rather than

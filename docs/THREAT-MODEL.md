@@ -411,6 +411,57 @@ Two smaller consequences, both deliberate:
   spent, because a sender who could reopen what the recipient cannot would make
   the bubble's own wording untrue on one side of the conversation.
 
+### 2.14 A follow graph is a new social graph the server holds
+
+Following somebody writes a row the server can read: `(follower, followed,
+when)`. That is **not** a restatement of §2.2, and it should not be filed under
+it. §2.2 concedes that the server sees who talks to whom — a *contact* graph,
+produced as a side effect of routing messages it has to route. This is an
+*interest* graph, produced on purpose, and it includes people you have never
+messaged and may never message.
+
+Two consequences worth being plain about:
+
+- **It is durable and explicit.** Conversation metadata accumulates as a
+  by-product of use; a follow is a deliberate, dated statement that persists
+  until withdrawn. It is the single most useful thing in the database for
+  anybody trying to work out who somebody's people are.
+- **A follower count is public; a follower list is not.** The count discloses
+  nothing the feed does not — anyone who can read somebody's posts can count the
+  people reacting to them. **Who** the followers are is offered by no route,
+  because a follower list is a social graph handed out on request, which is a
+  different decision and has not been made.
+
+What it deliberately does **not** change: following alters what you are shown,
+never what you are allowed to see. Every post the Following feed can return is
+one the Everyone feed would have returned to the same caller, because both apply
+the same block list. There is a test for that (`apps/server/tests/follows.rs`),
+and it is there because a Following feed is easy to write in a way that reaches
+past a block, and nothing in the UI would ever reveal it.
+
+Following a private account is refused, and refused with the same `404` a
+handle that does not exist gets — a `403` would confirm the account is there,
+which is exactly what being absent from search is meant to prevent.
+
+### 2.15 The live socket carries no content, and no new metadata
+
+The client now connects to `/v1/stream`. What crosses it is typing notices,
+presence, receipts and envelope notices — the events `nexo_protocol` already
+defined, with ciphertext hex inside them and no key anywhere near the server
+(rule 4). It is a delivery path, not a decryption point.
+
+It discloses **when a connection is open**, which the 4-second poll already
+disclosed in a noisier form: an account that is polling is an account that is
+running. Typing notices are new information — that somebody is composing, in
+which conversation — and they are opt-out-able through the presence preference,
+which now genuinely governs both sending and showing rather than only being read
+by a control that did nothing.
+
+The socket is authenticated with an ordinary `Authorization` header rather than
+a token in the URL. A browser could not do that on a WebSocket and would have to
+put the token in the query string, where every proxy on the way logs it; a Rust
+client does not have to make that trade, and does not.
+
 ## 3. Adversaries in scope
 
 **A network attacker.** Defeated by TLS 1.3 for transport plus MLS for content.

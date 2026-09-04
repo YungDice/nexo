@@ -914,6 +914,47 @@ mod tests {
     }
 
     #[test]
+    fn a_sticker_round_trips() {
+        let payload = Payload::Sticker {
+            pack: "nexo".into(),
+            id: "thumbs-up".into(),
+            message_id: Some(Uuid::new_v4()),
+        };
+        assert_eq!(Payload::decode(&payload.encode()), payload);
+    }
+
+    #[test]
+    fn a_sticker_carries_a_name_not_a_picture() {
+        // The reason it costs what a short message costs. If art ever ended up
+        // in here it would be an upload wearing a message's clothes.
+        let payload = Payload::Sticker {
+            pack: "nexo".into(),
+            id: "heart".into(),
+            message_id: None,
+        };
+        let json = String::from_utf8(payload.encode()).expect("payloads are utf-8");
+        assert!(json.len() < 120, "a sticker must stay tiny: {json}");
+        for forbidden in ["svg", "base64", "data:", "path", "http"] {
+            assert!(
+                !json.contains(forbidden),
+                "`{forbidden}` suggests art is being carried: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sticker_previews_as_nothing_rather_than_as_english() {
+        // The conversation list draws it from the sticker itself. A word here
+        // would be the wrong word for anybody not reading English.
+        let payload = Payload::Sticker {
+            pack: "nexo".into(),
+            id: "fire".into(),
+            message_id: None,
+        };
+        assert_eq!(payload.preview(), "");
+    }
+
+    #[test]
     fn a_reply_round_trips() {
         let payload = Payload::Reply {
             target: Uuid::new_v4(),

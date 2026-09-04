@@ -683,3 +683,125 @@ fn a_conversation_whose_welcome_never_came_does_not_trap_anyone() {
     // The proof that matters: he can actually send in it.
     conversations::send_message(&bob.ctx(), opened, "hello at last").expect("bob can send");
 }
+
+#[test]
+#[ignore = "needs a running nexo-server and Postgres"]
+fn a_picture_a_gif_and_a_video_all_round_trip() {
+    // The gap this closes: the 20 MB test above sends
+    // `application/octet-stream`, which is sealed whole. Video is sealed in
+    // *segments* so it can be streamed, and for a while nothing exercised
+    // receiving one — `fetch_attachment` decrypted whole-object regardless, so
+    // saving a video and opening one in the lightbox both failed while the
+    // bubble, which streams, looked fine.
+    let alice = Client::new("media-a");
+    let bob = Client::new("media-b");
+
+    conversations::publish_key_packages(&bob.ctx(), 2).unwrap();
+    let conversation_id = conversations::start_with(&alice.ctx(), &bob.handle).unwrap();
+    conversations::sync(&bob.ctx(), conversation_id).unwrap();
+
+    // A real PNG header, a real GIF89a header, and enough bytes after each to
+    // span more than one segment for the video. The headers matter because the
+    // receiver sniffs the bytes rather than trusting the declared type.
+    let png = {
+        let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        v.extend((0..4096).map(|i| (i % 251) as u8));
+        v
+    };
+    let gif = {
+        let mut v = b"GIF89a".to_vec();
+        v.extend((0..2048).map(|i| (i % 241) as u8));
+        v
+    };
+    // Deliberately more than one segment, so the reassembly is exercised
+    // rather than a single-segment special case that would pass either way.
+    let mp4 = {
+        let mut v = vec![0, 0, 0, 0x18, b'f', b't', b'y', b'p', b'm', b'p', b'4', b'2'];
+        v.extend((0..700_000usize).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8));
+        v
+    };
+
+    for (name, mime, bytes) in [
+        ("holiday.png", "image/png", &png),
+        ("reaction.gif", "image/gif", &gif),
+        ("clip.mp4", "video/mp4", &mp4),
+    ] {
+        conversations::send_attachment(
+            &alice.ctx(),
+            conversation_id,
+            name,
+            mime,
+            bytes,
+            Some(name),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("sending {name} should succeed: {e:?}"));
+    }
+    println!("ok: alice sent a picture, a gif and a video");
+
+    let outcome = conversations::sync(&bob.ctx(), conversation_id).expect("bob sync");
+    assert!(
+        outcome.messages >= 3,
+        "bob should receive all three: {outcome:?}"
+    );
+
+    let messages = bob.store.messages(&conversation_id.to_string()).unwrap();
+    for (name, expected) in [
+        ("holiday.png", &png),
+        ("reaction.gif", &gif),
+        ("clip.mp4", &mp4),
+    ] {
+        let message = messages
+            .iter()
+            .find(|m| m.body == name)
+            .unwrap_or_else(|| panic!("{name} should have arrived: {messages:?}"));
+
+        // Exactly what "Save as…" and the lightbox do: fetch the whole file by
+        // envelope id, with the key from Bob's own store.
+        let fetched = conversations::fetch_attachment_by_id(&bob.ctx(), message.envelope_id)
+            .unwrap_or_else(|e| panic!("bob should be able to open {name}: {e:?}"));
+
+        assert_eq!(fetched.name, name);
+        assert_eq!(
+            fetched.contents.len(),
+            expected.len(),
+            "{name} changed size in transit"
+        );
+        assert_eq!(&fetched.contents, expected, "{name} came back different");
+        println!("ok: bob opened {name}, {} bytes, identical", expected.len());
+    }
+
+    // The video, and only the video, must be the segmented encoding -- that is
+    // what the streaming path reads, and what the whole-file path above had to
+    // learn to handle.
+    let clip = messages.iter().find(|m| m.body == "clip.mp4").unwrap();
+    let info = conversations::stream_info(&bob.ctx(), clip.envelope_id)
+        .expect("stream info should be readable")
+        .expect("a video must be streamable");
+    assert_eq!(info.size, mp4.len() as u64);
+    assert!(
+        info.segments > 1,
+        "the test file must span more than one segment, got {}",
+        info.segments
+    );
+
+    let picture = messages.iter().find(|m| m.body == "holiday.png").unwrap();
+    assert!(
+        conversations::stream_info(&bob.ctx(), picture.envelope_id)
+            .unwrap()
+            .is_none(),
+        "a picture is sealed whole, not segmented"
+    );
+
+    // And one segment on its own opens, which is what a range request becomes.
+    let first = conversations::attachment_segment(&bob.ctx(), clip.envelope_id, 0)
+        .expect("the first segment should open on its own");
+    assert_eq!(&first[..12], &mp4[..12], "the file header should be intact");
+    let last = conversations::attachment_segment(&bob.ctx(), clip.envelope_id, info.segments - 1)
+        .expect("the last segment should open on its own");
+    assert!(!last.is_empty());
+    println!(
+        "ok: the video is {} segments, and segments open individually",
+        info.segments
+    );
+}

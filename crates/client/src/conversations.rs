@@ -2123,44 +2123,62 @@ pub fn attachment_segment<T: Transport>(
     Ok(plaintext.to_vec())
 }
 
-/// Downloads and decrypts an attachment.
+/// Downloads and decrypts a whole attachment.
 ///
-/// Both checks in `attachment::decrypt` apply: GCM's tag catches a ciphertext
-/// altered in the bucket or in transit, and the SHA-256 catches an upload that
-/// disagrees with the message describing it.
+/// Both checks apply either way: GCM's tag catches a ciphertext altered in the
+/// bucket or in transit, and the SHA-256 catches an upload that disagrees with
+/// the message describing it.
+///
+/// **Handles both encodings.** A video is sealed in segments so it can be
+/// streamed (see `attachment::encrypt_segmented`); everything else is sealed
+/// whole. The two are indistinguishable from the ciphertext, so `segmented` on
+/// the payload decides, and reading it wrongly is not a subtle failure — a
+/// whole-object decrypt of segmented bytes fails its tag outright. That is what
+/// it did between the segmented encoding landing and this branch being written:
+/// saving a video, and opening one in the lightbox, both failed.
 pub fn fetch_attachment<T: Transport>(
     ctx: &Context<'_, T>,
     payload: &Payload,
 ) -> Result<Vec<u8>, ConversationError> {
     // A group picture is encrypted the same way and read the same way; only
-    // what it is attached to differs.
-    let (s3_key, key, nonce, sha256) = match payload {
+    // what it is attached to differs. It is never segmented -- only video is,
+    // and an avatar is not a video.
+    let (s3_key, key, nonce, sha256, segmented, size) = match payload {
         Payload::Attachment {
             s3_key,
             key,
             nonce,
             sha256,
+            segmented,
+            size,
             ..
-        }
-        | Payload::GroupAvatar {
+        } => (s3_key, key, nonce, sha256, *segmented, *size),
+        Payload::GroupAvatar {
             s3_key,
             key,
             nonce,
             sha256,
             ..
-        } => (s3_key, key, nonce, sha256),
+        } => (s3_key, key, nonce, sha256, false, 0),
         _ => return Err(ConversationError::NotAnAttachment),
     };
 
     let url = ctx.transport.download_url(s3_key)?;
     let ciphertext = ctx.transport.get_object(&url)?;
+    let key = from_hex(key)?;
+    let nonce = from_hex(nonce)?;
+    let sha256 = from_hex(sha256)?;
 
-    let plaintext = nexo_crypto::attachment::decrypt(
-        &ciphertext,
-        &from_hex(key)?,
-        &from_hex(nonce)?,
-        &from_hex(sha256)?,
-    )?;
+    if !segmented {
+        let plaintext = nexo_crypto::attachment::decrypt(&ciphertext, &key, &nonce, &sha256)?;
+        return Ok(plaintext.to_vec());
+    }
+
+    // Reassembly and the hash check both live in `nexo-crypto`: this crate
+    // does no cryptography of its own, and a second implementation of the
+    // segment layout here is exactly how the two would drift.
+    let plaintext =
+        nexo_crypto::attachment::decrypt_segmented(&ciphertext, &key, &nonce, &sha256, size)?;
     Ok(plaintext.to_vec())
 }
 

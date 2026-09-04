@@ -261,6 +261,52 @@ pub fn decrypt_segment(
     Ok(Zeroizing::new(plaintext))
 }
 
+/// Decrypts a whole segmented attachment and checks its published hash.
+///
+/// The counterpart to [`decrypt`] for the segmented encoding: a caller that
+/// wants the entire file rather than a byte range gets it here, without having
+/// to know how segments are laid out or having to reimplement the hash check.
+///
+/// Every segment is authenticated with its index and the total, so a reordered
+/// or truncated object fails before the hash is ever reached. The SHA-256 is
+/// still of the whole plaintext and is checked once at the end, catching the
+/// different thing it always caught: an upload that disagrees with the message
+/// describing it.
+///
+/// `size` is the sender's declared plaintext length, and it is not trusted — it
+/// only decides how many segments to expect, and a wrong count fails the AAD
+/// check on the first segment read.
+pub fn decrypt_segmented(
+    ciphertext: &[u8],
+    key: &[u8],
+    nonce: &[u8],
+    expected_sha256: &[u8],
+    size: u64,
+) -> Result<Zeroizing<Vec<u8>>, AttachmentError> {
+    let total = segment_count(size);
+    let mut plaintext = Vec::with_capacity(size as usize);
+
+    for index in 0..total {
+        let from = (index as usize) * SEGMENT_CIPHERTEXT_LEN;
+        let to = (from + SEGMENT_CIPHERTEXT_LEN).min(ciphertext.len());
+        // A missing segment is a truncated object. `decrypt_segment` would
+        // refuse an empty slice anyway; failing here says which thing was
+        // wrong rather than blaming the tag.
+        let part = ciphertext
+            .get(from..to)
+            .filter(|part| !part.is_empty())
+            .ok_or(AttachmentError::Undecryptable)?;
+        let opened = decrypt_segment(part, key, nonce, index, total)?;
+        plaintext.extend_from_slice(&opened);
+    }
+
+    let actual: [u8; 32] = Sha256::digest(&plaintext).into();
+    if actual.as_slice() != expected_sha256 {
+        return Err(AttachmentError::HashMismatch);
+    }
+    Ok(Zeroizing::new(plaintext))
+}
+
 /// Encrypts one segment under the file's key.
 fn seal_segment(
     cipher: &Aes256Gcm,
@@ -363,6 +409,83 @@ mod tests {
         )
         .expect("the third segment opens on its own");
         assert_eq!(&third[..], &plaintext[SEGMENT_LEN * 2..SEGMENT_LEN * 3]);
+    }
+
+    #[test]
+    fn a_segmented_file_opens_whole_as_well_as_in_parts() {
+        // What `save_attachment` and the lightbox need: the same bytes back,
+        // without the caller knowing anything about segments.
+        let (sealed, plaintext) = segmented(SEGMENT_LEN * 2 + 77);
+        let opened = decrypt_segmented(
+            &sealed.ciphertext,
+            sealed.key.as_slice(),
+            &sealed.nonce,
+            &sealed.sha256,
+            sealed.size,
+        )
+        .expect("a segmented file opens whole");
+        assert_eq!(&opened[..], &plaintext[..]);
+    }
+
+    #[test]
+    fn an_empty_segmented_file_opens_whole() {
+        let (sealed, _) = segmented(0);
+        let opened = decrypt_segmented(
+            &sealed.ciphertext,
+            sealed.key.as_slice(),
+            &sealed.nonce,
+            &sealed.sha256,
+            0,
+        )
+        .expect("an empty file still opens");
+        assert!(opened.is_empty());
+    }
+
+    #[test]
+    fn a_truncated_segmented_file_does_not_open_whole() {
+        // Rule 7 at the whole-file level: a short object refuses rather than
+        // handing back the part of it that happened to authenticate.
+        let (sealed, _) = segmented(SEGMENT_LEN * 3);
+        let cut = &sealed.ciphertext[..sealed.ciphertext.len() - SEGMENT_CIPHERTEXT_LEN];
+        let result = decrypt_segmented(
+            cut,
+            sealed.key.as_slice(),
+            &sealed.nonce,
+            &sealed.sha256,
+            sealed.size,
+        );
+        assert!(matches!(result, Err(AttachmentError::Undecryptable)));
+    }
+
+    #[test]
+    fn a_segmented_file_whose_hash_disagrees_is_refused() {
+        // The per-segment tags are about tampering; this is about a sender
+        // whose upload and whose description do not match.
+        let (sealed, _) = segmented(SEGMENT_LEN);
+        let wrong = [0u8; 32];
+        let result = decrypt_segmented(
+            &sealed.ciphertext,
+            sealed.key.as_slice(),
+            &sealed.nonce,
+            &wrong,
+            sealed.size,
+        );
+        assert!(matches!(result, Err(AttachmentError::HashMismatch)));
+    }
+
+    #[test]
+    fn a_lie_about_the_size_does_not_open_the_file() {
+        // `size` decides how many segments to expect, and it is the sender's
+        // number. A wrong one must fail the AAD rather than be believed.
+        let (sealed, _) = segmented(SEGMENT_LEN * 3);
+        let result = decrypt_segmented(
+            &sealed.ciphertext,
+            sealed.key.as_slice(),
+            &sealed.nonce,
+            &sealed.sha256,
+            (SEGMENT_LEN * 2) as u64,
+        );
+        assert!(matches!(result, Err(AttachmentError::Undecryptable)));
     }
 
     #[test]

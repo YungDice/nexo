@@ -527,6 +527,76 @@ body {
   animation-delay: var(--stagger, 0ms);
 }
 
+/* Stickers.
+
+   The one place in this app where motion is the content rather than feedback
+   about it, so these run continuously where everything else animates once. Each
+   one is a transform or an opacity — nothing here triggers layout, so a
+   conversation full of stickers costs the compositor and not the main thread.
+
+   Every animation is dropped under `prefers-reduced-motion`, and each sticker
+   is drawn so that its resting pose still reads: a joke that only works while
+   it moves is not a picture, and somebody who turned movement off is owed a
+   picture. */
+@keyframes sticker-beat {
+  0%, 70%, 100% { transform: scale(1); }
+  15% { transform: scale(1.12); }
+  30% { transform: scale(1); }
+  45% { transform: scale(1.08); }
+}
+
+@keyframes sticker-drift {
+  0% { transform: translate(0, 0); opacity: 0.9; }
+  100% { transform: translate(6px, -14px); opacity: 0; }
+}
+
+@keyframes sticker-pop {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-6px) scale(1.15); }
+}
+
+@keyframes sticker-flicker {
+  0%, 100% { transform: scaleY(1) translateY(0); }
+  40% { transform: scaleY(1.05) translateY(-2px); }
+  70% { transform: scaleY(0.97) translateY(1px); }
+}
+
+@keyframes sticker-glance {
+  0%, 100% { transform: translateX(0); }
+  30% { transform: translateX(-5px); }
+  60% { transform: translateX(5px); }
+}
+
+@keyframes sticker-wave {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(12deg); }
+  75% { transform: rotate(-8deg); }
+}
+
+.sticker-beat { animation: sticker-beat 1.6s var(--ease-out) infinite; transform-origin: 48px 48px; }
+.sticker-drift { animation: sticker-drift 2.4s var(--ease-out) infinite; }
+.sticker-pop { animation: sticker-pop 1.4s var(--ease-out) infinite; }
+.sticker-flicker { animation: sticker-flicker 1.1s var(--ease-out) infinite; transform-origin: 48px 88px; }
+.sticker-glance { animation: sticker-glance 2.8s var(--ease-out) infinite; }
+.sticker-wave { animation: sticker-wave 1.5s var(--ease-out) infinite; transform-origin: 40px 88px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sticker-beat,
+  .sticker-drift,
+  .sticker-pop,
+  .sticker-flicker,
+  .sticker-glance,
+  .sticker-wave {
+    animation: none;
+  }
+  /* The drifting parts fade out entirely when still -- a "z" parked mid-air
+     beside a sleeping face reads as a rendering fault rather than as sleep. */
+  .sticker-drift {
+    opacity: 0.9;
+    transform: none;
+  }
+}
+
 /* Landing on a message somebody jumped to from a quote.
 
    A wash of the accent that fades rather than a border that appears: a border

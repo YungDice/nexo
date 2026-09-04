@@ -87,6 +87,29 @@ export interface Message {
   edited_at_ms: number | null;
   /** What this message answers, when it answers something. */
   reply?: Reply;
+  /** Set when the message is a picture or clip meant to be opened once. */
+  view_once?: ViewOnce;
+  /** Set when the message is a sticker: which one, not the picture. */
+  sticker?: { pack: string; id: string };
+}
+
+/**
+ * What the page may know about a view-once message.
+ *
+ * No key, opened or not. The page asks to open by the message's name and is
+ * handed bytes — the same boundary every attachment keeps (rule 2).
+ */
+export interface ViewOnce {
+  /**
+   * Whether it can still be opened on this device.
+   *
+   * False is a fact about the disk, not a decision: the key is gone, so there
+   * is nothing a modified build could do differently.
+   */
+  openable: boolean;
+  outgoing: boolean;
+  opened_at_ms?: number;
+  kind: "image" | "video";
 }
 
 /**
@@ -132,6 +155,13 @@ export interface Attachment {
    * is the answer — see `AttachmentView` in `src-tauri/src/conversations.rs`.
    */
   voice?: VoiceMeta;
+  /**
+   * Whether it can be played a segment at a time.
+   *
+   * What decides between the streaming URL and the old fetch-the-whole-file
+   * path. False for everything sent before segmenting existed.
+   */
+  streamable: boolean;
 }
 
 /** The drawable half of a recording, as Rust sends it. */
@@ -242,6 +272,46 @@ export function sendReply(
   target: string,
 ): Promise<Message> {
   return invoke<Message>("send_reply", { conversationId, body, target });
+}
+
+/**
+ * Sends a picture or clip the recipient can open once.
+ *
+ * The path crosses, not the bytes — the same as `sendAttachment`. What differs
+ * is on the far side: the key is stored apart from the message and destroyed
+ * when the file is opened.
+ */
+export function sendViewOnce(
+  conversationId: string,
+  path: string,
+): Promise<Message> {
+  return invoke<Message>("send_view_once", { conversationId, path });
+}
+
+/**
+ * Opens a view-once message, once.
+ *
+ * Resolves to a data URL that can never be produced again for this message: by
+ * the time it returns, the key that made it has been destroyed. A second call
+ * rejects — not because a check refused it, but because there is nothing left
+ * to decrypt with.
+ */
+export function openViewOnce(clientId: string): Promise<string> {
+  return invoke<string>("open_view_once", { clientId });
+}
+
+/**
+ * Sends a sticker by name.
+ *
+ * Nothing is uploaded — every client has the art, so a sticker costs what a
+ * short message costs and no third party is asked for anything.
+ */
+export function sendSticker(
+  conversationId: string,
+  pack: string,
+  stickerId: string,
+): Promise<Message> {
+  return invoke<Message>("send_sticker", { conversationId, pack, stickerId });
 }
 
 export function syncConversation(conversationId: string): Promise<SyncResult> {
@@ -449,6 +519,17 @@ export function sendAttachment(
     path,
     body: body?.trim() ? body.trim() : null,
   });
+}
+
+/**
+ * The URL a player is pointed at for a segmented attachment.
+ *
+ * Not a `data:` URL: this one is answered range by range, so a player can start
+ * on the first segment and seek without pulling the whole file. Only valid for
+ * an attachment whose `streamable` is true — see `src-tauri/src/media.rs`.
+ */
+export function streamUrl(envelopeId: number): string {
+  return `http://nexo-media.localhost/${envelopeId}`;
 }
 
 /**

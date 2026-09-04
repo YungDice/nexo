@@ -683,6 +683,38 @@ fn send_written<T: Transport>(
     body: &str,
     reply_to: Option<uuid::Uuid>,
 ) -> Result<Sent, ConversationError> {
+    let payload = match reply_to {
+        Some(target) => Payload::Reply {
+            target,
+            body: body.to_string(),
+            id: Some(uuid::Uuid::new_v4()),
+        },
+        None => Payload::text(body),
+    };
+    send_message_payload(ctx, conversation_id, payload, body)
+}
+
+/// Encrypts, queues and sends one already-built payload as a *message*.
+///
+/// Distinct from [`send_payload`], which is the fire-and-forget path used for
+/// things that change state without drawing a bubble: this one goes through the
+/// outbox, writes local history, and returns what happened to it.
+///
+/// `stored_body` is what the local history and the conversation list show. It
+/// is passed rather than derived so a payload with no words of its own -- a
+/// sticker -- can still be written down without `preview()` having to invent
+/// prose for it.
+fn send_message_payload<T: Transport>(
+    ctx: &Context<'_, T>,
+    conversation_id: ConversationId,
+    payload: Payload,
+    stored_body: &str,
+) -> Result<Sent, ConversationError> {
+    let reply_to = match &payload {
+        Payload::Reply { target, .. } => Some(*target),
+        _ => None,
+    };
+    let body = stored_body;
     // One retry through a sync, before giving up.
     //
     // The Welcome that admits this device is an ordinary envelope, so there is
@@ -714,21 +746,18 @@ fn send_written<T: Transport>(
     // the message and there is no second chance to look inside and learn what
     // it was called. A retry sends the same bytes rather than producing new
     // ones, so the name is stable too.
-    let payload = match reply_to {
-        Some(target) => Payload::Reply {
-            target,
-            body: body.to_string(),
-            id: Some(uuid::Uuid::new_v4()),
-        },
-        None => Payload::text(body),
-    };
     let client_id = payload.id().map(|id| id.to_string());
-    // Kept for a reply and only for a reply. A plain message needs nothing
-    // beyond the body already stored beside it, and writing an encoded copy of
-    // every message into the outbox would double what a queue costs for
-    // nothing. A queued reply *does* need it: the quote lives in the payload
-    // until the message reaches the `messages` table and its own column.
-    let queued_payload = reply_to.map(|_| payload.encode_string());
+    // Kept for anything the body alone cannot describe. A plain message needs
+    // nothing beyond the body already stored beside it, and writing an encoded
+    // copy of every message into the outbox would double what a queue costs for
+    // nothing. A reply needs it, because the quote lives in the payload until
+    // the message reaches its own column; a sticker needs it, because the body
+    // is empty and the payload is the only record of which sticker it was.
+    let queued_payload = match &payload {
+        Payload::Reply { .. } | Payload::Sticker { .. } => Some(payload.encode_string()),
+        _ => None,
+    };
+    let stored_payload = queued_payload.clone();
     let ciphertext = conversation.encrypt(ctx.provider, ctx.signer, &payload.encode())?;
 
     // Queued before it is sent, not after a failure. If this process dies
@@ -768,7 +797,7 @@ fn send_written<T: Transport>(
                 conversation_id: &conversation_id.to_string(),
                 sender_device_id: None,
                 body,
-                payload: None,
+                payload: stored_payload.as_deref(),
                 sent_at_ms: now_ms(),
                 client_id: client_id.as_deref(),
                 reply_to: reply_to.map(|t| t.to_string()).as_deref(),
@@ -1202,6 +1231,46 @@ pub fn sync<T: Transport>(
                                 // the message turns up later.
                                 continue;
                             }
+                            // A view-once splits in two on arrival: an
+                            // ordinary message row that draws a bubble, and a
+                            // key row that can be destroyed. The payload is
+                            // **not** stored -- it holds the key, and
+                            // `messages.payload` outlives the opening.
+                            if let Payload::ViewOnce {
+                                s3_key,
+                                key,
+                                nonce,
+                                sha256,
+                                mime,
+                                size,
+                                id: name,
+                            } = &payload
+                            {
+                                ctx.store.insert_view_once(&nexo_store::StoredViewOnce {
+                                    client_id: name.to_string(),
+                                    conversation_id: id.clone(),
+                                    s3_key: s3_key.clone(),
+                                    enc_key: Some(key.clone()),
+                                    nonce: Some(nonce.clone()),
+                                    sha256: Some(sha256.clone()),
+                                    mime: mime.clone(),
+                                    size: *size as i64,
+                                    received_at_ms: envelope.server_timestamp_ms,
+                                    opened_at_ms: None,
+                                })?;
+                                ctx.store.insert(&nexo_store::NewMessage {
+                                    envelope_id: envelope.envelope_id,
+                                    conversation_id: &id,
+                                    sender_device_id: sender.map(|s| s.to_string()).as_deref(),
+                                    body: "",
+                                    payload: None,
+                                    sent_at_ms: envelope.server_timestamp_ms,
+                                    client_id: Some(&name.to_string()),
+                                    reply_to: None,
+                                })?;
+                                outcome.messages += 1;
+                                continue;
+                            }
                             if matches!(payload, Payload::GroupAvatar { .. }) {
                                 // The payload is kept, not the picture: it
                                 // holds the key, and the bytes are fetched when
@@ -1215,7 +1284,12 @@ pub fn sync<T: Transport>(
                             // Written down now or never: MLS will not decrypt
                             // this envelope a second time.
                             let stored = match &payload {
-                                Payload::Attachment { .. } => Some(payload.encode_string()),
+                                // A sticker's body is empty, so the payload is
+                                // the only record of which one it was. Without
+                                // this the message arrives as a blank bubble.
+                                Payload::Attachment { .. } | Payload::Sticker { .. } => {
+                                    Some(payload.encode_string())
+                                }
                                 // Kept verbatim rather than re-encoded: this
                                 // build cannot represent what arrived, so
                                 // encoding it back would write "{}" over it.
@@ -1674,6 +1748,9 @@ pub fn group_avatar<T: Transport>(
 /// `voice` is what separates a recording from a file the sender chose. It comes
 /// from the recorder and is carried rather than inferred; see
 /// [`nexo_protocol::VoiceMeta`].
+///
+/// Video is sealed in segments so a recipient can start watching before the
+/// file has arrived; everything else is sealed whole, as it always was.
 pub fn send_attachment<T: Transport>(
     ctx: &Context<'_, T>,
     conversation_id: ConversationId,
@@ -1683,7 +1760,17 @@ pub fn send_attachment<T: Transport>(
     body: Option<&str>,
     voice: Option<VoiceMeta>,
 ) -> Result<Sent, ConversationError> {
-    let sealed = nexo_crypto::attachment::encrypt(contents)?;
+    // Segmented only for video, and only because video is the thing anybody
+    // wants to start watching before it has arrived. Sending every attachment
+    // segmented would change the encoding of every file for a benefit a PDF
+    // cannot use -- and it would change the encoding of every file already
+    // understood by every client in the field.
+    let segmented = mime.starts_with("video/");
+    let sealed = if segmented {
+        nexo_crypto::attachment::encrypt_segmented(contents)?
+    } else {
+        nexo_crypto::attachment::encrypt(contents)?
+    };
 
     let id = conversation_id.to_string();
     let (url, s3_key) = ctx
@@ -1701,6 +1788,7 @@ pub fn send_attachment<T: Transport>(
         size: sealed.size,
         body: body.map(str::to_string),
         voice,
+        segmented,
         id: Some(uuid::Uuid::new_v4()),
     };
     let client_id = payload.id().map(|id| id.to_string());
@@ -1782,6 +1870,257 @@ pub struct Attachment {
     pub mime: String,
     /// The verified plaintext.
     pub contents: Vec<u8>,
+}
+
+/// Sends a sticker.
+///
+/// Nothing is uploaded: the message carries the pack and the sticker's name,
+/// and every client draws it from art it already has. See
+/// [`Payload::Sticker`] for why that is the shape rather than sending a
+/// picture.
+///
+/// Goes through the ordinary text path, outbox and all, because that is what it
+/// is — a very short message that happens to render as a picture.
+pub fn send_sticker<T: Transport>(
+    ctx: &Context<'_, T>,
+    conversation_id: ConversationId,
+    pack: &str,
+    sticker_id: &str,
+) -> Result<Sent, ConversationError> {
+    send_message_payload(
+        ctx,
+        conversation_id,
+        Payload::Sticker {
+            pack: pack.to_string(),
+            id: sticker_id.to_string(),
+            message_id: Some(uuid::Uuid::new_v4()),
+        },
+        "",
+    )
+}
+
+/// Sends a picture or clip the recipient can open once.
+///
+/// Encrypted and uploaded exactly like an attachment -- the difference is what
+/// the receiving side does with the key, not how the bytes are protected. See
+/// [`Payload::ViewOnce`] for what that does and does not buy.
+///
+/// Our own copy is written with **no key**. We still have the original file we
+/// picked; keeping a key that let the sender reopen what the recipient no
+/// longer can would make the bubble's own wording untrue on one side.
+pub fn send_view_once<T: Transport>(
+    ctx: &Context<'_, T>,
+    conversation_id: ConversationId,
+    mime: &str,
+    contents: &[u8],
+) -> Result<Sent, ConversationError> {
+    let sealed = nexo_crypto::attachment::encrypt(contents)?;
+
+    let id = conversation_id.to_string();
+    let (url, s3_key) = ctx
+        .transport
+        .upload_url(&id, sealed.ciphertext.len() as u64)?;
+    ctx.transport.put_object(&url, sealed.ciphertext)?;
+
+    let name = uuid::Uuid::new_v4();
+    let payload = Payload::ViewOnce {
+        s3_key: s3_key.clone(),
+        key: to_hex(sealed.key.as_slice()),
+        nonce: to_hex(&sealed.nonce),
+        sha256: to_hex(&sealed.sha256),
+        mime: mime.to_string(),
+        size: sealed.size,
+        id: name,
+    };
+
+    let mut conversation = Conversation::load(ctx.provider, conversation_id, now_ms())?
+        .ok_or(ConversationError::NotAMember)?;
+    let ciphertext = conversation.encrypt(ctx.provider, ctx.signer, &payload.encode())?;
+
+    let accepted = ctx.transport.send(
+        &id,
+        &to_hex(&ciphertext),
+        conversation.epoch() as i64,
+        false,
+        &outbox::new_message_id(),
+    )?;
+
+    // The message row carries **no payload**. That is not an omission: the
+    // payload holds the key, `messages.payload` is kept for the life of the
+    // message, and a key kept there could be read again -- which is the one
+    // thing this feature promises cannot happen.
+    ctx.store.insert(&nexo_store::NewMessage {
+        envelope_id: accepted.envelope_id,
+        conversation_id: &id,
+        sender_device_id: None,
+        body: "",
+        payload: None,
+        sent_at_ms: now_ms(),
+        client_id: Some(&name.to_string()),
+        reply_to: None,
+    })?;
+    ctx.store.insert_view_once(&nexo_store::StoredViewOnce {
+        client_id: name.to_string(),
+        conversation_id: id,
+        s3_key,
+        enc_key: None,
+        nonce: None,
+        sha256: None,
+        mime: mime.to_string(),
+        size: contents.len() as i64,
+        received_at_ms: now_ms(),
+        // Ours, and already spent: there was never anything here for us to
+        // open. Dated now so the bubble can say when it was sent.
+        opened_at_ms: Some(now_ms()),
+    })?;
+    mls_state::save(ctx.provider, ctx.store)?;
+
+    Ok(Sent::Delivered {
+        envelope_id: accepted.envelope_id,
+        client_id: Some(name.to_string()),
+    })
+}
+
+/// Opens a view-once message, and destroys the key on the way out.
+///
+/// The order is the whole of the correctness here: fetch, decrypt, *then*
+/// burn. Burning first would lose the picture to a dropped connection, and
+/// burning is not undoable -- there is no second copy of that key anywhere,
+/// which is exactly what was promised.
+///
+/// A second call finds no key and fails. Not "is refused by a check": the
+/// bytes in the bucket cannot be decrypted by this device any more.
+pub fn open_view_once<T: Transport>(
+    ctx: &Context<'_, T>,
+    client_id: &str,
+) -> Result<(Vec<u8>, String), ConversationError> {
+    let item = ctx
+        .store
+        .view_once(client_id)?
+        .ok_or(ConversationError::NotAnAttachment)?;
+
+    let (Some(key), Some(nonce), Some(sha256)) = (&item.enc_key, &item.nonce, &item.sha256) else {
+        // Already opened, or ours. Either way there is nothing left to open,
+        // and saying so is the honest answer rather than an error about state.
+        return Err(ConversationError::NotAnAttachment);
+    };
+
+    let url = ctx.transport.download_url(&item.s3_key)?;
+    let ciphertext = ctx.transport.get_object(&url)?;
+    let plaintext = nexo_crypto::attachment::decrypt(
+        &ciphertext,
+        &from_hex(key)?,
+        &from_hex(nonce)?,
+        &from_hex(sha256)?,
+    )?;
+
+    ctx.store.burn_view_once(client_id, now_ms())?;
+    Ok((plaintext.to_vec(), item.mime))
+}
+
+/// What a reader needs to stream one attachment without opening all of it.
+#[derive(Debug, Clone)]
+pub struct StreamInfo {
+    /// Plaintext length, so a player can be told how long the file is before
+    /// any of it has been fetched.
+    pub size: u64,
+    /// How many segments it is sealed in.
+    pub segments: u64,
+    /// The plaintext type the sender declared. A hint for choosing a player,
+    /// never what decides whether bytes are rendered.
+    pub mime: String,
+}
+
+/// Whether an attachment can be read a segment at a time, and how big it is.
+///
+/// `None` for anything sealed whole -- which is every attachment sent before
+/// segmenting existed, and every non-video since. A caller that gets `None`
+/// falls back to fetching the file, which is what it did before this existed.
+pub fn stream_info<T: Transport>(
+    ctx: &Context<'_, T>,
+    envelope_id: i64,
+) -> Result<Option<StreamInfo>, ConversationError> {
+    let Some(encoded) = ctx.store.message_payload(envelope_id)? else {
+        return Ok(None);
+    };
+    let Payload::Attachment {
+        size,
+        mime,
+        segmented,
+        ..
+    } = Payload::decode(encoded.as_bytes())
+    else {
+        return Ok(None);
+    };
+    if !segmented {
+        return Ok(None);
+    }
+    Ok(Some(StreamInfo {
+        size,
+        segments: nexo_crypto::attachment::segment_count(size),
+        mime,
+    }))
+}
+
+/// Fetches and opens one segment of a segmented attachment.
+///
+/// This is the call a range request turns into. It moves one segment over the
+/// network, not the file: the ciphertext offsets are fixed by
+/// `SEGMENT_CIPHERTEXT_LEN`, so the range is computed here rather than
+/// discovered by reading.
+///
+/// Fails closed on every disagreement. A segment that was reordered, a stream
+/// cut short, a `size` the sender lied about -- all of them come back as a
+/// decryption failure rather than as short or shuffled bytes, because the index
+/// and the total are authenticated with the segment (rule 7).
+pub fn attachment_segment<T: Transport>(
+    ctx: &Context<'_, T>,
+    envelope_id: i64,
+    index: u64,
+) -> Result<Vec<u8>, ConversationError> {
+    use nexo_crypto::attachment::{SEGMENT_CIPHERTEXT_LEN, segment_count};
+
+    let encoded = ctx
+        .store
+        .message_payload(envelope_id)?
+        .ok_or(ConversationError::NotAnAttachment)?;
+    let Payload::Attachment {
+        s3_key,
+        key,
+        nonce,
+        size,
+        segmented,
+        ..
+    } = Payload::decode(encoded.as_bytes())
+    else {
+        return Err(ConversationError::NotAnAttachment);
+    };
+    if !segmented {
+        return Err(ConversationError::NotAnAttachment);
+    }
+
+    let total = segment_count(size);
+    if index >= total {
+        return Err(ConversationError::NotAnAttachment);
+    }
+
+    let from = index * SEGMENT_CIPHERTEXT_LEN as u64;
+    // Inclusive, as HTTP means it. The last segment is short and the store
+    // returns what exists rather than padding, which is why the length is not
+    // checked here -- the tag is what decides whether it was the right bytes.
+    let to = from + SEGMENT_CIPHERTEXT_LEN as u64 - 1;
+
+    let url = ctx.transport.download_url(&s3_key)?;
+    let ciphertext = ctx.transport.get_object_range(&url, from, to)?;
+
+    let plaintext = nexo_crypto::attachment::decrypt_segment(
+        &ciphertext,
+        &from_hex(&key)?,
+        &from_hex(&nonce)?,
+        index,
+        total,
+    )?;
+    Ok(plaintext.to_vec())
 }
 
 /// Downloads and decrypts an attachment.

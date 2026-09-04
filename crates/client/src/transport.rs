@@ -315,6 +315,25 @@ pub trait Transport {
     /// GETs bytes from a presigned URL.
     fn get_object(&self, url: &str) -> Result<Vec<u8>, TransportError>;
 
+    /// GETs one byte range from a presigned URL.
+    ///
+    /// `from` and `to` are inclusive, as HTTP means them. What comes back may
+    /// legitimately be *shorter* than asked for — the last range of a file
+    /// usually is — but never longer, and a caller that needs an exact length
+    /// must check.
+    ///
+    /// The default implementation fetches the whole object and slices it, so
+    /// every existing transport keeps working unchanged and correctness never
+    /// depends on the server honouring `Range`. It is overridden in `http.rs`
+    /// with a real ranged request, which is where the saving actually is:
+    /// opening one segment of a 200 MB video should not move 200 MB.
+    fn get_object_range(&self, url: &str, from: u64, to: u64) -> Result<Vec<u8>, TransportError> {
+        let all = self.get_object(url)?;
+        let start = (from as usize).min(all.len());
+        let end = (to as usize).saturating_add(1).min(all.len());
+        Ok(all.get(start..end).unwrap_or_default().to_vec())
+    }
+
     /// Everything after `since_id`.
     fn sync(&self, conversation_id: &str, since_id: i64) -> Result<Vec<Envelope>, TransportError>;
 

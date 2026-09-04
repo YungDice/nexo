@@ -8,6 +8,8 @@ import {
   sendAttachment,
   sendVoiceMessage,
   sendReply as sendReplyMessage,
+  sendViewOnce,
+  sendSticker as sendStickerMessage,
   type Conversation as WireConversation,
   type Message as WireMessage,
 } from "../lib/conversations";
@@ -16,7 +18,6 @@ import type { Conversation, Message } from "../lib/types";
 import { useApp } from "./store";
 import { onSync, syncNow } from "./syncAgent";
 import type { Recording } from "../features/messages/useRecorder";
-
 /**
  * Live conversation data, in the shapes the UI already renders.
  *
@@ -81,6 +82,19 @@ function toMessage(wire: WireMessage, conversationId: string): Message {
     // "sent" is the honest floor there.
     state: wire.pending ? "sending" : "sent",
     ...(wire.client_id ? { clientId: wire.client_id } : {}),
+    ...(wire.sticker ? { sticker: wire.sticker } : {}),
+    ...(wire.view_once
+      ? {
+          viewOnce: {
+            openable: wire.view_once.openable,
+            outgoing: wire.view_once.outgoing,
+            kind: wire.view_once.kind,
+            ...(wire.view_once.opened_at_ms !== undefined
+              ? { openedAtMs: wire.view_once.opened_at_ms }
+              : {}),
+          },
+        }
+      : {}),
     ...(wire.reply
       ? {
           replyTo: {
@@ -127,6 +141,7 @@ function toMessage(wire: WireMessage, conversationId: string): Message {
                     },
                   }
                 : {}),
+              ...(wire.attachment.streamable ? { streamable: true } : {}),
             },
           ],
         }
@@ -148,6 +163,10 @@ export interface LiveConversations {
   sendVoice: (recording: Recording) => Promise<void>;
   /** Sends a message answering another one, by that message's name. */
   sendReply: (body: string, target: string) => Promise<void>;
+  /** Sends a picture or clip the other person can open once. */
+  sendOnce: (path: string) => Promise<void>;
+  /** Sends a sticker by name. */
+  sendSticker: (pack: string, stickerId: string) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -304,6 +323,36 @@ export function useConversations(
     [activeId, loadList],
   );
 
+  const sendOnce = useCallback(
+    async (path: string) => {
+      if (!activeId) return;
+      try {
+        const sent = await sendViewOnce(activeId, path);
+        setMessages((current) => [...current, toMessage(sent, activeId)]);
+        setProblem(null);
+        void loadList();
+      } catch (error) {
+        setProblem(asConversationError(error).message);
+      }
+    },
+    [activeId, loadList],
+  );
+
+  const sendSticker = useCallback(
+    async (pack: string, stickerId: string) => {
+      if (!activeId) return;
+      try {
+        const sent = await sendStickerMessage(activeId, pack, stickerId);
+        setMessages((current) => [...current, toMessage(sent, activeId)]);
+        setProblem(null);
+        void loadList();
+      } catch (error) {
+        setProblem(asConversationError(error).message);
+      }
+    },
+    [activeId, loadList],
+  );
+
   const sendVoice = useCallback(
     async (recording: Recording) => {
       if (!activeId) return;
@@ -342,6 +391,8 @@ export function useConversations(
       sendFile,
       sendVoice,
       sendReply,
+      sendOnce,
+      sendSticker,
       refresh,
     }),
     [
@@ -354,6 +405,8 @@ export function useConversations(
       sendFile,
       sendVoice,
       sendReply,
+      sendOnce,
+      sendSticker,
       refresh,
     ],
   );

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { IconButton } from "../../components/ui/Button";
 import { EmojiPicker } from "../../components/ui/EmojiPicker";
+import { StickerPicker } from "../../components/ui/StickerPicker";
 import { Icon } from "../../components/ui/Icon";
 import { pickFile, type PickedFile } from "../../lib/native";
 import { formatDuration, useRecorder, type Recording } from "./useRecorder";
@@ -23,6 +24,8 @@ export function Composer({
   onSendVoice,
   replyingTo,
   onCancelReply,
+  onSendViewOnce,
+  onSendSticker,
   conversationTitle,
 }: {
   onSend: (body: string, attachment?: PickedFile) => void;
@@ -30,13 +33,25 @@ export function Composer({
   /** The message being answered, when one is. */
   replyingTo?: { excerpt: string; outgoing: boolean } | undefined;
   onCancelReply?: (() => void) | undefined;
+  /**
+   * Sends a picture or clip the other person can open once.
+   *
+   * Absent in a group, and the control is then absent too. "Once" in a group
+   * would have to mean "once each", which is a different promise wearing the
+   * same word -- and the one people would assume is the stricter one.
+   */
+  onSendViewOnce?: (() => void) | undefined;
+  /** Sends a sticker by name. Nothing is uploaded. */
+  onSendSticker?: ((pack: string, stickerId: string) => void) | undefined;
   conversationTitle: string;
 }) {
   const [value, setValue] = useState("");
   const [attachment, setAttachment] = useState<PickedFile | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [stickersOpen, setStickersOpen] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
   const emojiWrap = useRef<HTMLDivElement>(null);
+  const stickerWrap = useRef<HTMLDivElement>(null);
   const recorder = useRecorder();
 
   useEffect(() => {
@@ -54,6 +69,16 @@ export function Composer({
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [emojiOpen]);
+
+  useEffect(() => {
+    if (!stickersOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!stickerWrap.current?.contains(event.target as Node))
+        setStickersOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [stickersOpen]);
 
   const send = () => {
     const body = value.trim();
@@ -158,6 +183,13 @@ export function Composer({
           active={attachment !== null}
           onClick={() => void attach()}
         />
+        {onSendViewOnce ? (
+          <IconButton
+            name="eye"
+            label="Send a photo or video they can open once"
+            onClick={onSendViewOnce}
+          />
+        ) : null}
         <textarea
           ref={box}
           rows={1}
@@ -173,6 +205,29 @@ export function Composer({
           placeholder="Write a message"
           className="text-text-hi placeholder:text-text-lo max-h-[148px] min-h-9 flex-1 resize-none bg-transparent px-1 py-1.5 text-message leading-6 outline-none"
         />
+        {onSendSticker ? (
+          <div className="relative" ref={stickerWrap}>
+            <IconButton
+              name="image"
+              label="Send a sticker"
+              active={stickersOpen}
+              onClick={() => setStickersOpen((open) => !open)}
+            />
+            {stickersOpen ? (
+              <div className="rounded-panel bg-surface-2 ring-line-strong absolute right-0 bottom-full z-[300] mb-2 overflow-hidden shadow-[0_12px_32px_-8px_rgba(0,0,0,0.5)] ring-1">
+                <StickerPicker
+                  onPick={(pack, stickerId) => {
+                    onSendSticker(pack, stickerId);
+                    // Closed after one, unlike the emoji picker: an emoji joins
+                    // a sentence being written, a sticker *is* the message and
+                    // has already been sent by the time this runs.
+                    setStickersOpen(false);
+                  }}
+                />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div className="relative" ref={emojiWrap}>
           <IconButton
             name="emoji"

@@ -13,11 +13,13 @@ import {
 } from "../../lib/native";
 import {
   deleteMessageForMe,
+  openViewOnce,
   reactToMessage,
   reviseMessage,
   setMessagePinned,
 } from "../../lib/conversations";
 import { EmojiPicker } from "../../components/ui/EmojiPicker";
+import { StickerArt, findSticker } from "../../components/ui/stickers";
 
 /**
  * How long a message stays editable, matching `nexo_protocol::window`.
@@ -30,6 +32,7 @@ const EDIT_WINDOW_MS = 10 * 60 * 1000;
 import {
   asConversationError,
   attachmentDataUrl,
+  streamUrl,
   conversationAttachments,
   saveAttachmentTo,
   type AttachmentEntry,
@@ -214,6 +217,7 @@ export function MessageList({
                 onOpenMedia={(id) => void openMedia(id)}
                 onReply={onReply}
                 onJumpTo={jumpTo}
+                onChangedHere={() => onChanged?.()}
                 onRevise={async (target, body) => {
                   await reviseMessage(conversation.id, target, body);
                   onChanged?.();
@@ -365,6 +369,145 @@ function QuoteBlock({
   );
 }
 
+/**
+ * A sticker, drawn from art this build already has.
+ *
+ * No bubble behind it. A sticker is a picture somebody chose, and a chrome
+ * container around it makes it look like an attachment — which is exactly what
+ * it is not.
+ *
+ * A pack or an id this build does not know is drawn as a placeholder saying so,
+ * rather than as nothing. That is the cost of naming art instead of sending it,
+ * and it is the same failure `UnsupportedBubble` handles: somebody is running a
+ * newer Nexo, and the remedy is an update rather than asking them to resend.
+ */
+function StickerBubble({ sticker }: { sticker: { pack: string; id: string } }) {
+  const art = findSticker(sticker.pack, sticker.id);
+  if (!art) {
+    return (
+      <div className="rounded-bubble border-line text-text-lo flex items-center gap-2 border border-dashed px-3 py-2 text-meta">
+        <Icon name="refresh" size={14} className="shrink-0" />
+        A sticker this version does not have yet
+      </div>
+    );
+  }
+  return <StickerArt sticker={art} size={128} />;
+}
+
+/**
+ * A picture or clip meant to be opened once.
+ *
+ * Three states, and the wording of each is the feature.
+ *
+ * **Unopened.** A cover, not a blurred preview: blurring implies the picture is
+ * already here and merely obscured, and someone will try to unblur it. Nothing
+ * is fetched until it is opened, so there is nothing to obscure.
+ *
+ * **Opened.** The key is gone from this device, so the bubble says exactly
+ * that. Not "expired", which suggests a clock, and not "deleted", which
+ * suggests somewhere it went.
+ *
+ * **Ours.** We kept the file we picked, so there was never anything here for us
+ * to open — the bubble says it was sent rather than pretending to be spent.
+ *
+ * What it never says: that the other person cannot keep it. They can photograph
+ * the screen, and `docs/THREAT-MODEL.md` §4 puts the viewer's own device out of
+ * scope. Claiming otherwise would be the comfortable lie rule 5 exists to stop.
+ */
+function ViewOnceBubble({
+  message,
+  onOpenChanged,
+}: {
+  message: Message;
+  onOpenChanged: () => void;
+}) {
+  const state = message.viewOnce;
+  const [showing, setShowing] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  if (!state) return null;
+
+  const noun = state.kind === "video" ? "Video" : "Photo";
+
+  async function open() {
+    if (!message.clientId || busy) return;
+    setBusy(true);
+    try {
+      const url = await openViewOnce(message.clientId);
+      setShowing(url);
+      // The key is gone now, so every other view of this message is wrong
+      // until it reloads.
+      onOpenChanged();
+    } catch (error) {
+      setProblem(asConversationError(error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (showing) {
+    return (
+      <div className="rounded-panel bg-surface-2 ring-line flex w-[320px] flex-col gap-2 p-2 ring-1">
+        {state.kind === "video" ? (
+          <video src={showing} controls autoPlay className="w-full rounded-[10px]" />
+        ) : (
+          <img src={showing} alt={`${noun}, opened once`} className="w-full rounded-[10px]" />
+        )}
+        <span className="text-text-lo text-[11px]">
+          Closing this ends it — the key is already gone from this device.
+        </span>
+      </div>
+    );
+  }
+
+  const spent = !state.openable;
+  return (
+    <div
+      className={cn(
+        "rounded-panel ring-line flex w-[260px] flex-col gap-1.5 p-3 ring-1",
+        spent ? "bg-surface-2" : "bg-surface-3",
+      )}
+    >
+      <span className="flex items-center gap-2">
+        <Icon
+          name={spent ? "lock" : state.kind === "video" ? "play" : "image"}
+          size={15}
+          className={spent ? "text-text-lo shrink-0" : "text-accent-soft shrink-0"}
+        />
+        <span className="text-text-hi text-[12px] font-medium">
+          {noun}
+          {spent ? "" : " · once"}
+        </span>
+      </span>
+
+      {spent ? (
+        <span className="text-text-lo text-[11px]">
+          {state.outgoing
+            ? "Sent. You can open your own copy of the file, not this."
+            : "Opened. The key was destroyed, so this cannot be opened again."}
+        </span>
+      ) : (
+        <>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void open()}
+            className="rounded-control bg-accent text-on-accent px-2.5 py-1.5 text-[12px] font-medium disabled:opacity-60"
+          >
+            {busy ? "Opening…" : `Open ${noun.toLowerCase()}`}
+          </button>
+          <span className="text-text-lo text-[11px]">
+            Once. Nexo cannot stop a screenshot.
+          </span>
+        </>
+      )}
+      {problem ? (
+        <span className="text-[11px] text-[var(--danger)]">{problem}</span>
+      ) : null}
+    </div>
+  );
+}
+
 function Bubble({
   row,
   index,
@@ -372,6 +515,7 @@ function Bubble({
   onOpenMedia,
   onReply,
   onJumpTo,
+  onChangedHere,
   onPinnedChange,
   onDeleteForMe,
   onReact,
@@ -383,6 +527,8 @@ function Bubble({
   onOpenMedia: (envelopeId: number) => void;
   onReply?: ((message: Message) => void) | undefined;
   onJumpTo: (envelopeId: number) => void;
+  /** Opening a view-once changed the store; reload so every view agrees. */
+  onChangedHere: () => void;
   onPinnedChange: (envelopeId: number, pinned: boolean) => void | Promise<void>;
   onReact: (target: string, emoji: string, on: boolean) => void | Promise<void>;
   onRevise: (target: string, body?: string) => void | Promise<void>;
@@ -526,7 +672,11 @@ function Bubble({
             {message.replyTo && !message.retracted ? (
               <QuoteBlock quote={message.replyTo} mine={mine} onJumpTo={onJumpTo} />
             ) : null}
-            {message.retracted ? (
+            {message.sticker ? (
+              <StickerBubble sticker={message.sticker} />
+            ) : message.viewOnce ? (
+              <ViewOnceBubble message={message} onOpenChanged={onChangedHere} />
+            ) : message.retracted ? (
               // The row is still here on purpose. Removing it would close the
               // gap where something used to be, which is not what being taken
               // back looks like to the people who saw it.
@@ -738,10 +888,23 @@ function AttachedMedia({
   attachment: Attachment;
   onOpen: (envelopeId: number) => void;
 }) {
-  const [url, setUrl] = useState<string | null>(null);
+  // A streamable attachment needs no fetch at all: the player is pointed at a
+  // URL that is answered range by range, so the first frame and the duration
+  // appear without the file moving. Everything else takes the old path, which
+  // pulls the whole thing across IPC as a data URL and is capped because of it.
+  const streaming = attachment.streamable
+    ? streamUrl(Number(attachment.id))
+    : null;
+
+  const [url, setUrl] = useState<string | null>(streaming);
   const [failed, setFailed] = useState<string | null>(null);
 
   useEffect(() => {
+    if (streaming) {
+      setUrl(streaming);
+      setFailed(null);
+      return;
+    }
     let cancelled = false;
     setUrl(null);
     setFailed(null);
@@ -758,7 +921,7 @@ function AttachedMedia({
     return () => {
       cancelled = true;
     };
-  }, [attachment.id]);
+  }, [attachment.id, streaming]);
 
   const viewable = attachment.kind === "image" || attachment.kind === "video";
   const { onContextMenu, menu } = useContextMenu(() => [
@@ -837,8 +1000,14 @@ function AttachedMedia({
           {url ? (
             // `controls` and nothing else: no autoplay, because a conversation
             // that starts talking when you scroll past it is the thing people
-            // turn media off to avoid. `preload="metadata"` so the first frame
-            // and the duration are there without decoding the whole file.
+            // turn media off to avoid.
+            //
+            // `preload="metadata"` now means what it says. Against a `data:`
+            // URL it could not: the whole file was already in the page by the
+            // time the element saw it. Against the streaming URL the element
+            // asks for the header, draws the first frame, learns the duration,
+            // and stops -- which is why a video no longer has to be fetched
+            // before it can be looked at.
             <video
               src={url}
               controls

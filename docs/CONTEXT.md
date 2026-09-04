@@ -125,19 +125,20 @@ without a regenerated `.sqlx` breaks an offline build — see
 
 ### Desktop shell (`apps/desktop/src-tauri/src`)
 
-94 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
+97 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
 crosses into the WebView is already decrypted, and nothing else does.
 
 | File | Commands | Owns |
 |---|---|---|
 | `feed.rs` (750 ln) | 23 | Posts, comments, votes, reactions. |
-| `conversations.rs` | 28 | Messaging, replies, attachments, voice messages, reactions, pinning, local delete, edit and retract. |
+| `conversations.rs` | 31 | Messaging, replies, attachments, voice messages, view-once media, reactions, pinning, local delete, edit and retract. |
 | `commands.rs` | 15 | Profile, settings, misc. |
 | `auth.rs` (665 ln) | 11 | Register, login, lock, PIN, delete the account. |
 | `meet.rs` | 17 | Meet&Greet: the map, the pin, intros, reporting, search, invitations, stories. |
 | `client.rs` | — | Builds and holds the `nexo-client` instance. |
 | `windows.rs` (502 ln) | — | Window creation, DWM backdrop, the acrylic path. |
 | `preview.rs` (534 ln) | — | Link previews. Off by default, on purpose. |
+| `media.rs` | — | The `nexo-media` URI scheme: decrypted video, one byte range at a time. |
 
 ### Frontend (`apps/desktop/src`)
 
@@ -270,6 +271,18 @@ move.
 
 - **Pinned dependencies, everywhere.** `=1.0.229`, not `^1.0`. Rule 8. A bump is
   a deliberate act that goes through `cargo deny` and `cargo audit`.
+- **An attachment has two encodings, and the reader must know which.**
+  `attachment::encrypt` seals a whole file under one GCM tag; `encrypt_segmented`
+  seals it in 256 KiB segments whose AAD binds each segment's index and the
+  total, so a byte range can be opened without the rest — and so a reordered or
+  truncated stream fails authentication instead of playing short. **Video is
+  sealed segmented; everything else is sealed whole**, decided by MIME in
+  `send_attachment`. The two are not distinguishable from the ciphertext, so
+  `Payload::Attachment::segmented` carries the answer — defaulting to false, so
+  every message sent before this stays byte-identical and still reads.
+  A consequence worth knowing: anything that reaches `send_attachment` claiming
+  a `video/` type gets the segmented encoding, which is why the voice command
+  forces `audio/` even though `MediaRecorder` sometimes says `video/webm`.
 - **A new kind of media needs a CSP directive, and fails silently without one.**
   The CSP in `tauri.conf.json` is the whole policy: Tauri appends script and
   style hashes to it and touches nothing else, so an absent directive falls back

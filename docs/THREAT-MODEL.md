@@ -370,6 +370,47 @@ a story is recallable.
   for messages — who talks to whom, and when — but it arrives in a recognisable
   pattern, and a pattern is information.
 
+### 2.13 View-once destroys a key, and nothing else
+
+What it does, exactly: the key that opens the ciphertext is stored apart from
+the message — in `view_once`, never in `messages.payload`, which outlives the
+opening — and it is overwritten with `NULL` the moment the file has been
+decrypted. After that **this device cannot read that object again**. Not
+"declines to": the bytes in the bucket are AES-256-GCM ciphertext and the only
+copy of their key is gone. A modified build has nothing to modify.
+
+That is a stronger claim than most apps make here, and it is worth being precise
+about why: a client that merely *refuses* to show something it could still
+decrypt is one patch away from showing it. Deleting the key removes the
+question.
+
+What it does **not** do, and what the UI therefore says out loud beside the
+button — *"Once. Nexo cannot stop a screenshot."*:
+
+- A screenshot, a screen recorder, or a camera pointed at the monitor. The
+  viewer's own device is out of scope (§4), and nothing here changes that.
+- A modified build that keeps the plaintext after decrypting it. The bytes are
+  decrypted on the viewer's machine because they must be, and that machine is
+  theirs.
+
+**There is no screenshot notification, deliberately.** Telegram sends one, and
+it is the part of the feature that should not be copied: it tells the sender
+something happened only when a cooperating client chooses to say so, which
+means its silence proves nothing while reading as an assurance. Sending it here
+would imply exactly the guarantee this section disclaims. Rule 5 covers this
+case precisely — say the true thing, not the reassuring one.
+
+Two smaller consequences, both deliberate:
+
+- **One-to-one only.** "Once" in a group would have to mean "once each", which
+  is a different promise wearing the same word — and people would assume the
+  stricter one. The control is absent in a group rather than present and
+  redefined.
+- **The sender's copy was never openable.** The sender keeps the file they
+  picked, so nothing is taken from them; but the key row is written already
+  spent, because a sender who could reopen what the recipient cannot would make
+  the bubble's own wording untrue on one side of the conversation.
+
 ## 3. Adversaries in scope
 
 **A network attacker.** Defeated by TLS 1.3 for transport plus MLS for content.

@@ -148,7 +148,7 @@ reply to a deleted message says what happened.
 
 ---
 
-## Wave 3 — View-once media *(queue 3, engine 5)*
+## Wave 3 — View-once media *(queue 3, engine 5)* — **done**
 
 Wave 7's story pipeline is this feature with a different expiry rule. Reuse it
 rather than inventing a second ephemeral path.
@@ -185,7 +185,33 @@ because the key is gone, and the UI never claims more than that.
 
 ---
 
-## Wave 4 — Typing indicators *(queue 4)*
+## Wave 4 — Typing indicators *(queue 4)* — **blocked, re-estimated**
+
+**This wave was mis-scoped when the plan was written, and the estimate below
+was wrong.** `apps/server/src/stream/mod.rs:158` does relay a `Typing` event —
+that part is true — but the client has **no WebSocket at all**. `Transport` is
+entirely request/response (`crates/client/src/transport.rs`), backed by `ureq`,
+which is deliberately blocking; there is no `ws://` anywhere in `crates/client`
+or the Tauri shell, and no WebSocket dependency in either `Cargo.toml`. The
+comment in `lib/conversations.ts` about the socket "changing how fast this
+happens, not whether it works" is describing a socket that was never wired.
+
+So typing indicators are not an afternoon. They need a WebSocket client added
+to a deliberately blocking, poll-based architecture — a decision that belongs
+with the owners, not one to slip in under a small feature, because the same
+socket would also replace the 4-second sync poll and change how every message
+arrives.
+
+**Doing it over the existing poll is not an acceptable fallback.** A typing
+indicator delivered on a 4-second cycle appears up to four seconds late and
+lingers after the person stopped — a control that lies about what is happening
+right now, which is the failure mode this codebase rejects elsewhere.
+
+**Open question for the owners:** wire a real WebSocket transport (its own
+wave, and it earns its keep beyond typing — instant delivery, presence,
+receipts), or leave typing unbuilt for now?
+
+## Wave 4 — Typing indicators, as originally estimated *(superseded)*
 
 `apps/server/src/stream/mod.rs:158` already relays a `Typing` event with a
 comment explaining it is opt-out-able and carries no content. No client ever
@@ -208,7 +234,42 @@ turns it off in both directions.
 
 ---
 
-## Wave 5 — Chunked attachment crypto and streaming media *(queue 5, engine 2)*
+## Wave 5a — Segment framing in the crypto crate — **done**
+
+The half that is pure, testable and self-contained: `encrypt_segmented`,
+`decrypt_segment`, `segment_count`, and the AAD that closes reordering and
+truncation. Nothing sends segmented attachments yet, so the wire is unchanged
+and the repository is consistent either way.
+
+## Wave 5b — Ranged reading, the media protocol, and what a video looks like — **done**
+
+The rest of the original wave 5, and it carries **two design questions that
+should be answered before code**, because both are hard to reverse once
+messages carrying them exist:
+
+1. **How does a reader know an attachment is segmented?** The two encodings are
+   not distinguishable from the ciphertext, so `Payload::Attachment` needs a
+   marker. A `segmented: bool` defaulting to false keeps every existing message
+   byte-identical, and the segment count derives from `size` — a sender lying
+   about `size` then fails the AAD check rather than being believed, which is
+   the fail-closed direction.
+2. **How does a video arrive as a picture rather than a black rectangle?**
+   **Answered by building the rest of the wave, and the answer was "it does not
+   need a poster at all".** The objection to deriving one on the receiver was
+   that it needs the file downloaded — but with ranged reading it needs the
+   first segment. `<video preload="metadata">` against the streaming URL draws
+   the first frame and reads the duration natively, fetching only the header.
+   A JPEG in every recipient's ciphertext would have bought nothing. The first
+   draft of this wave carried one; it was removed before it shipped.
+
+Then: `get_object_range` on `Transport` (a default method that fetches whole
+and slices, overridden in `http.rs` with a real `Range` request, so no test
+transport has to change), a Tauri URI-scheme handler answering range requests
+by decrypting only the segments a range touches, that scheme in `media-src`,
+and MP4 index normalisation at send so playback can start before the file has
+arrived.
+
+## Wave 5 — Chunked attachment crypto and streaming media, as originally planned *(superseded by 5a/5b)*
 
 The one infrastructure wave, and the only item here that is a week or more.
 Everything in engine 2 is downstream of it.

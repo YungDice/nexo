@@ -58,6 +58,14 @@ export interface Attachment {
    * before recording existed.
    */
   voice?: VoiceMeta;
+  /**
+   * Whether it can be played a segment at a time rather than fetched whole.
+   *
+   * When true the bubble points a player at the streaming URL, which fetches
+   * only what it needs — so the first frame and the duration appear without
+   * the whole file moving. False for everything sent before segmenting.
+   */
+  streamable?: boolean;
 }
 
 /**
@@ -77,6 +85,14 @@ export interface QuotedMessage {
   retracted: boolean;
   /** Already shortened in Rust. Empty when retracted or not found. */
   excerpt: string;
+}
+
+/** What a bubble may know about a view-once message. Never a key. */
+export interface ViewOnceState {
+  openable: boolean;
+  outgoing: boolean;
+  openedAtMs?: number;
+  kind: "image" | "video";
 }
 
 /** What the bubble needs to draw a recording before it has decoded one. */
@@ -136,6 +152,20 @@ export interface Message {
    * whether the quoted message ever arrived here.
    */
   replyTo?: QuotedMessage;
+  /**
+   * Set when this is a picture or clip meant to be opened once.
+   *
+   * `openable` false means the key is gone from this device — a fact about the
+   * disk rather than a rule the UI is enforcing.
+   */
+  viewOnce?: ViewOnceState;
+  /**
+   * Set when this message is a sticker.
+   *
+   * Names the art rather than carrying it — the pack is bundled. A pair this
+   * build does not recognise draws a placeholder rather than nothing.
+   */
+  sticker?: { pack: string; id: string };
   /**
    * Pinned **on this device**.
    *

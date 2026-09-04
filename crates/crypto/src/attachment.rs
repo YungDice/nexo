@@ -141,9 +141,330 @@ pub fn decrypt(
     Ok(Zeroizing::new(plaintext))
 }
 
+/// How much plaintext goes into one segment.
+///
+/// 256 KiB. The trade is between how much has to arrive before the first frame
+/// can be decoded and how much the per-segment overhead costs: a 16-byte tag on
+/// 256 KiB is 0.006%, while a segment small enough to make that overhead
+/// noticeable would also mean thousands of them for an ordinary video.
+///
+/// Fixed rather than carried in the payload. A reader that took the size from
+/// the sender would have to trust it to compute segment boundaries, and a lie
+/// there is a way to make a reader index past the end of its own buffer.
+pub const SEGMENT_LEN: usize = 256 * 1024;
+
+/// A segment's ciphertext length: the plaintext plus GCM's tag.
+pub const SEGMENT_CIPHERTEXT_LEN: usize = SEGMENT_LEN + 16;
+
+/// Encrypts a file in segments that can be decrypted one at a time.
+///
+/// The same primitive as [`encrypt`], applied per segment, so that a byte range
+/// can be read without the whole file — which is what lets a video start
+/// playing before it has finished arriving. Nothing new is invented here
+/// (rule 1): it is AES-256-GCM from the same crate, with a counter-derived
+/// nonce and an authenticated segment header.
+///
+/// # Why this is not simply `encrypt` in a loop
+///
+/// Three attacks that per-segment encryption invites, and what stops each:
+///
+/// - **Reordering.** Segments encrypted independently under one key are
+///   interchangeable. The segment index goes in the AAD, so a segment moved to
+///   a different position fails its tag.
+/// - **Truncation.** Dropping the tail of a file leaves every remaining segment
+///   valid. The total count goes in the AAD too, so every segment names how
+///   many there were and a short file is caught at the first one read.
+/// - **Nonce reuse.** The catastrophic one. The nonce is the random 96-bit base
+///   with the segment index added into its last eight bytes, so no two segments
+///   under one key share a nonce, and no two *files* share the base.
+///
+/// The published SHA-256 is still of the whole plaintext, unchanged, and is
+/// still checked when the whole file is read.
+pub fn encrypt_segmented(plaintext: &[u8]) -> Result<Encrypted, AttachmentError> {
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
+    OsRng.fill_bytes(key.as_mut_slice());
+    let mut nonce = [0u8; NONCE_LEN];
+    OsRng.fill_bytes(&mut nonce);
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()));
+    let total = segment_count(plaintext.len() as u64);
+
+    let mut ciphertext = Vec::with_capacity(plaintext.len() + total as usize * 16);
+    for (index, chunk) in plaintext.chunks(SEGMENT_LEN).enumerate() {
+        let sealed = seal_segment(&cipher, &nonce, index as u64, total, chunk)?;
+        ciphertext.extend_from_slice(&sealed);
+    }
+    // An empty file is one empty segment rather than none, so that "no
+    // segments" is never a valid encoding -- otherwise a truncation to zero
+    // would be indistinguishable from an empty file.
+    if plaintext.is_empty() {
+        let sealed = seal_segment(&cipher, &nonce, 0, total, &[])?;
+        ciphertext.extend_from_slice(&sealed);
+    }
+
+    let sha256: [u8; 32] = Sha256::digest(plaintext).into();
+    Ok(Encrypted {
+        ciphertext,
+        key,
+        nonce,
+        sha256,
+        size: plaintext.len() as u64,
+    })
+}
+
+/// How many segments a plaintext of this size occupies.
+///
+/// Zero-length is one segment, for the reason in [`encrypt_segmented`].
+#[must_use]
+pub fn segment_count(size: u64) -> u64 {
+    if size == 0 {
+        return 1;
+    }
+    size.div_ceil(SEGMENT_LEN as u64)
+}
+
+/// Decrypts one segment of a segmented attachment.
+///
+/// `index` and `total` are what the reader believes; if either disagrees with
+/// what was sealed, the tag fails and this returns
+/// [`AttachmentError::Undecryptable`] rather than plaintext. That is rule 7 at
+/// the smallest scale it applies: a stream that has been cut short or shuffled
+/// does not play a shortened video, it refuses.
+///
+/// `segment` is exactly the ciphertext of one segment — the caller slices it
+/// out by [`SEGMENT_CIPHERTEXT_LEN`], which is why that length is fixed rather
+/// than described by the sender.
+pub fn decrypt_segment(
+    segment: &[u8],
+    key: &[u8],
+    nonce: &[u8],
+    index: u64,
+    total: u64,
+) -> Result<Zeroizing<Vec<u8>>, AttachmentError> {
+    let key: [u8; KEY_LEN] = key.try_into().map_err(|_| AttachmentError::WrongLength {
+        expected: KEY_LEN,
+        found: key.len(),
+    })?;
+    let nonce: [u8; NONCE_LEN] = nonce.try_into().map_err(|_| AttachmentError::WrongLength {
+        expected: NONCE_LEN,
+        found: nonce.len(),
+    })?;
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    let payload = aes_gcm::aead::Payload {
+        msg: segment,
+        aad: &segment_aad(index, total),
+    };
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(&segment_nonce(&nonce, index)), payload)
+        .map_err(|_| AttachmentError::Undecryptable)?;
+    Ok(Zeroizing::new(plaintext))
+}
+
+/// Encrypts one segment under the file's key.
+fn seal_segment(
+    cipher: &Aes256Gcm,
+    base_nonce: &[u8; NONCE_LEN],
+    index: u64,
+    total: u64,
+    chunk: &[u8],
+) -> Result<Vec<u8>, AttachmentError> {
+    let payload = aes_gcm::aead::Payload {
+        msg: chunk,
+        aad: &segment_aad(index, total),
+    };
+    cipher
+        .encrypt(
+            Nonce::from_slice(&segment_nonce(base_nonce, index)),
+            payload,
+        )
+        .map_err(|_| AttachmentError::Undecryptable)
+}
+
+/// What each segment authenticates besides its own bytes.
+///
+/// Its position and how many there are. Both are needed and neither is
+/// sufficient: without the index segments can be swapped, and without the total
+/// the file can be cut short at any segment boundary.
+fn segment_aad(index: u64, total: u64) -> [u8; 16] {
+    let mut aad = [0u8; 16];
+    aad[..8].copy_from_slice(&index.to_be_bytes());
+    aad[8..].copy_from_slice(&total.to_be_bytes());
+    aad
+}
+
+/// The nonce for one segment: the file's random base, plus the index.
+///
+/// Adding into the last eight bytes rather than overwriting them keeps the
+/// first four random across files, so two files never share a segment nonce
+/// even at the same index. Wrapping is unreachable in practice -- it would take
+/// 2^64 segments -- and is defined behaviour rather than a panic if it ever
+/// were reached.
+fn segment_nonce(base: &[u8; NONCE_LEN], index: u64) -> [u8; NONCE_LEN] {
+    let mut nonce = *base;
+    let tail = u64::from_be_bytes(nonce[4..].try_into().unwrap_or([0; 8]));
+    nonce[4..].copy_from_slice(&tail.wrapping_add(index).to_be_bytes());
+    nonce
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ciphertext for a plaintext of `len` bytes, plus what opens it.
+    fn segmented(len: usize) -> (Encrypted, Vec<u8>) {
+        let plaintext: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        let sealed = encrypt_segmented(&plaintext).expect("encryption");
+        (sealed, plaintext)
+    }
+
+    /// One segment's ciphertext, sliced out by the fixed length.
+    fn segment(ciphertext: &[u8], index: usize) -> &[u8] {
+        let from = index * SEGMENT_CIPHERTEXT_LEN;
+        let to = (from + SEGMENT_CIPHERTEXT_LEN).min(ciphertext.len());
+        &ciphertext[from..to]
+    }
+
+    #[test]
+    fn a_segmented_file_round_trips_segment_by_segment() {
+        let len = SEGMENT_LEN * 2 + 1234;
+        let (sealed, plaintext) = segmented(len);
+        let total = segment_count(len as u64);
+        assert_eq!(total, 3);
+
+        let mut rebuilt = Vec::new();
+        for index in 0..total {
+            let part = decrypt_segment(
+                segment(&sealed.ciphertext, index as usize),
+                sealed.key.as_slice(),
+                &sealed.nonce,
+                index,
+                total,
+            )
+            .expect("each segment opens");
+            rebuilt.extend_from_slice(&part);
+        }
+        assert_eq!(rebuilt, plaintext);
+    }
+
+    #[test]
+    fn any_segment_opens_without_the_ones_before_it() {
+        // The whole point: a reader can start in the middle, which is what
+        // lets a video seek without downloading everything up to that moment.
+        let (sealed, plaintext) = segmented(SEGMENT_LEN * 3);
+        let total = segment_count((SEGMENT_LEN * 3) as u64);
+
+        let third = decrypt_segment(
+            segment(&sealed.ciphertext, 2),
+            sealed.key.as_slice(),
+            &sealed.nonce,
+            2,
+            total,
+        )
+        .expect("the third segment opens on its own");
+        assert_eq!(&third[..], &plaintext[SEGMENT_LEN * 2..SEGMENT_LEN * 3]);
+    }
+
+    #[test]
+    fn a_reordered_segment_is_refused() {
+        // Segments encrypted independently under one key would be
+        // interchangeable. The index in the AAD is what stops that.
+        let (sealed, _) = segmented(SEGMENT_LEN * 2);
+        let total = 2;
+        let result = decrypt_segment(
+            segment(&sealed.ciphertext, 1),
+            sealed.key.as_slice(),
+            &sealed.nonce,
+            // Claiming the second segment is the first.
+            0,
+            total,
+        );
+        assert!(
+            matches!(result, Err(AttachmentError::Undecryptable)),
+            "a segment moved from its position must not open"
+        );
+    }
+
+    #[test]
+    fn a_truncated_stream_is_refused_rather_than_played_short() {
+        // Rule 7 at its smallest scale. Cutting the tail off leaves every
+        // remaining segment individually valid, so the total in the AAD is
+        // what catches it -- at the *first* segment read, not the last.
+        let (sealed, _) = segmented(SEGMENT_LEN * 3);
+        let result = decrypt_segment(
+            segment(&sealed.ciphertext, 0),
+            sealed.key.as_slice(),
+            &sealed.nonce,
+            0,
+            // A reader lied to about how long the file is.
+            2,
+        );
+        assert!(
+            matches!(result, Err(AttachmentError::Undecryptable)),
+            "a stream cut short must refuse, not play a shortened file"
+        );
+    }
+
+    #[test]
+    fn an_altered_segment_is_refused() {
+        let (mut sealed, _) = segmented(SEGMENT_LEN);
+        sealed.ciphertext[10] ^= 0xff;
+        let result = decrypt_segment(
+            segment(&sealed.ciphertext, 0),
+            sealed.key.as_slice(),
+            &sealed.nonce,
+            0,
+            1,
+        );
+        assert!(matches!(result, Err(AttachmentError::Undecryptable)));
+    }
+
+    #[test]
+    fn no_two_segments_share_a_nonce() {
+        // The catastrophic failure mode for GCM. Checked directly rather than
+        // inferred from the round trip passing.
+        let base = [7u8; NONCE_LEN];
+        let mut seen = std::collections::HashSet::new();
+        for index in 0..10_000u64 {
+            assert!(
+                seen.insert(segment_nonce(&base, index)),
+                "segment {index} reused a nonce"
+            );
+        }
+    }
+
+    #[test]
+    fn two_files_do_not_share_segment_nonces() {
+        // Different random bases, so segment 0 of one file and segment 0 of
+        // another are not encrypted under the same nonce.
+        let (a, _) = segmented(SEGMENT_LEN);
+        let (b, _) = segmented(SEGMENT_LEN);
+        assert_ne!(a.nonce, b.nonce, "each file gets a fresh base nonce");
+    }
+
+    #[test]
+    fn an_empty_file_is_one_segment_not_none() {
+        // Otherwise "no segments at all" would be a valid encoding, and a
+        // truncation to nothing would look exactly like an empty file.
+        let (sealed, _) = segmented(0);
+        assert_eq!(segment_count(0), 1);
+        let opened = decrypt_segment(
+            &sealed.ciphertext,
+            sealed.key.as_slice(),
+            &sealed.nonce,
+            0,
+            1,
+        )
+        .expect("an empty file still opens");
+        assert!(opened.is_empty());
+    }
+
+    #[test]
+    fn a_segment_count_covers_exact_multiples() {
+        assert_eq!(segment_count(SEGMENT_LEN as u64), 1);
+        assert_eq!(segment_count(SEGMENT_LEN as u64 + 1), 2);
+        assert_eq!(segment_count((SEGMENT_LEN * 4) as u64), 4);
+    }
 
     #[test]
     fn a_file_round_trips() {

@@ -114,6 +114,44 @@ pub struct MessageView {
     /// what this device holds and the page cannot know that.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply: Option<ReplyView>,
+    /// Set when the message is a picture or clip meant to be opened once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view_once: Option<ViewOnceView>,
+    /// Set when the message is a sticker.
+    ///
+    /// Names the art rather than carrying it: every client has the pack. A page
+    /// that does not recognise the pair draws a placeholder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sticker: Option<StickerView>,
+}
+
+/// Which sticker a message is.
+#[derive(Debug, Clone, Serialize)]
+pub struct StickerView {
+    pub pack: String,
+    pub id: String,
+}
+
+/// What a bubble may know about a view-once message.
+///
+/// Everything here is safe to know after the fact. **No key crosses**, opened
+/// or not (rule 2) -- the page asks to open by the message's name and is handed
+/// bytes, exactly as it asks to save an attachment by envelope id.
+#[derive(Debug, Clone, Serialize)]
+pub struct ViewOnceView {
+    /// Whether it can still be opened on this device.
+    ///
+    /// False means the key is gone, which is a fact about the disk rather than
+    /// a decision this build made -- so a modified build cannot make it true.
+    pub openable: bool,
+    /// Whether we sent it. Ours are never openable: we kept the original.
+    pub outgoing: bool,
+    /// When it was opened, if it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opened_at_ms: Option<i64>,
+    /// `image` or `video`, so the bubble can name what is behind the cover
+    /// before it is opened and after there is nothing left to show.
+    pub kind: String,
 }
 
 /// The quoted message a reply points at, as far as this device can tell.
@@ -219,6 +257,12 @@ pub struct AttachmentView {
     /// every message sent before recording existed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice: Option<VoiceView>,
+    /// Whether it can be played a segment at a time rather than fetched whole.
+    ///
+    /// What decides whether the bubble points a player at the streaming scheme
+    /// or falls back to the old fetch-and-decrypt path. False for everything
+    /// sent before segmenting existed.
+    pub streamable: bool,
 }
 
 /// The drawable half of [`nexo_protocol::VoiceMeta`].
@@ -251,6 +295,14 @@ fn bubble_body(stored: &str, payload: Option<&str>) -> String {
         // everything it has to say through the file row beneath it.
         Payload::Attachment { body, .. } => body.unwrap_or_default(),
         _ => stored.to_string(),
+    }
+}
+
+/// The sticker a stored payload names, when it names one.
+fn sticker_in(payload: Option<&str>) -> Option<StickerView> {
+    match Payload::decode(payload?.as_bytes()) {
+        Payload::Sticker { pack, id, .. } => Some(StickerView { pack, id }),
+        _ => None,
     }
 }
 
@@ -287,6 +339,7 @@ impl AttachmentView {
             mime,
             size,
             voice,
+            segmented,
             ..
         } = Payload::decode(encoded?.as_bytes())
         else {
@@ -300,6 +353,7 @@ impl AttachmentView {
                 duration_ms: v.duration_ms,
                 peaks: v.drawable_peaks().to_vec(),
             }),
+            streamable: segmented,
         })
     }
 }
@@ -921,6 +975,8 @@ pub async fn send_message(
             edited_at_ms: None,
             reactions: Vec::new(),
             reply: None,
+            view_once: None,
+            sticker: None,
         })
     })
     .await
@@ -972,6 +1028,192 @@ pub async fn send_reply(
             // refreshes after a send, and a half-resolved quote drawn for one
             // frame is worse than one that appears complete.
             reply: None,
+            view_once: None,
+            sticker: None,
+        })
+    })
+    .await
+}
+
+/// Sends a picture or clip the recipient can open once.
+///
+/// The path crosses, not the bytes -- same as `send_attachment`, and for the
+/// same reason. What differs is entirely on the far side: see
+/// `Payload::ViewOnce`.
+#[tauri::command]
+pub async fn send_view_once(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    path: String,
+) -> Result<MessageView, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        let path = std::path::PathBuf::from(&path);
+
+        let contents = std::fs::read(&path).map_err(|e| {
+            failure(
+                "unreadable_file",
+                format!("That file could not be read: {e}"),
+            )
+        })?;
+        if contents.is_empty() {
+            return Err(failure("invalid_request", "That file is empty."));
+        }
+        if contents.len() as u64 > MAX_ATTACHMENT_BYTES {
+            return Err(failure(
+                "too_large",
+                format!(
+                    "Attachments are limited to {} MB.",
+                    MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                ),
+            ));
+        }
+
+        // From the bytes, not the extension: this decides what the recipient's
+        // bubble will offer to play, and a sender-chosen name is not evidence.
+        let mime = crate::feed::sniff_mime(&contents);
+        if !crate::feed::is_playable(mime) {
+            return Err(failure(
+                "invalid_request",
+                "Only a picture or a video can be sent this way.",
+            ));
+        }
+
+        let sent = conversations::send_view_once(&client.context(), id, mime, &contents)?;
+        Ok(MessageView {
+            envelope_id: sent.envelope_id().unwrap_or(0),
+            sender_device_id: None,
+            body: String::new(),
+            sent_at_ms: now_ms(),
+            outgoing: true,
+            pending: false,
+            attachment: None,
+            client_id: sent.client_id().map(str::to_string),
+            unsupported: None,
+            pinned: false,
+            retracted_at_ms: None,
+            edited_at_ms: None,
+            reactions: Vec::new(),
+            reply: None,
+            sticker: None,
+            view_once: Some(ViewOnceView {
+                // Ours never was. We kept the file we picked; a key that let us
+                // reopen what the recipient cannot would make the bubble lie.
+                openable: false,
+                outgoing: true,
+                opened_at_ms: Some(now_ms()),
+                kind: if mime.starts_with("video/") {
+                    "video".to_string()
+                } else {
+                    "image".to_string()
+                },
+            }),
+        })
+    })
+    .await
+}
+
+/// Opens a view-once message once, and destroys its key on the way out.
+///
+/// Returns a data URL, like `attachment_data_url` -- but this is the only time
+/// it can ever be produced for this message. A second call fails because the
+/// key is gone, not because a check said no.
+///
+/// The WebView is handed bytes and never the key (rule 2), which is the same
+/// boundary every other attachment keeps; what is different here is that on
+/// this side of it there is nothing left afterwards.
+#[tauri::command]
+pub async fn open_view_once(
+    state: State<'_, ClientState>,
+    client_id: String,
+) -> Result<String, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let (contents, _declared) = conversations::open_view_once(&client.context(), &client_id)?;
+
+        // Sniffed again here rather than trusted from the payload: this string
+        // decides what the page will render, and the sender chose the other one.
+        let mime = crate::feed::sniff_mime(&contents);
+        if !crate::feed::is_playable(mime) {
+            return Err(failure(
+                "not_renderable",
+                "That was not a picture or a video.",
+            ));
+        }
+        Ok(crate::feed::data_url(mime, &contents))
+    })
+    .await
+}
+
+/// What a player needs before it asks for any bytes.
+///
+/// `None` when the attachment is not segmented, which is every file sent before
+/// segmenting existed. The page then uses `attachment_data_url` exactly as it
+/// did before -- a fallback that is always correct, only slower.
+#[tauri::command]
+pub async fn attachment_stream_info(
+    state: State<'_, ClientState>,
+    envelope_id: i64,
+) -> Result<Option<StreamInfoView>, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let info = conversations::stream_info(&client.context(), envelope_id)?;
+        Ok(info.map(|i| StreamInfoView {
+            size: i.size,
+            segments: i.segments,
+            mime: i.mime,
+        }))
+    })
+    .await
+}
+
+/// What `attachment_stream_info` tells the page. No key, as ever.
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamInfoView {
+    pub size: u64,
+    pub segments: u64,
+    pub mime: String,
+}
+
+/// Sends a sticker.
+///
+/// The pack and the sticker's name, nothing else — the art is already in every
+/// client. Nothing is uploaded and no third party is asked for anything, which
+/// is why a sticker costs what a short message costs.
+///
+/// The pair is not validated here. A page can only offer what it has, and a
+/// receiver that does not know the pair draws a placeholder saying so; refusing
+/// the send instead would mean this build deciding what a *newer* build is
+/// allowed to name.
+#[tauri::command]
+pub async fn send_sticker(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    pack: String,
+    sticker_id: String,
+) -> Result<MessageView, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        if pack.is_empty() || sticker_id.is_empty() {
+            return Err(failure("invalid_request", "That is not a sticker."));
+        }
+        let sent = conversations::send_sticker(&client.context(), id, &pack, &sticker_id)?;
+        Ok(MessageView {
+            envelope_id: sent.envelope_id().unwrap_or(-now_ms()),
+            sender_device_id: None,
+            // A sticker says nothing in words, and the bubble draws the art.
+            body: String::new(),
+            sent_at_ms: now_ms(),
+            outgoing: true,
+            pending: sent.envelope_id().is_none(),
+            attachment: None,
+            client_id: sent.client_id().map(str::to_string),
+            unsupported: None,
+            pinned: false,
+            retracted_at_ms: None,
+            edited_at_ms: None,
+            reactions: Vec::new(),
+            reply: None,
+            view_once: None,
+            sticker: Some(StickerView { pack, id: sticker_id }),
         })
     })
     .await
@@ -1100,6 +1342,18 @@ pub async fn conversation_messages(
             .reactions(&conversation_id, me.as_deref())
             .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
 
+        // The conversation's view-once rows, by name, read in one go for the
+        // same reason the quote lookup is: once per bubble would be once per
+        // bubble too many.
+        let burnt = client
+            .store
+            .view_once_in(&conversation_id)
+            .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
+        let view_once: std::collections::HashMap<&str, &nexo_store::StoredViewOnce> = burnt
+            .iter()
+            .map(|item| (item.client_id.as_str(), item))
+            .collect();
+
         // Every message this device holds, by the sender's name for it, so a
         // quote is resolved from what is already loaded rather than by asking
         // the store once per reply. The thread is one conversation, and the
@@ -1160,6 +1414,12 @@ pub async fn conversation_messages(
                 // message lands in `messages` and gets its own column.
                 reply: reply_target(item.payload.as_deref())
                     .map(|target| resolve_reply(&target, &by_name)),
+                // A view-once never queues: it uploads first, so by the time
+                // there is a message there is a server that has it.
+                view_once: None,
+                // A sticker can queue, and its payload is in the outbox for
+                // exactly this reason -- the body is empty.
+                sticker: sticker_in(item.payload.as_deref()),
             })
             .collect();
 
@@ -1183,9 +1443,12 @@ pub async fn conversation_messages(
                     })
                     .unwrap_or_default();
 
+                let outgoing = m.sender_device_id.is_none();
+                let client_id_for_view_once = m.client_id.clone();
+                let payload_for_sticker = m.payload.clone();
                 MessageView {
                     envelope_id: m.envelope_id,
-                    outgoing: m.sender_device_id.is_none(),
+                    outgoing,
                     sender_device_id: m.sender_device_id,
                     attachment: AttachmentView::from_payload(m.payload.as_deref()),
                     unsupported: unsupported_kind(m.payload.as_deref()),
@@ -1204,6 +1467,20 @@ pub async fn conversation_messages(
                         .reply_to
                         .as_deref()
                         .map(|target| resolve_reply(target, &by_name)),
+                    sticker: sticker_in(payload_for_sticker.as_deref()),
+                    view_once: client_id_for_view_once
+                        .as_deref()
+                        .and_then(|name| view_once.get(name))
+                        .map(|item| ViewOnceView {
+                            openable: item.openable(),
+                            outgoing,
+                            opened_at_ms: item.opened_at_ms,
+                            kind: if item.mime.starts_with("video/") {
+                                "video".to_string()
+                            } else {
+                                "image".to_string()
+                            },
+                        }),
                 }
             })
             .chain(queued)
@@ -1334,6 +1611,9 @@ pub async fn send_attachment(
                 // That is the whole point of carrying the flag: this path had
                 // no recorder behind it.
                 voice: None,
+                // Video is sealed in segments, so our own bubble streams it
+                // back the same way the recipient's will.
+                streamable: mime.starts_with("video/"),
             }),
             // The name the payload was given, so the bubble can be reacted to
             // and taken back without waiting for a reload.
@@ -1345,6 +1625,8 @@ pub async fn send_attachment(
             edited_at_ms: None,
             reactions: Vec::new(),
             reply: None,
+            view_once: None,
+            sticker: None,
         })
     })
     .await
@@ -1400,10 +1682,14 @@ pub async fn send_voice_message(
             ));
         }
 
-        // The container the recorder actually produced decides the extension,
-        // and the *bytes* decide the type -- `sniff_mime` is what the player is
-        // handed later, so a wrong guess here is cosmetic rather than a way in.
-        let mime = if mime.starts_with("audio/") || mime.starts_with("video/") {
+        // Always `audio/`, whatever the recorder called it.
+        //
+        // `MediaRecorder` reports WebM/Opus as `video/webm` on some builds, and
+        // that string is no longer cosmetic: `send_attachment` seals anything
+        // `video/` in segments so it can be streamed, while a voice note is
+        // fetched whole. A recording that claimed to be video would be sealed
+        // one way and read the other, and would simply fail to open.
+        let mime = if mime.starts_with("audio/") {
             mime
         } else {
             "audio/webm".to_string()
@@ -1447,6 +1733,8 @@ pub async fn send_voice_message(
                     duration_ms,
                     peaks: drawable,
                 }),
+                // A recording is small enough to fetch whole.
+                streamable: false,
             }),
             client_id: sent.client_id().map(str::to_string),
             unsupported: None,
@@ -1455,6 +1743,8 @@ pub async fn send_voice_message(
             edited_at_ms: None,
             reactions: Vec::new(),
             reply: None,
+            view_once: None,
+            sticker: None,
         })
     })
     .await
@@ -1607,6 +1897,8 @@ mod tests {
             edited_at_ms: None,
             reactions: Vec::new(),
             reply: None,
+            view_once: None,
+            sticker: None,
         };
         let json = serde_json::to_string(&view).unwrap();
         for forbidden in ["ciphertext", "epoch", "key", "secret", "token"] {
@@ -1633,6 +1925,7 @@ mod tests {
             size: 1234,
             body: Some("here".into()),
             voice: None,
+            segmented: false,
             // Deliberately unnamed: this is the shape a message sent before
             // names existed still has, and it must still produce a view.
             id: None,
@@ -1669,6 +1962,7 @@ mod tests {
             size: 1,
             body: None,
             voice: None,
+            segmented: false,
             id: None,
         };
         let view = AttachmentView::from_payload(Some(&payload.encode_string())).unwrap();
@@ -1695,6 +1989,25 @@ mod tests {
             "application/octet-stream"
         );
         assert_eq!(mime_for(Path::new("Makefile")), "application/octet-stream");
+    }
+
+    #[test]
+    fn a_view_once_view_carries_no_key_of_any_kind() {
+        // The point of a separate view type. Whether the message is openable
+        // is a boolean here; what would open it never leaves Rust (rule 2).
+        let view = ViewOnceView {
+            openable: true,
+            outgoing: false,
+            opened_at_ms: None,
+            kind: "image".into(),
+        };
+        let json = serde_json::to_string(&view).unwrap();
+        for forbidden in ["key", "nonce", "sha256", "s3", "enc"] {
+            assert!(
+                !json.contains(forbidden),
+                "`{forbidden}` must not cross the IPC boundary: {json}"
+            );
+        }
     }
 
     #[test]
@@ -1781,6 +2094,8 @@ mod tests {
             edited_at_ms: None,
             reactions: Vec::new(),
             reply: None,
+            view_once: None,
+            sticker: None,
         };
         assert!(mine.outgoing);
         assert!(mine.sender_device_id.is_none());

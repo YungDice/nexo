@@ -706,6 +706,45 @@ impl Transport for HttpTransport {
         }
     }
 
+    fn get_object_range(&self, url: &str, from: u64, to: u64) -> Result<Vec<u8>, TransportError> {
+        // A real `Range` request, which is the whole point: opening one
+        // segment of a large video should move one segment.
+        //
+        // 206 is the success we want. A store that ignores the header answers
+        // 200 with the whole object, and that is handled rather than trusted --
+        // the slice below is applied either way, so a server that does not
+        // support ranges is slow instead of wrong.
+        match self
+            .agent
+            .get(url)
+            .header("Range", format!("bytes={from}-{to}"))
+            .call()
+        {
+            Ok(mut response) => {
+                let status = response.status().as_u16();
+                if !(200..300).contains(&status) {
+                    return Err(TransportError::Rejected(format!(
+                        "the storage provider returned {status}"
+                    )));
+                }
+                let partial = status == 206;
+                let bytes = response
+                    .body_mut()
+                    .with_config()
+                    .limit(32 * 1024 * 1024)
+                    .read_to_vec()
+                    .map_err(|e| TransportError::Rejected(format!("reading the object: {e}")))?;
+                if partial {
+                    return Ok(bytes);
+                }
+                let start = (from as usize).min(bytes.len());
+                let stop = (to as usize).saturating_add(1).min(bytes.len());
+                Ok(bytes.get(start..stop).unwrap_or_default().to_vec())
+            }
+            Err(e) => Err(TransportError::Unreachable(e.to_string())),
+        }
+    }
+
     fn sync(&self, conversation_id: &str, since_id: i64) -> Result<Vec<Envelope>, TransportError> {
         self.get_auth(&format!(
             "/v1/conversations/{conversation_id}/sync?since_id={since_id}"

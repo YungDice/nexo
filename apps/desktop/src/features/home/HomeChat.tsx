@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { useApp } from "../../app/store";
 import type { Message } from "../../lib/types";
+import { pickFile } from "../../lib/native";
 import { useConversations } from "../../app/useConversations";
 import { cn } from "../../lib/cn";
 import { ConversationAvatar } from "../../components/ui/ConversationAvatar";
@@ -283,6 +284,20 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
                 : undefined
             }
             onCancelReply={() => setReplyingTo(undefined)}
+            onSendSticker={(pack, stickerId) =>
+              void onSendStickerMessage(pack, stickerId)
+            }
+            {...(conversation.kind === "dm"
+              ? {
+                  onSendViewOnce: () => {
+                    void pickFile({ title: "Send once", media: true }).then(
+                      (picked) => {
+                        if (picked) void live.sendOnce(picked.path);
+                      },
+                    );
+                  },
+                }
+              : {})}
           />
         </>
       ) : (

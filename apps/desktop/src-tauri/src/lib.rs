@@ -11,6 +11,7 @@ mod client;
 mod commands;
 mod conversations;
 mod feed;
+mod media;
 mod meet;
 mod preview;
 mod windows;
@@ -19,7 +20,10 @@ mod windows;
 pub fn run() {
     init_tracing();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Before the plugins, so the scheme exists by the time any window does.
+    let builder = media::register(builder);
+    builder
         // First, before anything else can take the port or the lock: a second
         // launch hands its arguments to the running instance and exits (§8).
         // Two instances would mean two SQLCipher connections to one file and
@@ -107,6 +111,10 @@ pub fn run() {
             conversations::send_attachment,
             conversations::send_voice_message,
             conversations::send_reply,
+            conversations::send_view_once,
+            conversations::open_view_once,
+            conversations::attachment_stream_info,
+            conversations::send_sticker,
             conversations::save_attachment,
             conversations::flush_outbox,
             conversations::outbox_count,

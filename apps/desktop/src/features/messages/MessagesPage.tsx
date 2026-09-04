@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Recording } from "./useRecorder";
+import { pickFile } from "../../lib/native";
 import { useApp } from "../../app/store";
 import { useConversations } from "../../app/useConversations";
 import { useLayout } from "../../app/useLayout";
@@ -117,6 +118,7 @@ export function MessagesPage({ now }: { now: Date }) {
           onSendFile={live.sendFile}
           onSendVoice={live.sendVoice}
           onSendReply={live.sendReply}
+          onSendOnce={live.sendOnce}
           onCompare={openContextPanel}
           onChanged={() => void live.refresh()}
           onDismissKeyChange={async () => {
@@ -395,6 +397,7 @@ function ChatPane({
   onSendFile,
   onSendVoice,
   onSendReply,
+  onSendOnce,
   onCompare,
   onDismissKeyChange,
   onChanged,
@@ -407,6 +410,7 @@ function ChatPane({
   onSendFile: (path: string, body?: string) => Promise<void>;
   onSendVoice: (recording: Recording) => Promise<void>;
   onSendReply: (body: string, target: string) => Promise<void>;
+  onSendOnce: (path: string) => Promise<void>;
   /// Opens the details panel, where the safety number is.
   onCompare: () => void;
   /// Clears the warning without claiming anything was verified.
@@ -419,6 +423,16 @@ function ChatPane({
   const [replyingTo, setReplyingTo] = useState<Message | undefined>(undefined);
   const conversationId = conversation.id;
   useEffect(() => setReplyingTo(undefined), [conversationId]);
+
+  // The picker restricts to what a view-once can be; Rust sniffs the bytes and
+  // refuses anything else regardless, since a chosen extension proves nothing.
+  async function pickAndSendOnce() {
+    // `media` is the existing "pictures and video" filter -- the same one
+    // stories use. Rust sniffs the bytes and refuses anything else regardless:
+    // a chosen extension proves nothing.
+    const picked = await pickFile({ title: "Send once", media: true });
+    if (picked) await onSendOnce(picked.path);
+  }
 
   return (
     <Panel tone="content" edge={false} className="flex min-w-0 flex-1 flex-col">
@@ -505,6 +519,12 @@ function ChatPane({
                 : undefined
             }
             onCancelReply={() => setReplyingTo(undefined)}
+            onSendSticker={(pack, stickerId) =>
+              void onSendStickerMessage(pack, stickerId)
+            }
+            {...(conversation.kind === "dm"
+              ? { onSendViewOnce: () => void pickAndSendOnce() }
+              : {})}
             conversationTitle={conversation.title}
           />
         </>

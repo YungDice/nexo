@@ -35,7 +35,7 @@ pub type StoredIdentity = (Zeroizing<Vec<u8>>, Vec<u8>);
 /// The schema version this build writes and expects.
 ///
 /// One constant, so a migration and the test that checks it cannot disagree.
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// The file name the store always uses, under the app data directory.
 pub const STORE_FILE_NAME: &str = "store.db";
@@ -660,6 +660,45 @@ impl EncryptedStore {
                  COMMIT;",
             )?;
         }
+
+        if version < 17 {
+            // View-once media, and the keys that open it exactly once.
+            //
+            // The key lives **here and nowhere else** -- deliberately not in
+            // `messages.payload`, where every other attachment keeps its own.
+            // That column persists for the life of the message, so a key in it
+            // could be read again by anything that could read it once, and
+            // "destroyed when you open it" would be a sentence with nothing
+            // behind it. Opening nulls the three key columns in place; the
+            // ciphertext in the bucket is meaningless afterwards.
+            //
+            // The row survives that, with `opened_at_ms` set. It has to: the
+            // bubble still has to say what used to be there, and a missing row
+            // would be indistinguishable from a message that was never
+            // view-once at all.
+            //
+            // Same shape as `stories`, for the same reason -- a key that has to
+            // be able to disappear cannot live beside data that must not.
+            self.connection.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS view_once (
+                     client_id       TEXT PRIMARY KEY,
+                     conversation_id TEXT    NOT NULL,
+                     s3_key          TEXT    NOT NULL,
+                     enc_key         TEXT,
+                     nonce           TEXT,
+                     sha256          TEXT,
+                     mime            TEXT    NOT NULL,
+                     size            INTEGER NOT NULL,
+                     received_at_ms  INTEGER NOT NULL,
+                     opened_at_ms    INTEGER
+                 );
+                 CREATE INDEX IF NOT EXISTS view_once_conversation_idx
+                     ON view_once (conversation_id);
+                 PRAGMA user_version = 17;
+                 COMMIT;",
+            )?;
+        }
         Ok(())
     }
 
@@ -1133,6 +1172,105 @@ impl EncryptedStore {
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Remembers a view-once message and the key that opens it.
+    ///
+    /// `enc_key` is `None` for our own sends: we have the original on disk, and
+    /// keeping a key that lets the sender reopen what the recipient cannot
+    /// would make the bubble's wording untrue on one side of the conversation.
+    pub fn insert_view_once(&self, item: &StoredViewOnce) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO view_once
+                 (client_id, conversation_id, s3_key, enc_key, nonce, sha256,
+                  mime, size, received_at_ms, opened_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (client_id) DO NOTHING",
+            rusqlite::params![
+                item.client_id,
+                item.conversation_id,
+                item.s3_key,
+                item.enc_key,
+                item.nonce,
+                item.sha256,
+                item.mime,
+                item.size,
+                item.received_at_ms,
+                item.opened_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// One view-once message, if this device knows of it.
+    pub fn view_once(&self, client_id: &str) -> Result<Option<StoredViewOnce>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT client_id, conversation_id, s3_key, enc_key, nonce, sha256,
+                        mime, size, received_at_ms, opened_at_ms
+                 FROM view_once WHERE client_id = ?1",
+                [client_id],
+                |row| {
+                    Ok(StoredViewOnce {
+                        client_id: row.get(0)?,
+                        conversation_id: row.get(1)?,
+                        s3_key: row.get(2)?,
+                        enc_key: row.get(3)?,
+                        nonce: row.get(4)?,
+                        sha256: row.get(5)?,
+                        mime: row.get(6)?,
+                        size: row.get(7)?,
+                        received_at_ms: row.get(8)?,
+                        opened_at_ms: row.get(9)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Every view-once message in a conversation, so the thread can draw them
+    /// without asking once per bubble.
+    pub fn view_once_in(&self, conversation_id: &str) -> Result<Vec<StoredViewOnce>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT client_id, conversation_id, s3_key, enc_key, nonce, sha256,
+                    mime, size, received_at_ms, opened_at_ms
+             FROM view_once WHERE conversation_id = ?1",
+        )?;
+        let rows = statement.query_map([conversation_id], |row| {
+            Ok(StoredViewOnce {
+                client_id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                s3_key: row.get(2)?,
+                enc_key: row.get(3)?,
+                nonce: row.get(4)?,
+                sha256: row.get(5)?,
+                mime: row.get(6)?,
+                size: row.get(7)?,
+                received_at_ms: row.get(8)?,
+                opened_at_ms: row.get(9)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Destroys the key that opens a view-once message.
+    ///
+    /// **This is the feature, not bookkeeping around it.** After this the
+    /// object in the bucket cannot be decrypted by this device again — the only
+    /// copy of its key was the one just overwritten. The row stays so the
+    /// bubble can still say what was there and when it was opened.
+    ///
+    /// Called *after* the plaintext has been produced, never before: a burn
+    /// that ran first would lose the file to a failed download.
+    pub fn burn_view_once(&self, client_id: &str, now_ms: i64) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE view_once
+                SET enc_key = NULL, nonce = NULL, sha256 = NULL, opened_at_ms = ?2
+              WHERE client_id = ?1",
+            rusqlite::params![client_id, now_ms],
+        )?;
+        Ok(())
     }
 
     /// The message a name refers to, if this device has it.
@@ -1807,6 +1945,48 @@ pub struct SearchHit {
     pub sent_at_ms: i64,
     /// Whether this device sent it.
     pub outgoing: bool,
+}
+
+/// A view-once message, and the key that opens it exactly once.
+///
+/// The key is here rather than in `messages.payload` because it has to be able
+/// to disappear, and that column does not — see the schema-17 migration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredViewOnce {
+    /// The sender's name for the message. Everything about it is keyed by this.
+    pub client_id: String,
+    /// Which conversation it belongs to, so a thread can read its own in one go.
+    pub conversation_id: String,
+    /// Where the ciphertext is. Kept after opening: it is not a secret, and the
+    /// object is meaningless without the key that no longer exists.
+    pub s3_key: String,
+    /// The AES-256-GCM key, hex. `None` once opened, and for our own sends.
+    pub enc_key: Option<String>,
+    /// The nonce, hex. Goes with the key.
+    pub nonce: Option<String>,
+    /// SHA-256 of the plaintext, hex. Goes with the key.
+    pub sha256: Option<String>,
+    /// What kind of thing it was, so the bubble can say "Photo" or "Video"
+    /// after there is nothing left to show.
+    pub mime: String,
+    /// Plaintext size in bytes, as the sender declared it.
+    pub size: i64,
+    /// When this device learned of it.
+    pub received_at_ms: i64,
+    /// When it was opened. `None` means it still can be.
+    pub opened_at_ms: Option<i64>,
+}
+
+impl StoredViewOnce {
+    /// Whether this can still be opened on this device.
+    ///
+    /// One question with one answer: the key is either there or it is not.
+    /// `opened_at_ms` is for saying *when*, and is never what the decision
+    /// rests on — two fields that could disagree would eventually disagree.
+    #[must_use]
+    pub fn openable(&self) -> bool {
+        self.enc_key.is_some()
+    }
 }
 
 /// A story this device was given, and the key that opens it.
@@ -3153,6 +3333,88 @@ mod tests {
 
     /// Two messages must not answer to one name.
     ///
+    fn a_view_once(client_id: &str) -> StoredViewOnce {
+        StoredViewOnce {
+            client_id: client_id.into(),
+            conversation_id: "c1".into(),
+            s3_key: "enc/c1/abc".into(),
+            enc_key: Some("aa".repeat(32)),
+            nonce: Some("bb".repeat(12)),
+            sha256: Some("cc".repeat(32)),
+            mime: "image/jpeg".into(),
+            size: 1234,
+            received_at_ms: 1_000,
+            opened_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn opening_a_view_once_destroys_the_key_rather_than_marking_it_used() {
+        // The whole feature. A flag saying "opened" beside a key that is still
+        // there would be a promise a modified build could simply ignore; with
+        // the key gone there is nothing left to ignore.
+        let dir = TempDir::new("view-once-burn");
+        let store = EncryptedStore::open(dir.db(), &a_key(9)).unwrap();
+        store.insert_view_once(&a_view_once("m1")).unwrap();
+
+        let before = store.view_once("m1").unwrap().expect("it was written");
+        assert!(before.openable());
+
+        store.burn_view_once("m1", 2_000).unwrap();
+
+        let after = store.view_once("m1").unwrap().expect("the row survives");
+        assert!(!after.openable(), "the key must be gone");
+        assert_eq!(after.enc_key, None);
+        assert_eq!(after.nonce, None);
+        assert_eq!(after.sha256, None);
+        assert_eq!(after.opened_at_ms, Some(2_000));
+    }
+
+    #[test]
+    fn a_burnt_view_once_keeps_enough_to_be_drawn() {
+        // The row stays on purpose: the bubble still has to say what was there
+        // and when it went. A deleted row would be indistinguishable from a
+        // message that was never view-once at all.
+        let dir = TempDir::new("view-once-remains");
+        let store = EncryptedStore::open(dir.db(), &a_key(10)).unwrap();
+        store.insert_view_once(&a_view_once("m1")).unwrap();
+        store.burn_view_once("m1", 2_000).unwrap();
+
+        let after = store.view_once("m1").unwrap().unwrap();
+        assert_eq!(after.mime, "image/jpeg");
+        assert_eq!(after.size, 1234);
+        assert_eq!(after.s3_key, "enc/c1/abc");
+    }
+
+    #[test]
+    fn burning_twice_is_not_an_error() {
+        // Two windows, one message, both opened. The second finds nothing to
+        // destroy, which is the state it wanted anyway.
+        let dir = TempDir::new("view-once-twice");
+        let store = EncryptedStore::open(dir.db(), &a_key(11)).unwrap();
+        store.insert_view_once(&a_view_once("m1")).unwrap();
+        store.burn_view_once("m1", 2_000).unwrap();
+        store.burn_view_once("m1", 3_000).unwrap();
+        assert!(!store.view_once("m1").unwrap().unwrap().openable());
+    }
+
+    #[test]
+    fn our_own_view_once_was_never_openable() {
+        // We kept the file we picked. A key that let the sender reopen what the
+        // recipient no longer can would make the bubble's wording untrue on one
+        // side of the conversation.
+        let dir = TempDir::new("view-once-mine");
+        let store = EncryptedStore::open(dir.db(), &a_key(12)).unwrap();
+        let mut mine = a_view_once("m1");
+        mine.enc_key = None;
+        mine.nonce = None;
+        mine.sha256 = None;
+        mine.opened_at_ms = Some(1_000);
+        store.insert_view_once(&mine).unwrap();
+
+        assert!(!store.view_once("m1").unwrap().unwrap().openable());
+    }
+
     /// The index is the rule; a handler check would have a window between
     /// deciding and writing that a retrying client drives straight through.
     #[test]

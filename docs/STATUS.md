@@ -597,3 +597,128 @@ decision rather than configuration.
   A pending reply is cleared when the conversation changes — it names a message
   in the thread it was written for — and an attachment does not spend it: a file
   and a reply are two different messages.
+
+### View-once media (wave 3)
+
+- **A photo or clip the other person can open once.** The eye beside the
+  paperclip, in a one-to-one conversation only.
+
+  **The key is the mechanism, not a flag.** A view-once arrives split in two: an
+  ordinary message row that draws a bubble, and a row in a new `view_once` table
+  (schema 17) holding the key. Opening fetches, decrypts, and *then* overwrites
+  the key with `NULL` — in that order, because burning first would lose the
+  picture to a dropped connection, and there is no second copy of that key
+  anywhere. Afterwards this device cannot read the object again: not "declines
+  to", cannot.
+
+  The key is deliberately **not** in `messages.payload`, where every other
+  attachment keeps its own. That column outlives the opening, so a key in it
+  could be read again by anything that could read it once — and "destroyed when
+  you open it" would be a sentence with nothing behind it.
+
+  The row survives the burn, with `opened_at_ms` set, because the bubble still
+  has to say what used to be there; a deleted row would be indistinguishable
+  from a message that was never view-once at all.
+
+  **What the UI claims is exactly what is true.** Beside the button: *"Once.
+  Nexo cannot stop a screenshot."* There is no screenshot notification, and
+  that is a decision rather than an omission — it would imply a guarantee
+  `THREAT-MODEL.md` §4 disclaims, and its silence would prove nothing while
+  reading as an assurance. The spent bubble says the key was destroyed, not
+  that the message "expired" (no clock was involved) or was "deleted" (it went
+  nowhere).
+
+  **One-to-one only.** "Once" in a group would have to mean "once each", a
+  different promise wearing the same word — and people would assume the
+  stricter one. The control is absent there rather than present and redefined.
+
+  **Our own copy was never openable.** We keep the file we picked, so nothing
+  is lost; but the key row is written already spent, because a sender who could
+  reopen what the recipient cannot would make the bubble untrue on one side.
+
+  The type is sniffed from the bytes on the way out *and* on the way in — a
+  chosen extension is not evidence about what a page will be asked to render.
+  `docs/THREAT-MODEL.md` §2.13 is the long version.
+
+### Segmented attachment crypto (wave 5a)
+
+- **The foundation for playing a video before it has finished arriving.**
+  `crates/crypto/src/attachment.rs` gained `encrypt_segmented`,
+  `decrypt_segment` and `segment_count`: the same AES-256-GCM from the same
+  crate (rule 1), applied per 256 KiB segment, so a byte range can be decrypted
+  without the whole file. Whole-object `encrypt` is untouched and is still what
+  every attachment on the wire uses.
+
+  Per-segment encryption invites three attacks, and each is closed rather than
+  noted:
+
+  - **Reordering.** Independently sealed segments under one key would be
+    interchangeable, so the segment's index goes in the AAD — a segment moved
+    from its position fails its tag.
+  - **Truncation.** Cutting the tail off leaves every remaining segment
+    individually valid, so the total count goes in the AAD too. A reader lied
+    to about the length is refused at the *first* segment it opens, not the
+    last. That is rule 7 at its smallest scale: a stream cut short refuses
+    rather than playing a shortened video.
+  - **Nonce reuse**, the catastrophic one for GCM. The nonce is the file's
+    random 96-bit base with the index added into its last eight bytes, so no
+    two segments under one key share a nonce and no two files share a base.
+    Tested directly over ten thousand indices rather than inferred from a round
+    trip passing.
+
+  An empty file is one empty segment rather than none, so "no segments at all"
+  is never a valid encoding — otherwise a truncation to zero would be
+  indistinguishable from an empty file.
+
+  `SEGMENT_LEN` is fixed rather than carried in the payload: a reader that took
+  it from the sender would have to trust it to compute segment boundaries, and
+  a lie there is a way to make a reader index past its own buffer.
+
+  **Nothing sends segmented attachments yet.** The reader side, the ranged
+  fetch and the player are wave 5b — see the plan.
+
+### Streaming video (wave 5b)
+
+- **A video plays without being fetched first.** `src-tauri/src/media.rs`
+  registers a `nexo-media` URI scheme, and the bubble points `<video>` at it
+  instead of at a `data:` URL. A request for a byte range turns into the two or
+  three segment fetches and decryptions that range touches, and nothing else
+  moves.
+
+  This is what wave 5a's segment framing was for. Video is sealed with
+  `encrypt_segmented`, everything else stays whole-object, and
+  `Payload::Attachment::segmented` carries which — defaulting to false, so every
+  message sent before this is byte-identical on the wire and still reads.
+
+  **The 12 MB inline cap no longer applies to video.** It was never a policy
+  about video; it was the size at which base64-ing a whole file through IPC into
+  the page became unreasonable. A ranged URL does not do that, so the ceiling
+  goes with the mechanism that needed it.
+
+  `preload="metadata"` in `MessageList` finally means what its comment always
+  claimed. Against a `data:` URL it could not: the whole file was in the page
+  before the element saw it. Against this URL the element fetches the header,
+  draws the first frame, learns the duration and stops — which is also why no
+  poster frame is carried in the payload. An earlier draft of this wave put a
+  JPEG in every recipient's ciphertext to solve a problem that ranged reading
+  had already solved.
+
+  Range parsing answers the forms a player actually sends — `bytes=N-`,
+  `bytes=N-M`, and the suffix `bytes=-N` that finds an MP4 index at the end of a
+  file. Multi-range is refused rather than half-answered. A range past the end
+  is clamped, because players routinely ask for more than exists at the tail.
+
+  **It fails closed.** A segment that does not authenticate — reordered, cut
+  short, or fetched against a `size` the sender lied about — becomes a 404 with
+  no body rather than partial bytes. A player that gets nothing stops; there is
+  no shortened video (rule 7).
+
+  The handler carries the same duty `with_client` does: a range fetch is an
+  ordinary authenticated call and can rotate the refresh token, and a spent one
+  replayed at the next launch is what the server reads as theft.
+
+- **`Transport::get_object_range`.** A default implementation fetches the whole
+  object and slices, so every existing transport keeps working and correctness
+  never depends on the store honouring `Range`; `http.rs` overrides it with a
+  real ranged request, and handles a 200 answer by slicing — a store that
+  ignores the header is slow rather than wrong.

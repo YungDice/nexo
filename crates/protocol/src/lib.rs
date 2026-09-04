@@ -103,6 +103,11 @@ impl VoiceMeta {
     }
 }
 
+/// `skip_serializing_if` needs a function, not a comparison.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// What is actually inside an MLS ciphertext.
 ///
 /// §4.2 fixes the *envelope* shape and forbids a plaintext subject, preview,
@@ -176,6 +181,20 @@ pub enum Payload {
         /// keeps answering for them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         voice: Option<VoiceMeta>,
+        /// Whether the object is sealed in segments rather than as one piece.
+        ///
+        /// The two encodings are **not distinguishable from the ciphertext**,
+        /// so this has to be carried: a reader that guessed would either fail
+        /// every whole-object file or read segment headers out of a file that
+        /// has none.
+        ///
+        /// `false` by default and omitted when false, so every message sent
+        /// before segmenting existed stays byte-identical on the wire. The
+        /// segment count is *not* carried -- it is derived from `size`, and a
+        /// sender who lies about `size` then fails the per-segment
+        /// authentication rather than being believed.
+        #[serde(default, skip_serializing_if = "is_false")]
+        segmented: bool,
         /// This sender's name for this message. See [`Payload::Text`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<Uuid>,
@@ -300,6 +319,77 @@ pub enum Payload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<Uuid>,
     },
+    /// A sticker, by name.
+    ///
+    /// **A name, not a picture.** The art is bundled in every client, so what
+    /// travels is a few bytes inside the ciphertext rather than an upload, an
+    /// object in the bucket, a key and a download. A sticker therefore costs
+    /// what a short message costs, which is the only reason sending one feels
+    /// free.
+    ///
+    /// It also means the server learns nothing from a sticker that it does not
+    /// learn from any other message — no object appears in storage, and no
+    /// third party is asked for anything, so nobody outside the conversation
+    /// knows a sticker was sent at all, let alone which.
+    ///
+    /// A client that does not have the pack draws a placeholder saying so. That
+    /// is the one cost of naming rather than sending: an old build cannot
+    /// render a sticker added after it shipped, and must say so rather than
+    /// guess.
+    Sticker {
+        /// Which pack. Carried so a second pack can exist later without its
+        /// ids having to avoid this one's.
+        pack: String,
+        /// Which sticker in it. Stable for the life of the pack — renaming one
+        /// would silently change what old messages show.
+        id: String,
+        /// This sender's name for this message. See [`Payload::Text`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<Uuid>,
+    },
+    /// A picture or a clip meant to be opened once.
+    ///
+    /// The same shape as an [`Payload::Attachment`], and encrypted the same way
+    /// — what differs is entirely on the receiving side, and it is worth being
+    /// exact about what it does and does not buy.
+    ///
+    /// **What it does.** The key that opens the ciphertext is stored apart from
+    /// the message, and destroyed when the file is opened. After that this
+    /// device cannot read the object again: not "declines to", cannot. The
+    /// ciphertext in the bucket is meaningless without the key, and the copy in
+    /// the message is gone with it. That is a stronger promise than a client
+    /// refusing to show something it could still decrypt, because a client can
+    /// be modified and a missing key cannot be argued with.
+    ///
+    /// **What it does not.** Anything the viewer does while it is open. A
+    /// screenshot, a photograph of the screen, a modified build that keeps the
+    /// bytes. There is no notification for those, deliberately: sending one
+    /// would imply a guarantee `docs/THREAT-MODEL.md` §4 explicitly disclaims,
+    /// since the viewer's own device is out of scope. The UI says the true
+    /// thing instead of the reassuring one (rule 5).
+    ViewOnce {
+        /// Where the ciphertext sits in the bucket.
+        s3_key: String,
+        /// The AES-256-GCM key, hex. Kept apart from the message on arrival and
+        /// destroyed on opening -- that destruction *is* the feature.
+        key: String,
+        /// The nonce, hex.
+        nonce: String,
+        /// SHA-256 of the plaintext, hex.
+        sha256: String,
+        /// MIME type. No file name: this is never saved anywhere, so there is
+        /// nothing for a name to name.
+        mime: String,
+        /// Plaintext size in bytes.
+        size: u64,
+        /// This sender's name for this message. See [`Payload::Text`].
+        ///
+        /// Not optional here. Everything about this message is keyed by it --
+        /// the key row that opens it, and the record that it was opened -- and
+        /// unlike the older variants there is no history of unnamed ones to
+        /// stay compatible with.
+        id: Uuid,
+    },
     /// A story, and the key that opens it.
     ///
     /// The object is encrypted exactly once, like an attachment, and this
@@ -404,6 +494,11 @@ impl Payload {
             Payload::Text { id, .. }
             | Payload::Attachment { id, .. }
             | Payload::Reply { id, .. } => *id,
+            // Always named -- see the variant.
+            Payload::ViewOnce { id, .. } => Some(*id),
+            // Named `message_id` rather than `id`, because `id` on this variant
+            // already means the sticker.
+            Payload::Sticker { message_id, .. } => *message_id,
             _ => None,
         }
     }
@@ -426,7 +521,16 @@ impl Payload {
             // the conversation. The row keeps whatever came before it. A
             // reaction especially: a conversation whose list entry changed to
             // an emoji every time somebody tapped one would be unreadable.
-            Payload::Rename { .. }
+            // A sticker has no words either. The list draws it from `sticker`
+            // on the view, the way it draws an attachment from `attachment` --
+            // putting "Sticker" here would bake English into a crate that has
+            // none, and the wrong English for anybody not reading it.
+            Payload::Sticker { .. }
+            // A view-once has no words and no file name, so there is nothing
+            // to preview either. The list says "Photo" or "Video" from the
+            // kind, which the bubble decides.
+            | Payload::ViewOnce { .. }
+            | Payload::Rename { .. }
             | Payload::GroupAvatar { .. }
             | Payload::Reaction { .. }
             | Payload::Retract { .. }
@@ -803,6 +907,7 @@ mod tests {
             size: 1234,
             body: Some("as promised".into()),
             voice: None,
+            segmented: false,
             id: Some(Uuid::new_v4()),
         };
         assert_eq!(Payload::decode(&payload.encode()), payload);
@@ -869,6 +974,7 @@ mod tests {
                 duration_ms: 4_200,
                 peaks: vec![0, 17, 200, 255, 3],
             }),
+            segmented: false,
             id: Some(Uuid::new_v4()),
         };
         assert_eq!(Payload::decode(&payload.encode()), payload);
@@ -889,6 +995,7 @@ mod tests {
             size: 1,
             body: None,
             voice: None,
+            segmented: false,
             id: None,
         };
         let json = String::from_utf8(payload.encode()).expect("payloads are utf-8");
@@ -1052,6 +1159,7 @@ mod tests {
             size: 1,
             body: None,
             voice: None,
+            segmented: false,
             id: None,
         };
         assert_eq!(payload.preview(), "holiday.jpg");
@@ -1069,6 +1177,7 @@ mod tests {
             size: 1,
             body: Some("from the trip".into()),
             voice: None,
+            segmented: false,
             id: None,
         };
         assert_eq!(payload.preview(), "from the trip");
@@ -1088,6 +1197,7 @@ mod tests {
             size: 10,
             body: None,
             voice: None,
+            segmented: false,
             id: None,
         };
         let encoded = payload.encode();

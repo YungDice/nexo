@@ -888,3 +888,50 @@ actually carries the network effect.
   cannot leave "typing…" on screen for ever. The `presence` preference now
   governs both sending and showing, rather than being read by a control that
   did nothing.
+
+### Three bugs found by driving the running app
+
+Found by attaching to the built app's WebView2 over CDP and reading its console
+— not by review, and not by any test. All three were invisible from outside:
+the app worked, so nothing looked wrong.
+
+- **Every IPC call was taking the slow path.** The CSP named
+  `connect-src ... https://ipc.localhost`, and WebView2 on Windows uses
+  **`http://`**. So the custom-protocol fetch was refused every time, Tauri
+  caught it and fell back to `postMessage`, and everything kept working —
+  one failed fetch and one console error per call, on every call, since the CSP
+  was written. `restore_session`, `set_window_backdrop` and every plugin call
+  went through it.
+
+- **The bundled fonts were being refused.** There was no `font-src`, so the
+  faces Vite inlines as `data:` URLs fell back to `default-src 'self'` and were
+  blocked. `document.fonts` had JetBrains Mono in `error` state and the app was
+  rendering in fallback faces rather than the ones it ships.
+
+- **The Meet&Greet map worker never loaded.** `MeetMap.tsx` imported it with
+  `?url`, which copies a file verbatim without following its imports — and
+  MapLibre's worker imports a sibling, `maplibre-gl-shared.mjs`, which was
+  therefore never emitted. The worker asked for it, Tauri's asset protocol
+  answered with `index.html`, and the browser refused the module: *"Expected a
+  JavaScript-or-Wasm module script but the server responded with a MIME type of
+  text/html."*
+
+  The map still drew — WebGL canvas, pins, zoom — so nothing looked broken,
+  while everything MapLibre means to do off the main thread was happening on
+  it. This is the most likely cause of the horizontal banding while dragging
+  that the Meet&Greet section above records as an unexplained known gap; that
+  claim should be re-tested now rather than assumed fixed.
+
+  Fixed with `?worker&url`, which builds the worker with its imports included
+  and still yields a same-origin asset URL — so the CSP reasoning in that file's
+  comment still holds.
+
+All three verified fixed by running a dev build with the same CDP attachment:
+the console goes from many blocked-IPC, blocked-font and failed-module errors to
+none, and no font remains in `error` state.
+
+**Not a bug, checked and cleared:** every conversation reads "No messages yet".
+That is expected after the reinstall — the conversation *list* is server-side
+metadata, while history is local-only and went with the old store. Worth knowing
+that it also means a fresh identity keypair was generated for this device, which
+is the silent-rotation case §4 of the threat model calls out.

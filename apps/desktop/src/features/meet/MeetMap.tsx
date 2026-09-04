@@ -5,7 +5,20 @@ import { Map as MapLibreMap, setWorkerUrl } from "maplibre-gl";
 // the CSP untouched: MapLibre otherwise launders its worker through a `blob:`
 // URL, and `script-src 'self'` — which `worker-src` falls back to — refuses
 // one. Editing the CSP to allow it would be the wrong fix.
-import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
+//
+// `?worker&url`, not `?url`. `?url` copies the file verbatim and does not
+// follow what it imports — and this one imports a sibling,
+// `./maplibre-gl-shared.mjs`, which was therefore never emitted. The worker
+// then asked for a file that did not exist, Tauri's asset protocol answered
+// with `index.html`, and the browser refused it: "Expected a
+// JavaScript-or-Wasm module script but the server responded with a MIME type
+// of text/html". The map still drew, so nothing looked broken from outside
+// while every worker task ran on the main thread instead.
+//
+// `?worker` builds it as a worker bundle, imports included, and `&url` asks
+// for its address rather than a constructor — which is what `setWorkerUrl`
+// wants, and still a same-origin asset, so the comment above still holds.
+import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 import type { Pin } from "../../lib/meet";

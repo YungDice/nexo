@@ -293,15 +293,33 @@ move.
   ended with "no image fetch" — so a feature that wants remote pictures (GIF
   search is the standing example) is a threat-model decision before it is a
   frontend one. Stickers are drawn in the repo for exactly this reason.
-- **A new kind of media needs a CSP directive, and fails silently without one.**
-  The CSP in `tauri.conf.json` is the whole policy: Tauri appends script and
-  style hashes to it and touches nothing else, so an absent directive falls back
-  to `default-src 'self'` and the content is refused with no error the app can
-  see. This cost v0.1.19 and v0.1.20 all media playback — `img-src` listed
-  `data:` so pictures worked, `media-src` was missing so no `<video>` or
-  `<audio>` ever loaded, and the bug was invisible to every test. Adding a
-  player, a font source or a worker means adding its directive in the same
-  change.
+- **The CSP is the whole policy, it fails silently, and it has been wrong three
+  times.** `tauri.conf.json` holds all of it: Tauri appends script and style
+  hashes and touches nothing else, so an absent or mistyped directive falls back
+  to `default-src 'self'`, the content is refused, and **nothing in the app can
+  see it happen**. No test catches this. The only way it is ever found is by
+  reading the WebView console of a running build.
+
+  The three, all found that way rather than by review:
+
+  - **`media-src` was missing** — `img-src` listed `data:` so pictures worked,
+    while no `<video>` or `<audio>` ever loaded in v0.1.19 or v0.1.20.
+  - **`font-src` was missing** — the bundled faces Vite inlines as `data:`
+    URLs were refused, so JetBrains Mono sat in `error` state and the app
+    rendered in fallback faces.
+  - **`connect-src` named `https://ipc.localhost`** — WebView2 on Windows uses
+    **`http://`**. Every IPC call failed its fast path and fell back to
+    `postMessage`, which works, which is why nobody noticed.
+
+  Adding a player, a font, a worker or anything that fetches means adding its
+  directive in the same change — and then *looking at the console of a real
+  run*, because that is the only place the failure appears.
+- **`?url` does not follow what a file imports.** `MeetMap.tsx` loaded
+  MapLibre's worker with `?url`, which copies the file verbatim; the worker
+  imports a sibling, `maplibre-gl-shared.mjs`, which was therefore never
+  emitted. The worker died on a `text/html` 404, the map still drew, and every
+  worker task ran on the main thread instead. Use `?worker&url` for anything
+  with imports of its own.
 - **The local store's schema version is one constant.**
   `crates/store/src/lib.rs` `SCHEMA_VERSION` and the last `PRAGMA
   user_version` in `migrate()` must agree; a test fails if they drift. Add a

@@ -85,6 +85,30 @@ export interface Message {
   retracted_at_ms: number | null;
   /** Set when the sender last changed it. A quiet mark, nothing more. */
   edited_at_ms: number | null;
+  /** What this message answers, when it answers something. */
+  reply?: Reply;
+}
+
+/**
+ * The quoted message, as far as this device can tell.
+ *
+ * Resolved in Rust, because the answer depends on what this device holds and
+ * the page cannot know that. Three states worth telling apart: it is here, it
+ * was taken back, or it never arrived — see `ReplyView` in
+ * `src-tauri/src/conversations.rs`.
+ */
+export interface Reply {
+  /** The name of the message answered, for the jump-to. */
+  target: string;
+  /** Whether this device has it at all. */
+  found: boolean;
+  /** Its envelope id, when it is here. */
+  envelope_id?: number;
+  /** Whether this device sent the message being answered. */
+  outgoing: boolean;
+  retracted: boolean;
+  /** Already shortened in Rust. Empty for a retracted message. */
+  excerpt: string;
 }
 
 /**
@@ -101,6 +125,20 @@ export interface Attachment {
   name: string;
   mime: string;
   size: number;
+  /**
+   * Present when the sender recorded this, absent when they picked a file.
+   *
+   * Rust omits the field entirely rather than sending `null`, so its presence
+   * is the answer — see `AttachmentView` in `src-tauri/src/conversations.rs`.
+   */
+  voice?: VoiceMeta;
+}
+
+/** The drawable half of a recording, as Rust sends it. */
+export interface VoiceMeta {
+  duration_ms: number;
+  /** `0`-`255` per bar, already capped in Rust. */
+  peaks: number[];
 }
 
 /** Bytes, as a short human string. */
@@ -189,6 +227,21 @@ export function sendMessage(
   body: string,
 ): Promise<Message> {
   return invoke<Message>("send_message", { conversationId, body });
+}
+
+/**
+ * Sends a message answering another one.
+ *
+ * `target` is the sender's own name for the message being answered — the same
+ * reference editing and taking back already use, so a message sent before names
+ * existed cannot be replied to and the menu does not offer it.
+ */
+export function sendReply(
+  conversationId: string,
+  body: string,
+  target: string,
+): Promise<Message> {
+  return invoke<Message>("send_reply", { conversationId, body, target });
 }
 
 export function syncConversation(conversationId: string): Promise<SyncResult> {
@@ -395,6 +448,45 @@ export function sendAttachment(
     conversationId,
     path,
     body: body?.trim() ? body.trim() : null,
+  });
+}
+
+/**
+ * Sends something the user just recorded.
+ *
+ * The **bytes** cross here, unlike `sendAttachment` above, and the asymmetry is
+ * deliberate rather than an oversight. A picked file is on disk, so a path
+ * keeps its plaintext out of this heap entirely; a recording was made in this
+ * heap by `MediaRecorder` and is already here. Handing it to Rust moves it out.
+ * Nothing comes back the other way — the encryption, the upload and the key all
+ * stay on the far side (rule 2).
+ *
+ * Base64 rather than a byte array because a `number[]` of a megabyte crosses
+ * the bridge as a megabyte of JSON integers. Rust refuses anything over five
+ * minutes' worth.
+ */
+export function sendVoiceMessage(
+  conversationId: string,
+  audio: Blob,
+  durationMs: number,
+  peaks: number[],
+): Promise<Message> {
+  return audio.arrayBuffer().then((buffer) => {
+    const bytes = new Uint8Array(buffer);
+    // `String.fromCharCode(...bytes)` blows the argument limit on anything
+    // longer than a second or two, so this walks it in chunks.
+    let binary = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return invoke<Message>("send_voice_message", {
+      conversationId,
+      audioBase64: btoa(binary),
+      mime: audio.type || "audio/webm",
+      durationMs: Math.max(0, Math.round(durationMs)),
+      peaks,
+    });
   });
 }
 

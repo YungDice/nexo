@@ -5,7 +5,7 @@
 //! that MLS exists.
 
 use nexo_client::conversations;
-use nexo_protocol::{ConversationId, Payload};
+use nexo_protocol::{ConversationId, Payload, VoiceMeta};
 use serde::Serialize;
 use tauri::State;
 
@@ -108,6 +108,93 @@ pub struct MessageView {
     /// The same shape the feed already draws pills from, so the pill component
     /// is reused rather than reimplemented for conversations.
     pub reactions: Vec<ReactionView>,
+    /// What this message answers, when it answers something.
+    ///
+    /// Resolved here rather than in the WebView, because the answer depends on
+    /// what this device holds and the page cannot know that.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply: Option<ReplyView>,
+}
+
+/// The quoted message a reply points at, as far as this device can tell.
+///
+/// Three states, and the difference matters to a reader: the message is here
+/// (`body` says what it said), it was taken back (`retracted`), or this device
+/// never received it (`found` is false). The last is ordinary rather than an
+/// error -- somebody joined the conversation after the message they are being
+/// answered about -- and the bubble says so instead of drawing a blank quote.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReplyView {
+    /// The name of the message being answered, so the UI can scroll to it.
+    pub target: String,
+    /// Whether this device has that message at all.
+    pub found: bool,
+    /// Its envelope id, when it is here -- what a jump-to scrolls by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub envelope_id: Option<i64>,
+    /// Whether this device sent the message being answered.
+    pub outgoing: bool,
+    /// Whether it was taken back. An empty `body` and this set are not the
+    /// same thing as a message that never arrived.
+    pub retracted: bool,
+    /// What it said, already shortened -- a quote is a reminder, not a copy,
+    /// and a paragraph quoted above every answer buries the answer.
+    pub excerpt: String,
+}
+
+/// How much of a quoted message a bubble shows.
+const QUOTE_CHARS: usize = 120;
+
+/// The quoted line for one target, from what this device holds.
+fn resolve_reply(target: &str, by_name: &std::collections::HashMap<&str, &StoredRef>) -> ReplyView {
+    let Some(found) = by_name.get(target) else {
+        return ReplyView {
+            target: target.to_string(),
+            found: false,
+            envelope_id: None,
+            outgoing: false,
+            retracted: false,
+            excerpt: String::new(),
+        };
+    };
+    ReplyView {
+        target: target.to_string(),
+        found: true,
+        envelope_id: Some(found.envelope_id),
+        outgoing: found.outgoing,
+        retracted: found.retracted,
+        excerpt: if found.retracted {
+            String::new()
+        } else {
+            shorten(&found.body, QUOTE_CHARS)
+        },
+    }
+}
+
+/// Enough of a stored message to quote it.
+struct StoredRef {
+    envelope_id: i64,
+    outgoing: bool,
+    retracted: bool,
+    body: String,
+}
+
+/// Cuts a quote to length on a word boundary where there is one nearby.
+///
+/// Chopping mid-word reads as corruption rather than as brevity, so this backs
+/// up to the last space in the final quarter of the budget and only falls back
+/// to a hard cut when there is none -- which is what a long URL or a language
+/// that does not space its words will do.
+fn shorten(body: &str, limit: usize) -> String {
+    let mut cut = body.char_indices().map(|(i, _)| i).nth(limit);
+    if cut.is_none() {
+        return body.to_string();
+    }
+    let end = cut.take().unwrap_or(body.len());
+    let head = &body[..end];
+    let floor = end.saturating_sub(limit / 4);
+    let boundary = head[floor..].find(' ').map(|i| floor + i).unwrap_or(end);
+    format!("{}…", head[..boundary].trim_end())
 }
 
 /// One emoji on a message, and how many used it.
@@ -127,6 +214,25 @@ pub struct AttachmentView {
     pub name: String,
     pub mime: String,
     pub size: u64,
+    /// Set when the sender recorded this, so the bubble draws a voice note
+    /// rather than a file row. Absent for everything picked from disk, and for
+    /// every message sent before recording existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceView>,
+}
+
+/// The drawable half of [`nexo_protocol::VoiceMeta`].
+///
+/// Separate from the protocol type for the reason `AttachmentView` is separate
+/// from `Payload`: what crosses this boundary is chosen, not inherited. Here
+/// that costs nothing today — both fields are drawn — but it means a field
+/// added to the payload later does not reach the WebView by default.
+#[derive(Debug, Clone, Serialize)]
+pub struct VoiceView {
+    pub duration_ms: u32,
+    /// Already capped by `VoiceMeta::drawable_peaks`, so the renderer cannot be
+    /// handed ten thousand bars by a sender who felt like it.
+    pub peaks: Vec<u8>,
 }
 
 /// What the *bubble* shows, which is not what a conversation-list row shows.
@@ -148,6 +254,17 @@ fn bubble_body(stored: &str, payload: Option<&str>) -> String {
     }
 }
 
+/// What a stored payload answers, when it answers something.
+///
+/// Only a queued reply needs this: once the message reaches the `messages`
+/// table it has a `reply_to` column, and reading a column beats decoding JSON.
+fn reply_target(payload: Option<&str>) -> Option<String> {
+    match Payload::decode(payload?.as_bytes()) {
+        Payload::Reply { target, .. } => Some(target.to_string()),
+        _ => None,
+    }
+}
+
 /// The `kind` of an unreadable payload, when that is what was stored.
 ///
 /// `None` for everything this build understands, including a message with no
@@ -166,7 +283,11 @@ impl AttachmentView {
     /// that cannot be described as an attachment is simply not shown as one.
     fn from_payload(encoded: Option<&str>) -> Option<Self> {
         let Payload::Attachment {
-            name, mime, size, ..
+            name,
+            mime,
+            size,
+            voice,
+            ..
         } = Payload::decode(encoded?.as_bytes())
         else {
             return None;
@@ -175,6 +296,10 @@ impl AttachmentView {
             name: nexo_protocol::safe_file_name(&name),
             mime,
             size,
+            voice: voice.map(|v| VoiceView {
+                duration_ms: v.duration_ms,
+                peaks: v.drawable_peaks().to_vec(),
+            }),
         })
     }
 }
@@ -795,6 +920,58 @@ pub async fn send_message(
             retracted_at_ms: None,
             edited_at_ms: None,
             reactions: Vec::new(),
+            reply: None,
+        })
+    })
+    .await
+}
+
+/// Sends a message answering another one.
+///
+/// `target` is the sender's name for the message being answered -- the same
+/// kind of reference editing and taking back already use. A message sent before
+/// names existed has none, and the UI does not offer to reply to one.
+///
+/// Nothing here checks that the target exists. It may have been sent to a
+/// conversation this device joined later, and refusing the reply would be
+/// refusing a message that is perfectly readable; the reader draws an
+/// unresolved quote instead (see `ReplyView`).
+#[tauri::command]
+pub async fn send_reply(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    body: String,
+    target: String,
+) -> Result<MessageView, ConversationErrorView> {
+    with_client(&state, move |client| {
+        let id = parse_id(&conversation_id)?;
+        let trimmed = body.trim();
+        if trimmed.is_empty() {
+            return Err(failure("invalid_request", "Nothing to send."));
+        }
+        let target = nexo_protocol::MessageId::parse_str(&target)
+            .map_err(|_| failure("invalid_request", "That message cannot be replied to."))?;
+
+        let sent = conversations::send_reply(&client.context(), id, trimmed, target)?;
+        Ok(MessageView {
+            envelope_id: sent.envelope_id().unwrap_or(-now_ms()),
+            sender_device_id: None,
+            body: trimmed.to_string(),
+            sent_at_ms: now_ms(),
+            outgoing: true,
+            pending: sent.envelope_id().is_none(),
+            attachment: None,
+            client_id: sent.client_id().map(str::to_string),
+            unsupported: None,
+            pinned: false,
+            retracted_at_ms: None,
+            edited_at_ms: None,
+            reactions: Vec::new(),
+            // Left for the reload to fill. Resolving the quote needs the whole
+            // conversation, and this call has one message -- the page already
+            // refreshes after a send, and a half-resolved quote drawn for one
+            // frame is worse than one that appears complete.
+            reply: None,
         })
     })
     .await
@@ -923,6 +1100,35 @@ pub async fn conversation_messages(
             .reactions(&conversation_id, me.as_deref())
             .map_err(|e| ConversationErrorView::from(conversations::ConversationError::Store(e)))?;
 
+        // Every message this device holds, by the sender's name for it, so a
+        // quote is resolved from what is already loaded rather than by asking
+        // the store once per reply. The thread is one conversation, and the
+        // message being answered is nearly always in it.
+        //
+        // Owned in `refs` and borrowed in the map because `stored` is consumed
+        // below to build the views: the names cannot be borrowed from rows that
+        // are about to move.
+        let refs: Vec<(String, StoredRef)> = stored
+            .iter()
+            .filter_map(|m| {
+                m.client_id.as_ref().map(|name| {
+                    (
+                        name.clone(),
+                        StoredRef {
+                            envelope_id: m.envelope_id,
+                            outgoing: m.sender_device_id.is_none(),
+                            retracted: m.retracted_at_ms.is_some(),
+                            body: m.body.clone(),
+                        },
+                    )
+                })
+            })
+            .collect();
+        let by_name: std::collections::HashMap<&str, &StoredRef> = refs
+            .iter()
+            .map(|(name, value)| (name.as_str(), value))
+            .collect();
+
         // Queued messages, appended after the delivered ones. They belong in
         // the conversation -- someone wrote them and expects to see them --
         // and they are marked so the UI can draw them as not-yet-sent.
@@ -950,6 +1156,10 @@ pub async fn conversation_messages(
                 // It has a name, so it *could* carry reactions -- but nobody
                 // has seen it to react to.
                 reactions: Vec::new(),
+                // A queued reply keeps its target in the payload until the
+                // message lands in `messages` and gets its own column.
+                reply: reply_target(item.payload.as_deref())
+                    .map(|target| resolve_reply(&target, &by_name)),
             })
             .collect();
 
@@ -990,6 +1200,10 @@ pub async fn conversation_messages(
                     // before it was written there. What is still waiting lives
                     // in the outbox, and is appended below.
                     pending: false,
+                    reply: m
+                        .reply_to
+                        .as_deref()
+                        .map(|target| resolve_reply(target, &by_name)),
                 }
             })
             .chain(queued)
@@ -1092,8 +1306,15 @@ pub async fn send_attachment(
         let body = body.as_deref().map(str::trim).filter(|b| !b.is_empty());
         let size = contents.len() as u64;
 
-        let sent =
-            conversations::send_attachment(&client.context(), id, &name, mime, &contents, body)?;
+        let sent = conversations::send_attachment(
+            &client.context(),
+            id,
+            &name,
+            mime,
+            &contents,
+            body,
+            None,
+        )?;
 
         Ok(MessageView {
             // An attachment always goes straight to the server -- it has no
@@ -1109,6 +1330,10 @@ pub async fn send_attachment(
                 name: nexo_protocol::safe_file_name(&name),
                 mime: mime.to_string(),
                 size,
+                // A picked file is never a voice note, whatever its extension.
+                // That is the whole point of carrying the flag: this path had
+                // no recorder behind it.
+                voice: None,
             }),
             // The name the payload was given, so the bubble can be reacted to
             // and taken back without waiting for a reload.
@@ -1119,6 +1344,117 @@ pub async fn send_attachment(
             retracted_at_ms: None,
             edited_at_ms: None,
             reactions: Vec::new(),
+            reply: None,
+        })
+    })
+    .await
+}
+
+/// The longest recording this app will send.
+///
+/// Opus at the recorder's bitrate runs well under 20 kB per second, so this is
+/// a few megabytes and a generous five minutes. It exists because the bytes
+/// arrive over IPC rather than from a file on disk: `send_attachment` can weigh
+/// a path before reading it, and this cannot -- by the time the argument is
+/// here, whatever was sent has already been allocated.
+const MAX_VOICE_BYTES: usize = 6 * 1024 * 1024;
+
+/// Sends something the user recorded in the app.
+///
+/// **The bytes cross the bridge here, and that is deliberate**, against the
+/// rule `send_attachment` follows two hundred lines above. The difference is
+/// where the plaintext starts. A picked file is on disk, so passing its path
+/// keeps it out of the WebView entirely; a recording is *made* in the WebView
+/// -- `MediaRecorder` is the only capture this app has without a native audio
+/// dependency -- so it is already in that heap before Rust hears about it.
+/// Sending it down is moving plaintext out, not letting it in, and rule 2 is
+/// unmoved: no key ever comes back the other way, and the encryption still
+/// happens here.
+///
+/// `peaks` and `duration_ms` come from the recorder because only the recorder
+/// has them; see [`nexo_protocol::VoiceMeta`].
+#[tauri::command]
+pub async fn send_voice_message(
+    state: State<'_, ClientState>,
+    conversation_id: String,
+    audio_base64: String,
+    mime: String,
+    duration_ms: u32,
+    peaks: Vec<u8>,
+) -> Result<MessageView, ConversationErrorView> {
+    with_client(&state, move |client| {
+        use base64::Engine as _;
+
+        let id = parse_id(&conversation_id)?;
+        let contents = base64::engine::general_purpose::STANDARD
+            .decode(audio_base64.as_bytes())
+            .map_err(|_| failure("invalid_request", "That recording could not be read."))?;
+
+        if contents.is_empty() {
+            return Err(failure("invalid_request", "That recording is empty."));
+        }
+        if contents.len() > MAX_VOICE_BYTES {
+            return Err(failure(
+                "too_large",
+                "That recording is too long. Five minutes is the limit.",
+            ));
+        }
+
+        // The container the recorder actually produced decides the extension,
+        // and the *bytes* decide the type -- `sniff_mime` is what the player is
+        // handed later, so a wrong guess here is cosmetic rather than a way in.
+        let mime = if mime.starts_with("audio/") || mime.starts_with("video/") {
+            mime
+        } else {
+            "audio/webm".to_string()
+        };
+        let name = format!("voice-{}.webm", now_ms());
+
+        let voice = VoiceMeta {
+            duration_ms,
+            // Capped on the way in as well as on the way out. The renderer is
+            // protected by `drawable_peaks`; this stops an oversized list being
+            // encrypted into every recipient's copy in the first place.
+            peaks: peaks.into_iter().take(VoiceMeta::MAX_PEAKS).collect(),
+        };
+        let drawable = voice.drawable_peaks().to_vec();
+        let size = contents.len() as u64;
+
+        let sent = conversations::send_attachment(
+            &client.context(),
+            id,
+            &name,
+            &mime,
+            &contents,
+            None,
+            Some(voice),
+        )?;
+
+        Ok(MessageView {
+            envelope_id: sent.envelope_id().unwrap_or(0),
+            sender_device_id: None,
+            // A recording has no words in it. The list shows what
+            // `Payload::preview` makes of an attachment with no message.
+            body: String::new(),
+            sent_at_ms: now_ms(),
+            outgoing: true,
+            pending: false,
+            attachment: Some(AttachmentView {
+                name: nexo_protocol::safe_file_name(&name),
+                mime,
+                size,
+                voice: Some(VoiceView {
+                    duration_ms,
+                    peaks: drawable,
+                }),
+            }),
+            client_id: sent.client_id().map(str::to_string),
+            unsupported: None,
+            pinned: false,
+            retracted_at_ms: None,
+            edited_at_ms: None,
+            reactions: Vec::new(),
+            reply: None,
         })
     })
     .await
@@ -1270,6 +1606,7 @@ mod tests {
             retracted_at_ms: None,
             edited_at_ms: None,
             reactions: Vec::new(),
+            reply: None,
         };
         let json = serde_json::to_string(&view).unwrap();
         for forbidden in ["ciphertext", "epoch", "key", "secret", "token"] {
@@ -1295,6 +1632,7 @@ mod tests {
             mime: "application/pdf".into(),
             size: 1234,
             body: Some("here".into()),
+            voice: None,
             // Deliberately unnamed: this is the shape a message sent before
             // names existed still has, and it must still produce a view.
             id: None,
@@ -1330,6 +1668,7 @@ mod tests {
             mime: "application/octet-stream".into(),
             size: 1,
             body: None,
+            voice: None,
             id: None,
         };
         let view = AttachmentView::from_payload(Some(&payload.encode_string())).unwrap();
@@ -1359,6 +1698,70 @@ mod tests {
     }
 
     #[test]
+    fn a_quote_is_shortened_on_a_word_boundary() {
+        let long = "the quick brown fox jumps over the lazy dog ".repeat(6);
+        let cut = shorten(&long, QUOTE_CHARS);
+        assert!(cut.ends_with('…'), "a cut quote says it was cut: {cut}");
+        assert!(cut.len() <= QUOTE_CHARS + 8, "roughly the budget: {cut}");
+        assert!(
+            !cut.trim_end_matches('…').ends_with(' '),
+            "no trailing space before the ellipsis: {cut}"
+        );
+    }
+
+    #[test]
+    fn a_short_quote_is_left_whole() {
+        assert_eq!(shorten("yes", QUOTE_CHARS), "yes");
+    }
+
+    #[test]
+    fn a_quote_with_no_spaces_is_cut_anyway() {
+        // A long URL, or a language that does not space its words. Backing up
+        // to a boundary that is not there must not return the whole string.
+        let wall = "x".repeat(400);
+        let cut = shorten(&wall, QUOTE_CHARS);
+        assert!(
+            cut.len() < wall.len(),
+            "it still has to be cut: {}",
+            cut.len()
+        );
+    }
+
+    #[test]
+    fn an_unresolved_quote_says_so_rather_than_drawing_a_blank() {
+        // Replying to a message this device never received is ordinary, not an
+        // error: somebody joined the conversation after it was sent.
+        let empty = std::collections::HashMap::new();
+        let view = resolve_reply("11111111-1111-1111-1111-111111111111", &empty);
+        assert!(!view.found);
+        assert!(view.excerpt.is_empty());
+        assert_eq!(view.envelope_id, None);
+    }
+
+    #[test]
+    fn a_quote_of_a_retracted_message_carries_no_words() {
+        // The row survives a retraction, so the body may still be readable
+        // here. Quoting it would put back exactly what was taken away.
+        let target = StoredRef {
+            envelope_id: 7,
+            outgoing: false,
+            retracted: true,
+            body: "something regretted".into(),
+        };
+        let mut by_name = std::collections::HashMap::new();
+        by_name.insert("abc", &target);
+
+        let view = resolve_reply("abc", &by_name);
+        assert!(view.found);
+        assert!(view.retracted);
+        assert!(
+            view.excerpt.is_empty(),
+            "a retracted message must not be quoted back: {}",
+            view.excerpt
+        );
+    }
+
+    #[test]
     fn our_own_messages_are_marked_outgoing_by_the_absent_sender() {
         // MLS does not let a sender decrypt its own ciphertext, so ours are
         // stored with no sender. That absence is the signal, and it needs to
@@ -1377,6 +1780,7 @@ mod tests {
             retracted_at_ms: None,
             edited_at_ms: None,
             reactions: Vec::new(),
+            reply: None,
         };
         assert!(mine.outgoing);
         assert!(mine.sender_device_id.is_none());

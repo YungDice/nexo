@@ -105,6 +105,8 @@ pub fn run() {
             conversations::sync_all,
             conversations::conversation_messages,
             conversations::send_attachment,
+            conversations::send_voice_message,
+            conversations::send_reply,
             conversations::save_attachment,
             conversations::flush_outbox,
             conversations::outbox_count,

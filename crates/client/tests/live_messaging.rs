@@ -556,6 +556,7 @@ fn a_twenty_megabyte_attachment_round_trips_as_ciphertext() {
         "application/octet-stream",
         &contents,
         Some("the file you asked for"),
+        None,
     )
     .expect("sending a 20 MB attachment should succeed");
     println!("ok: alice uploaded {} bytes", contents.len());

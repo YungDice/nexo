@@ -12,7 +12,7 @@
 
 use nexo_crypto::CryptoError;
 use nexo_crypto::mls::{self, Conversation, Incoming, Peeked};
-use nexo_protocol::{ConversationId, Payload};
+use nexo_protocol::{ConversationId, Payload, VoiceMeta};
 use nexo_store::EncryptedStore;
 use openmls::prelude::CredentialWithKey;
 use openmls_basic_credential::SignatureKeyPair;
@@ -653,6 +653,36 @@ pub fn send_message<T: Transport>(
     conversation_id: ConversationId,
     body: &str,
 ) -> Result<Sent, ConversationError> {
+    send_written(ctx, conversation_id, body, None)
+}
+
+/// Sends a message answering another one.
+///
+/// `target` is the sender's own name for the message being answered, which is
+/// what [`Payload::Reply`] refers to. Nothing checks that this device has that
+/// message: a reply to something never received is still a reply, and the
+/// reader draws it as one with the quote marked unresolved.
+pub fn send_reply<T: Transport>(
+    ctx: &Context<'_, T>,
+    conversation_id: ConversationId,
+    body: &str,
+    target: uuid::Uuid,
+) -> Result<Sent, ConversationError> {
+    send_written(ctx, conversation_id, body, Some(target))
+}
+
+/// The one path both of the above take.
+///
+/// Split so that a reply cannot drift from a message: the ratchet, the outbox,
+/// the idempotency key and the local write are subtle enough once. A second
+/// copy of them would be a second place for the crash window between
+/// encrypting and queueing to be got wrong.
+fn send_written<T: Transport>(
+    ctx: &Context<'_, T>,
+    conversation_id: ConversationId,
+    body: &str,
+    reply_to: Option<uuid::Uuid>,
+) -> Result<Sent, ConversationError> {
     // One retry through a sync, before giving up.
     //
     // The Welcome that admits this device is an ordinary envelope, so there is
@@ -684,8 +714,21 @@ pub fn send_message<T: Transport>(
     // the message and there is no second chance to look inside and learn what
     // it was called. A retry sends the same bytes rather than producing new
     // ones, so the name is stable too.
-    let payload = Payload::text(body);
+    let payload = match reply_to {
+        Some(target) => Payload::Reply {
+            target,
+            body: body.to_string(),
+            id: Some(uuid::Uuid::new_v4()),
+        },
+        None => Payload::text(body),
+    };
     let client_id = payload.id().map(|id| id.to_string());
+    // Kept for a reply and only for a reply. A plain message needs nothing
+    // beyond the body already stored beside it, and writing an encoded copy of
+    // every message into the outbox would double what a queue costs for
+    // nothing. A queued reply *does* need it: the quote lives in the payload
+    // until the message reaches the `messages` table and its own column.
+    let queued_payload = reply_to.map(|_| payload.encode_string());
     let ciphertext = conversation.encrypt(ctx.provider, ctx.signer, &payload.encode())?;
 
     // Queued before it is sent, not after a failure. If this process dies
@@ -699,7 +742,7 @@ pub fn send_message<T: Transport>(
         epoch: conversation.epoch() as i64,
         is_commit: false,
         body: body.to_string(),
-        payload: None,
+        payload: queued_payload,
         queued_at_ms: now_ms(),
         attempts: 0,
         last_error: None,
@@ -728,6 +771,7 @@ pub fn send_message<T: Transport>(
                 payload: None,
                 sent_at_ms: now_ms(),
                 client_id: client_id.as_deref(),
+                reply_to: reply_to.map(|t| t.to_string()).as_deref(),
             })?;
             Ok(Sent::Delivered {
                 envelope_id: accepted.envelope_id,
@@ -1192,6 +1236,15 @@ pub fn sync<T: Transport>(
                             // Written now for the same reason the payload is:
                             // this envelope will not decrypt again.
                             let client_id = payload.id().map(|id| id.to_string());
+                            // Lifted into its own column at arrival rather
+                            // than left in the payload, because the thread
+                            // resolves a quote for every bubble it draws and
+                            // a parse per message in that loop is a parse too
+                            // many. See the schema-16 migration.
+                            let reply_to = match &payload {
+                                Payload::Reply { target, .. } => Some(target.to_string()),
+                                _ => None,
+                            };
                             ctx.store.insert(&nexo_store::NewMessage {
                                 envelope_id: envelope.envelope_id,
                                 conversation_id: &id,
@@ -1200,6 +1253,7 @@ pub fn sync<T: Transport>(
                                 payload: stored.as_deref(),
                                 sent_at_ms: envelope.server_timestamp_ms,
                                 client_id: client_id.as_deref(),
+                                reply_to: reply_to.as_deref(),
                             })?;
                             outcome.messages += 1;
                         }
@@ -1616,6 +1670,10 @@ pub fn group_avatar<T: Transport>(
 /// sent before it is applied: a message announcing a file that failed to upload
 /// is a message pointing at nothing, and the recipient has no way to tell that
 /// from a file they simply cannot fetch yet.
+///
+/// `voice` is what separates a recording from a file the sender chose. It comes
+/// from the recorder and is carried rather than inferred; see
+/// [`nexo_protocol::VoiceMeta`].
 pub fn send_attachment<T: Transport>(
     ctx: &Context<'_, T>,
     conversation_id: ConversationId,
@@ -1623,6 +1681,7 @@ pub fn send_attachment<T: Transport>(
     mime: &str,
     contents: &[u8],
     body: Option<&str>,
+    voice: Option<VoiceMeta>,
 ) -> Result<Sent, ConversationError> {
     let sealed = nexo_crypto::attachment::encrypt(contents)?;
 
@@ -1641,6 +1700,7 @@ pub fn send_attachment<T: Transport>(
         mime: mime.to_string(),
         size: sealed.size,
         body: body.map(str::to_string),
+        voice,
         id: Some(uuid::Uuid::new_v4()),
     };
     let client_id = payload.id().map(|id| id.to_string());
@@ -1670,6 +1730,9 @@ pub fn send_attachment<T: Transport>(
         payload: Some(&payload.encode_string()),
         sent_at_ms: now_ms(),
         client_id: client_id.as_deref(),
+        // An attachment is not an answer to anything. Replying *to* one is a
+        // `Payload::Reply` naming it, which travels the ordinary send path.
+        reply_to: None,
     })?;
     mls_state::save(ctx.provider, ctx.store)?;
 

@@ -1,260 +1,106 @@
 # Nexo
 
-An end-to-end encrypted messenger for Windows 10/11, with a public feed and
-public profiles alongside private conversations.
+A private messenger for Windows, with a public side to it.
 
-- **Messages** are end-to-end encrypted with MLS ([RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html)),
-  via [OpenMLS](https://github.com/openmls/openmls). The server stores and
-  forwards ciphertext it cannot read.
-- **Feed posts and profiles are not end-to-end encrypted.** They are readable by
-  the server, and public to any logged-in user. Content meant to be readable by
-  strangers cannot also be encrypted to a closed group, and the app says so
-  rather than implying otherwise.
-- **Conversation metadata** — who talks to whom, when, and message sizes — is
-  visible to the server. That is the honest limit of this design.
+Nexo keeps two things apart that most apps blur together. Your conversations are
+private — encrypted on your machine, and unreadable to the server that carries
+them. Your feed, your profile and your pin on the map are public — meant to be
+seen, and clearly labelled as such. Nothing is described as more protected than
+it is.
 
-[`docs/CONTEXT.md`](docs/CONTEXT.md) is the map of the repository — where every
-concern lives, which document answers which question, and which two or three
-files a given task actually needs. Start there. Then
-[`docs/STATUS.md`](docs/STATUS.md) for what the app does today and what
-is known to be broken, [`docs/PLAN.md`](docs/PLAN.md) for the build plan and the open risks,
-[`docs/OPS.md`](docs/OPS.md) for the Hetzner runbook, and
-[`docs/BRIEF.md`](docs/BRIEF.md) for the original specification.
+## Who it is for
 
-## Layout
+- **People who want a real conversation to stay private** without adopting a
+  security ritual to get it. Encryption is on for every message; there is no
+  switch to forget and no "secret chat" mode to remember to start.
+- **People who dislike handing over a phone number to be reachable.** An account
+  is a handle and a password. No SMS, no address book upload, no contact list
+  scraped off the device.
+- **People who want somewhere public as well.** A feed, a profile, stories and a
+  map — the sociable half of a messenger — without those living in a different
+  app that watches you differently.
+- **People who care where the line is.** What the operator can see is written
+  down plainly below and in the threat model, rather than being left for you to
+  infer.
 
-```
-apps/desktop        Tauri 2 + React 19 client (Windows)
-apps/server         axum API and MLS Delivery Service (Linux, aarch64)
-crates/protocol     Wire types shared by both. No I/O, no crypto.
-crates/crypto       MLS, the identity keypair, and safety numbers.
-crates/platform     The OS seam: SecureStore, and the Windows DPAPI backing.
-crates/store        The client's SQLCipher database.
-crates/client       Session logic. No platform calls, no HTTP client.
-```
+## What you get
 
-`crates/client` is what the build prompt called `packages/api-client`: the
-client-side logic that is identical on Windows and Android, so the port reuses
-it instead of reimplementing it. It reaches the OS through `SecureStore` and
-the network through a `Transport` trait, both supplied by the shell around it.
+**Private conversations.** One-to-one and group, encrypted end to end. Photos,
+video, sound and files go the same way, and play inside the conversation.
+Reactions, replies, pinned messages, editing, and taking a message back on both
+sides. Search runs across your whole history and never leaves your machine.
 
-Inside the client:
+**A public side, honestly labelled.** A feed of posts, a profile people can
+visit, and stories that disappear after 24 hours. These are visible to other
+signed-in people — and the app says so where you write them, not in a footnote.
 
-```
-src/components/ui       Buttons, avatars, panes, controls, the icon set
-src/components/chrome   Titlebar and the icon rail
-src/features/{home,messages,profile,settings}
-src/mock                The data every surface reads until the network exists
-```
+**Meet&Greet.** A world map where you may place one pin, roughly where you are,
+wearing a character you built. Nexo never reads your device location: the pin is
+something you type, and it is deliberately coarsened before it is stored, so the
+map shows a neighbourhood rather than an address.
 
-Colour, type, radius, motion and the glass utilities are not in the client at
-all: they are authored in `packages/design-tokens/tokens.css` and imported by
-`src/main.tsx`, so a second platform can consume the same values as
-`tokens.json` rather than a copy.
+**Control over who reaches you.** An account can be private — absent from search
+and reachable only through an invitation you issue, with requests you answer.
+Blocking works in both directions and takes the pins and stories with it.
+Reporting exists.
 
-`crates/protocol`, `crates/crypto` and `crates/platform` must compile unchanged
-for Android; keep every platform call behind `nexo-platform`.
+**A lock that actually locks.** Leave the app idle and the session ends, not just
+the view. A short PIN gets you back in, tied to your Windows sign-in, with the
+password always available as the way back.
 
-Inside the server:
+**An app you can set to your taste.** Light, dark, or whatever Windows is doing
+at sunset. An accent hue that stays legible whichever you pick, adjustable
+contrast and blur, and a genuinely translucent window when you want one.
 
-```
-src/db.rs           The Postgres pool.
-src/state.rs        AppState: the pool and, from M6, object storage.
-src/storage.rs      Hetzner object storage. Two buckets the types keep apart.
-migrations/         Applied with sqlx-cli; checked into .sqlx for offline builds.
-tests/s3_smoke.rs   Ignored by default. Needs real credentials.
-```
+**Nothing phoning home.** No analytics, no ads, no tracking, and no content
+loaded from anyone else's server at runtime. Link previews, which would mean
+fetching from a stranger's site, are off unless you turn them on.
 
-## Getting started
+## What it does not protect
 
-Windows 10 1809+ or Windows 11, on x86_64.
+Being clear about this is part of the design.
 
-### 1. Prerequisites
+- **Feed posts, profiles and their media are not end-to-end encrypted.** They are
+  readable by the server and visible to any signed-in person. Something written
+  to be read by strangers cannot also be sealed to a closed group.
+- **Conversation metadata is visible to the server** — who talks to whom, when,
+  and roughly how much. The contents are not, but the pattern is.
+- **A device someone else controls is not covered.** Encryption protects messages
+  in transit and at rest; it cannot help once somebody is inside your Windows
+  session with the app unlocked.
 
-| | Version | Notes |
-|---|---|---|
-| [Rust](https://rustup.rs/) | 1.97.1 | Pinned by `rust-toolchain.toml`; rustup installs it for you on the first build. |
-| [Node.js](https://nodejs.org/) | 24.x | |
-| pnpm | 10.20.0 | `npm install -g pnpm@10.20.0` |
-| Visual Studio Build Tools | 2022 or newer | Workload **Desktop development with C++**, which must include *MSVC v14.x — VS 2022+ C++ x64/x86 build tools* and the *Windows 11 SDK*. Without the x64 CRT nothing links. |
-| WebView2 Runtime | Evergreen | Already present on Windows 11 and on updated Windows 10. The installer ships a bootstrapper for machines that lack it. |
-| [Strawberry Perl](https://strawberryperl.com/) | any | **Not needed yet.** Required from M2 onward, when SQLCipher starts building a vendored OpenSSL. `winget install StrawberryPerl.StrawberryPerl` |
-| CMake | any | Needed by `aws-lc-sys`, which the AWS S3 SDK builds for its TLS. Strawberry Perl ships one, so installing that usually covers it. On the aarch64 server: `apt install cmake`. |
-
-### 2. Install
-
-```powershell
-git clone https://github.com/YungDice/nexo.git
-cd nexo
-pnpm install
-```
-
-Re-run `pnpm install` after any pull that changes `pnpm-lock.yaml`. A stale
-`node_modules` shows up as `Can't resolve '@fontsource/...'` during a build.
-
-### 3. Run
-
-The desktop app, with hot reload on the React side:
-
-```powershell
-pnpm tauri dev
-```
-
-The first run compiles the Rust core and takes a couple of minutes; later runs
-start in seconds. Editing anything under `apps/desktop/src` reloads instantly;
-editing Rust rebuilds and relaunches the window.
-
-The API server, separately, in its own terminal. It now needs a local Postgres.
-Start it once with Docker, then copy the env template:
-
-```powershell
-docker compose up -d
-Copy-Item .env.example .env    # only needed once
-```
-
-Compose publishes Postgres on **5433**, not 5432, so a native Windows
-PostgreSQL install cannot be contacted by mistake. Then:
-
-```powershell
-pnpm dev:server
-# -> http://127.0.0.1:8080/v1/health  {"status":"ok","protocol_version":1}
-```
-
-Nothing in the client talks to it yet — that is M4. Set `NEXO_BIND` to listen
-somewhere other than `127.0.0.1:8080`.
-
-Both of these prepare their own build environment, so they work in any shell.
-
-### 4. Using cargo directly
-
-Raw `cargo` commands — `cargo test`, `cargo clippy`, `cargo build` — need the
-environment set up first, once per terminal:
-
-```powershell
-. .\scripts\dev-env.ps1
-cargo test --workspace
-```
-
-Dot-source it (the leading `. `). It edits the current session rather than a
-child process, so running it without the dot does nothing useful. It finds a
-usable MSVC toolchain, puts Strawberry Perl on `PATH` when it is installed, and
-says what is missing. [Why it is needed](#why-dev-envps1-exists).
-
-You can also serve the UI alone in a browser at `http://localhost:1420`:
-
-```powershell
-pnpm dev
-```
-
-That is useful for pure layout work, but anything that calls into Rust — the
-titlebar buttons, Settings — will not work, because there is no Tauri process
-behind it. Prefer `pnpm tauri dev`.
-
-### 5. Before you push
-
-```powershell
-. .\scripts\dev-env.ps1     # if this shell has not had it yet
-.\scripts\check.ps1
-```
-
-Runs exactly what CI runs: `cargo fmt`, `cargo clippy -D warnings`, the Rust
-tests, both `cargo deny` passes, `cargo audit`, `pnpm typecheck` and
-`pnpm build`.
-
-### Building a release binary
-
-```powershell
-. .\scripts\dev-env.ps1
-pnpm build          # must come first: the Rust client embeds apps/desktop/dist
-cargo build --release
-```
-
-The binary lands at `target\release\nexo-desktop.exe`. `pnpm tauri build`
-produces the NSIS installer, though signing and the updater are M9 work.
-
-### Why `dev-env.ps1` exists
-
-Two things on a stock Windows box stop this repo from building, and neither is
-a code problem:
-
-1. **Multiple Visual Studio installs.** Rust picks the newest MSVC it finds,
-   which is not always the complete one. An install carrying only `lib\onecore`
-   fails to link with `LNK1104: cannot open file 'msvcrt.lib'`. The script picks
-   the newest install that actually has the desktop x64 CRT.
-2. **Perl.** From M2 onward, SQLCipher's vendored OpenSSL needs a full Perl to
-   run `Configure`. The Perl inside Git for Windows is not complete enough — it
-   fails on a missing `Locale::Maketext::Simple`. Install Strawberry Perl:
-   `winget install StrawberryPerl.StrawberryPerl`.
-
-### Troubleshooting
-
-| Symptom | Cause |
-|---|---|
-| `C1083: Cannot open include file: 'excpt.h'`, or `LNK1104: cannot open file 'msvcrt.lib'` | A raw `cargo` command in a shell that has not had `.\scripts\dev-env.ps1` dot-sourced, so cc-rs auto-detected an incomplete Visual Studio. Dot-source it, or use `pnpm tauri dev` / `pnpm dev:server`, which do it themselves. If the script reports no usable install, add the **Desktop development with C++** workload in the Visual Studio Installer. |
-| `Can't resolve '@fontsource/...'` | `node_modules` is behind the lockfile. Run `pnpm install`. |
-| `Command 'perl' not found` or `Locale::Maketext::Simple` | Install Strawberry Perl and open a fresh shell (M2 onward only). |
-| `pnpm: command not found` after `corepack enable` | `corepack enable` needs administrator rights. Use `npm install -g pnpm@10.20.0` instead. |
-| `pnpm server` prints nothing and exits | `server` is one of pnpm's own commands (its store daemon), so the shorthand never reaches the script. The script is named `dev:server` for this reason. |
-| `Port 1420 is already in use` | A previous `pnpm tauri dev` is still running; the port is fixed on purpose so Tauri and Vite cannot disagree about it. Free it with `Get-NetTCPConnection -LocalPort 1420 -State Listen \| ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }`. |
-
-## Design
-
-**Colour means something.** The interface itself is one grey scale plus a single
-violet accent — the accent marks the active destination, your own messages, the
-primary action and the focus ring; the semantic colours only ever report a
-status. Everything else is neutral. **Content keeps its colour**: avatars, images
-and file marks are things people put there, and greying them out makes the app
-harder to scan, not calmer.
-
-**Light and dark.** §6.4 planned dark only for v0.1 with "a theme seam in
-place" — the seam is now used, because every surface, line and fill is a named
-token and a theme is the same names with different values. Settings →
-Appearance offers System, Light and Dark; System is the absence of an explicit
-choice, so `prefers-color-scheme` answers and Windows switching at sunset
-switches the app with it. No component knows which theme it is in.
-
-Panels are genuinely translucent over a blurred, neutral field, and the window
-is a card floating on that field with a margin — going edge to edge when
-maximised. Blur is not free: **Settings → Appearance → Frosted panels** turns it
-off and makes every pane solid, and a WebView that cannot blur at all gets the
-same treatment through an `@supports` branch. Components ask for `glass-0`
-through `glass-3` and never write `backdrop-filter` themselves, which is what
-keeps both fallbacks honest.
-
-Icons are inline SVG drawn in this repo, and avatars, banners and media
-placeholders are gradients derived from a handle or an id. Nothing is fetched at
-runtime, and the CSP has no remote image host to allow.
+[`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) is the long version: who this is
+meant to withstand, who it is not, and where each limit comes from.
 
 ## Security
 
-- No cryptography is invented here. Only OpenMLS and its audited primitives.
-- No key material, no private keys and no plaintext-at-rest ever enter the
-  WebView. It receives already-decrypted strings over IPC and nothing else.
-- Nothing is loaded at runtime: strict CSP, no CDN, no `eval`, everything
-  bundled.
-- Decryption failure fails closed and is shown as such. There is no plaintext
-  fallback and no silent skip.
+- The encryption is **MLS** ([RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html)),
+  the IETF's standard for group messaging, through the audited OpenMLS
+  implementation. No cryptography is invented here.
+- The server stores and forwards ciphertext it cannot read.
+- Your local history is stored encrypted on your own disk.
+- A message that cannot be decrypted is shown as exactly that. There is no
+  fallback that quietly displays something readable instead.
+- Nothing is downloaded and run at startup: no plugins, no remote code, no CDN.
 
-[`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) names the adversaries in and out
-of scope, and is blunt about what is not protected: feed posts, profiles and
-their media are server-readable by design, and so is conversation metadata.
+## Where it stands
+
+Nexo is early and openly so. [`docs/STATUS.md`](docs/STATUS.md) is written by
+walking the code rather than the commit messages, and lists both what works and
+what is known to be broken. It runs on Windows 10 (1809+) and Windows 11; an
+Android version is planned, and the app is built so that it does not require
+starting over.
+
+## Building it yourself
+
+Nexo is open source. [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) has the
+prerequisites and the commands, and [`docs/CONTEXT.md`](docs/CONTEXT.md) is the
+map of the repository for anyone intending to change something.
 
 ## Licence
 
 MIT — the text in [`LICENSE`](LICENSE), unedited on purpose so that licence
 scanners recognise it. Copyright is held under `delidev`, jointly by the two
-people who write here; see [`docs/LICENSING.md`](docs/LICENSING.md).
-
-That document is the precise version: what MIT obliges us to ship alongside the
-installer, which parts of its warranty disclaimer Swiss law does not enforce
-(Art. 100 OR, Art. 8 PrHG), what each dependency licence asks of us, the two
-vendored native libraries `cargo deny` cannot see, and the export-control
-position. It also names the three exposures a licence file cannot fix: the
-trademark on the name, BÜPF/VÜPF duties for a Swiss communications service, and
-revDSG/GDPR obligations once real users exist.
-
-[`docs/THIRD-PARTY-NOTICES.md`](docs/THIRD-PARTY-NOTICES.md) is the other half:
-what has to reach someone who installs the binary and never opens GitHub. Seven
-of those notices — SQLCipher, two OpenSSL-derived components, the two bundled
-fonts — are invisible to `cargo deny` and to `pnpm audit`, so they are carried
-by hand.
+people who write here; [`docs/LICENSING.md`](docs/LICENSING.md) is the precise
+version, and [`docs/THIRD-PARTY-NOTICES.md`](docs/THIRD-PARTY-NOTICES.md) covers
+what ships alongside the installer.

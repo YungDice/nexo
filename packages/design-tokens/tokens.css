@@ -527,6 +527,34 @@ body {
   animation-delay: var(--stagger, 0ms);
 }
 
+/* Landing on a message somebody jumped to from a quote.
+
+   A wash of the accent that fades rather than a border that appears: a border
+   would resize the bubble at the moment you arrive at it, which is exactly when
+   you are trying to read it. Removed by the caller on a timer so a second jump
+   to the same message shows it again. */
+@keyframes quote-landed {
+  from {
+    background-color: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.quote-landed {
+  animation: quote-landed 1200ms var(--ease-out) both;
+  border-radius: var(--radius-bubble);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Still marked, just not animated: the point is knowing where you landed. */
+  .quote-landed {
+    animation: none;
+    background-color: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  }
+}
+
 /* Entry for lists and cards outside the chat: same physics, longer throw.
    Only opacity and transform are animated — nothing here triggers layout. */
 @keyframes rise-in {

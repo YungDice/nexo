@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { Recording } from "./useRecorder";
 import { useApp } from "../../app/store";
 import { useConversations } from "../../app/useConversations";
 import { useLayout } from "../../app/useLayout";
@@ -114,6 +115,8 @@ export function MessagesPage({ now }: { now: Date }) {
           now={now}
           onSend={live.send}
           onSendFile={live.sendFile}
+          onSendVoice={live.sendVoice}
+          onSendReply={live.sendReply}
           onCompare={openContextPanel}
           onChanged={() => void live.refresh()}
           onDismissKeyChange={async () => {
@@ -390,6 +393,8 @@ function ChatPane({
   now,
   onSend,
   onSendFile,
+  onSendVoice,
+  onSendReply,
   onCompare,
   onDismissKeyChange,
   onChanged,
@@ -400,6 +405,8 @@ function ChatPane({
   now: Date;
   onSend: (body: string) => Promise<void>;
   onSendFile: (path: string, body?: string) => Promise<void>;
+  onSendVoice: (recording: Recording) => Promise<void>;
+  onSendReply: (body: string, target: string) => Promise<void>;
   /// Opens the details panel, where the safety number is.
   onCompare: () => void;
   /// Clears the warning without claiming anything was verified.
@@ -407,6 +414,12 @@ function ChatPane({
   /// Pinning or a local delete changed the store; reload from it.
   onChanged: () => void;
 }) {
+  // Cleared when the conversation changes: a reply aimed at a message in one
+  // thread must not survive into another, where its target does not exist.
+  const [replyingTo, setReplyingTo] = useState<Message | undefined>(undefined);
+  const conversationId = conversation.id;
+  useEffect(() => setReplyingTo(undefined), [conversationId]);
+
   return (
     <Panel tone="content" edge={false} className="flex min-w-0 flex-1 flex-col">
       {/* Not dismissable by ignoring it, and not by restarting: the flag lives
@@ -457,6 +470,7 @@ function ChatPane({
                 if (attachment) void onSendFile(attachment.path, body);
                 else void onSend(body);
               }}
+              onSendVoice={(recording) => void onSendVoice(recording)}
               conversationTitle={conversation.title}
             />
           </div>
@@ -468,12 +482,29 @@ function ChatPane({
             now={now}
             conversation={conversation}
             onChanged={onChanged}
+            onReply={setReplyingTo}
           />
           <Composer
             onSend={(body, attachment) => {
               if (attachment) void onSendFile(attachment.path, body);
-              else void onSend(body);
+              // A reply and an attachment are two different messages, and the
+              // file is the one that was just chosen -- so a pending reply is
+              // left standing rather than silently spent on it.
+              else if (replyingTo?.clientId) {
+                void onSendReply(body, replyingTo.clientId);
+                setReplyingTo(undefined);
+              } else void onSend(body);
             }}
+            onSendVoice={(recording) => void onSendVoice(recording)}
+            replyingTo={
+              replyingTo
+                ? {
+                    excerpt: replyingTo.body,
+                    outgoing: replyingTo.authorId === "me",
+                  }
+                : undefined
+            }
+            onCancelReply={() => setReplyingTo(undefined)}
             conversationTitle={conversation.title}
           />
         </>

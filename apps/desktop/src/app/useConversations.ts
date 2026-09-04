@@ -6,6 +6,8 @@ import {
   safetyNumber,
   sendMessage,
   sendAttachment,
+  sendVoiceMessage,
+  sendReply as sendReplyMessage,
   type Conversation as WireConversation,
   type Message as WireMessage,
 } from "../lib/conversations";
@@ -13,6 +15,7 @@ import { attachmentKind } from "../lib/media";
 import type { Conversation, Message } from "../lib/types";
 import { useApp } from "./store";
 import { onSync, syncNow } from "./syncAgent";
+import type { Recording } from "../features/messages/useRecorder";
 
 /**
  * Live conversation data, in the shapes the UI already renders.
@@ -78,6 +81,20 @@ function toMessage(wire: WireMessage, conversationId: string): Message {
     // "sent" is the honest floor there.
     state: wire.pending ? "sending" : "sent",
     ...(wire.client_id ? { clientId: wire.client_id } : {}),
+    ...(wire.reply
+      ? {
+          replyTo: {
+            target: wire.reply.target,
+            found: wire.reply.found,
+            outgoing: wire.reply.outgoing,
+            retracted: wire.reply.retracted,
+            excerpt: wire.reply.excerpt,
+            ...(wire.reply.envelope_id !== undefined
+              ? { envelopeId: wire.reply.envelope_id }
+              : {}),
+          },
+        }
+      : {}),
     ...(wire.unsupported ? { unsupported: wire.unsupported } : {}),
     ...(wire.pinned ? { pinned: true } : {}),
     ...(wire.reactions.length > 0 ? { reactions: wire.reactions } : {}),
@@ -98,7 +115,18 @@ function toMessage(wire: WireMessage, conversationId: string): Message {
               name: wire.attachment.name,
               size: wire.attachment.size,
               mime: wire.attachment.mime,
-              kind: attachmentKind(wire.attachment.mime),
+              kind: attachmentKind(
+                wire.attachment.mime,
+                wire.attachment.voice !== undefined,
+              ),
+              ...(wire.attachment.voice
+                ? {
+                    voice: {
+                      durationMs: wire.attachment.voice.duration_ms,
+                      peaks: wire.attachment.voice.peaks,
+                    },
+                  }
+                : {}),
             },
           ],
         }
@@ -116,6 +144,10 @@ export interface LiveConversations {
   send: (body: string) => Promise<void>;
   /** Sends a file the user already picked, by path. */
   sendFile: (path: string, body?: string) => Promise<void>;
+  /** Sends something the user just recorded. */
+  sendVoice: (recording: Recording) => Promise<void>;
+  /** Sends a message answering another one, by that message's name. */
+  sendReply: (body: string, target: string) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -257,6 +289,41 @@ export function useConversations(
     [activeId, loadList],
   );
 
+  const sendReply = useCallback(
+    async (body: string, target: string) => {
+      if (!activeId) return;
+      try {
+        const sent = await sendReplyMessage(activeId, body, target);
+        setMessages((current) => [...current, toMessage(sent, activeId)]);
+        setProblem(null);
+        void loadList();
+      } catch (error) {
+        setProblem(asConversationError(error).message);
+      }
+    },
+    [activeId, loadList],
+  );
+
+  const sendVoice = useCallback(
+    async (recording: Recording) => {
+      if (!activeId) return;
+      try {
+        const sent = await sendVoiceMessage(
+          activeId,
+          recording.blob,
+          recording.durationMs,
+          recording.peaks,
+        );
+        setMessages((current) => [...current, toMessage(sent, activeId)]);
+        setProblem(null);
+        void loadList();
+      } catch (error) {
+        setProblem(asConversationError(error).message);
+      }
+    },
+    [activeId, loadList],
+  );
+
   // The unread ledger lives in the store (the sync agent writes it); the rows
   // just wear it. Mapped here so no component has to know where it comes from.
   const withUnread = useMemo(
@@ -273,8 +340,21 @@ export function useConversations(
       loading,
       send,
       sendFile,
+      sendVoice,
+      sendReply,
       refresh,
     }),
-    [withUnread, messages, safety, problem, loading, send, sendFile, refresh],
+    [
+      withUnread,
+      messages,
+      safety,
+      problem,
+      loading,
+      send,
+      sendFile,
+      sendVoice,
+      sendReply,
+      refresh,
+    ],
   );
 }

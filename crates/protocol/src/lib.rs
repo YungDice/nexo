@@ -54,6 +54,55 @@ pub struct Envelope {
     pub server_timestamp_ms: i64,
 }
 
+/// What a recorded message carries besides its bytes.
+///
+/// Two things the receiver cannot cheaply work out for itself. Duration is in
+/// the container, but reading it means decoding enough of the file to find it,
+/// and the bubble has to be the right width before that finishes. The peaks are
+/// not in the file at all at any price short of decoding the whole of it.
+///
+/// Both are drawn, and neither is trusted for anything else. A sender who lies
+/// about the duration gets a bubble whose label disagrees with its own player,
+/// which is the entire consequence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceMeta {
+    /// How long the recording runs, in milliseconds, as the recorder measured
+    /// it. Shown before the file has been decoded, and replaced by the player's
+    /// own figure once it has one.
+    pub duration_ms: u32,
+    /// A coarse amplitude envelope, one byte per bucket, `0`–`255`.
+    ///
+    /// The waveform is what makes a four-second note look different from a
+    /// forty-second one before anybody presses play. It is deliberately crude:
+    /// [`VoiceMeta::MAX_PEAKS`] buckets is enough to draw and far too few to
+    /// carry speech. Bytes rather than floats because this sits inside every
+    /// copy of the ciphertext, and a `Vec<f32>` would be four times the size to
+    /// no visible effect.
+    pub peaks: Vec<u8>,
+}
+
+impl VoiceMeta {
+    /// The most buckets a recorder may send.
+    ///
+    /// A cap rather than a fixed count, because a two-second note has no use
+    /// for sixty-four bars and should not pay for them. Enforced on arrival:
+    /// a longer list is truncated rather than refused, since a waveform is
+    /// decoration and losing the tail of one is not worth dropping a message
+    /// somebody recorded.
+    pub const MAX_PEAKS: usize = 64;
+
+    /// The peaks, capped, for drawing.
+    ///
+    /// Every reader goes through this rather than the field, so a payload built
+    /// by something other than this app cannot make the renderer draw ten
+    /// thousand bars.
+    #[must_use]
+    pub fn drawable_peaks(&self) -> &[u8] {
+        let end = self.peaks.len().min(Self::MAX_PEAKS);
+        &self.peaks[..end]
+    }
+}
+
 /// What is actually inside an MLS ciphertext.
 ///
 /// §4.2 fixes the *envelope* shape and forbids a plaintext subject, preview,
@@ -114,6 +163,19 @@ pub enum Payload {
         /// An optional message sent with the file.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         body: Option<String>,
+        /// Present when the sender recorded this rather than picked it.
+        ///
+        /// The receiver draws a voice note instead of a file row, and it is the
+        /// *sender* who says so. Guessing from the MIME type is what the client
+        /// does for everything that predates this field, and it is only ever a
+        /// reading: a `.wav` is more often speech than music, which is not the
+        /// same as knowing. A recorder knows.
+        ///
+        /// `Option`, and absent on the wire when there is none, so that every
+        /// message already sent stays byte-identical and the extension list
+        /// keeps answering for them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice: Option<VoiceMeta>,
         /// This sender's name for this message. See [`Payload::Text`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<Uuid>,
@@ -208,6 +270,35 @@ pub enum Payload {
         /// on both envelopes, so a wrong clock on one device cannot buy time
         /// or lose it.
         edited_at_ms: i64,
+    },
+    /// A message answering another one.
+    ///
+    /// Carries its own words rather than wrapping a `Text`, because a reply is
+    /// one message and not two: a build that flattened it into a quote plus a
+    /// body would have to decide what the search index and the conversation
+    /// preview see, and the answer for both is "the reply itself".
+    ///
+    /// **The quoted text is not carried.** Only the name of the message being
+    /// answered. Copying the original in would put a second, unrevocable copy
+    /// of somebody's words inside a message they did not send — so retracting
+    /// the original would leave it quoted forever, and quoting would become a
+    /// way to defeat taking a message back. The reader resolves the target
+    /// against what it already has, and says so plainly when it has nothing.
+    Reply {
+        /// The message being answered, by the name inside its ciphertext.
+        ///
+        /// The same kind of reference `Edit` and `Retract` use, and it fails
+        /// the same way: a message sent before names existed cannot be
+        /// referred to, so the UI does not offer to reply to one.
+        target: Uuid,
+        /// What the reply says.
+        body: String,
+        /// This sender's name for *this* message. See [`Payload::Text`].
+        ///
+        /// A reply can itself be replied to, edited and taken back, so it needs
+        /// a name of its own like any other message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<Uuid>,
     },
     /// A story, and the key that opens it.
     ///
@@ -310,7 +401,9 @@ impl Payload {
     /// that would try.
     pub fn id(&self) -> Option<Uuid> {
         match self {
-            Payload::Text { id, .. } | Payload::Attachment { id, .. } => *id,
+            Payload::Text { id, .. }
+            | Payload::Attachment { id, .. }
+            | Payload::Reply { id, .. } => *id,
             _ => None,
         }
     }
@@ -321,7 +414,10 @@ impl Payload {
     /// useful thing to render and the name is already inside the ciphertext.
     pub fn preview(&self) -> &str {
         match self {
-            Payload::Text { body, .. } => body,
+            // A reply is something somebody said, so it previews like one.
+            // The quote is not part of it: a list row showing "> yes ..." for
+            // every answer in a busy conversation says less than the answer.
+            Payload::Text { body, .. } | Payload::Reply { body, .. } => body,
             Payload::Attachment { body, name, .. } => match body {
                 Some(body) if !body.is_empty() => body,
                 _ => name,
@@ -706,9 +802,131 @@ mod tests {
             mime: "application/pdf".into(),
             size: 1234,
             body: Some("as promised".into()),
+            voice: None,
             id: Some(Uuid::new_v4()),
         };
         assert_eq!(Payload::decode(&payload.encode()), payload);
+    }
+
+    #[test]
+    fn a_reply_round_trips() {
+        let payload = Payload::Reply {
+            target: Uuid::new_v4(),
+            body: "yes, that one".into(),
+            id: Some(Uuid::new_v4()),
+        };
+        assert_eq!(Payload::decode(&payload.encode()), payload);
+    }
+
+    #[test]
+    fn a_reply_carries_no_copy_of_what_it_answers() {
+        // The design claim in the `Reply` doc comment, tested. If the quoted
+        // text were carried, retracting the original would leave it readable
+        // inside every answer -- so quoting would defeat taking a message back.
+        let payload = Payload::Reply {
+            target: Uuid::new_v4(),
+            body: "yes".into(),
+            id: None,
+        };
+        let json = String::from_utf8(payload.encode()).expect("payloads are utf-8");
+        assert!(
+            json.contains("target"),
+            "it must name what it answers: {json}"
+        );
+        assert!(
+            !json.contains("quote") && !json.contains("excerpt"),
+            "a reply must not carry the words it answers: {json}"
+        );
+    }
+
+    #[test]
+    fn a_reply_is_a_message_somebody_said() {
+        // It previews and can be named like any other message -- a reply that
+        // could not be edited, taken back or replied to in turn would be a
+        // second-class message for no reason.
+        let id = Uuid::new_v4();
+        let payload = Payload::Reply {
+            target: Uuid::new_v4(),
+            body: "the second one".into(),
+            id: Some(id),
+        };
+        assert_eq!(payload.preview(), "the second one");
+        assert_eq!(payload.id(), Some(id));
+    }
+
+    #[test]
+    fn a_voice_note_round_trips_with_its_waveform() {
+        let payload = Payload::Attachment {
+            s3_key: "enc/abc/def".into(),
+            key: "aa".repeat(32),
+            nonce: "bb".repeat(12),
+            sha256: "cc".repeat(32),
+            name: "voice-1725400000000.webm".into(),
+            mime: "audio/webm".into(),
+            size: 9001,
+            body: None,
+            voice: Some(VoiceMeta {
+                duration_ms: 4_200,
+                peaks: vec![0, 17, 200, 255, 3],
+            }),
+            id: Some(Uuid::new_v4()),
+        };
+        assert_eq!(Payload::decode(&payload.encode()), payload);
+    }
+
+    #[test]
+    fn an_attachment_without_a_recorder_stays_byte_identical() {
+        // The compatibility claim in the `voice` doc comment, tested rather
+        // than asserted: adding the field must not change what a picked file
+        // looks like on the wire, or every old client sees a new shape.
+        let payload = Payload::Attachment {
+            s3_key: "k".into(),
+            key: String::new(),
+            nonce: String::new(),
+            sha256: String::new(),
+            name: "holiday.jpg".into(),
+            mime: "image/jpeg".into(),
+            size: 1,
+            body: None,
+            voice: None,
+            id: None,
+        };
+        let json = String::from_utf8(payload.encode()).expect("payloads are utf-8");
+        assert!(
+            !json.contains("voice"),
+            "an attachment with no recording must not mention one: {json}"
+        );
+    }
+
+    #[test]
+    fn a_payload_predating_voice_notes_still_decodes() {
+        // Exactly what a v0.1.20 client puts on the wire.
+        let older = br#"{"kind":"attachment","s3_key":"enc/a/b","key":"aa","nonce":"bb","sha256":"cc","name":"x.pdf","mime":"application/pdf","size":7}"#;
+        let Payload::Attachment { voice, name, .. } = Payload::decode(older) else {
+            panic!("an attachment from an older build must still read as one");
+        };
+        assert_eq!(name, "x.pdf");
+        assert!(voice.is_none(), "no recorder made that message");
+    }
+
+    #[test]
+    fn a_waveform_is_capped_before_it_is_drawn() {
+        // A sender chooses this list, so the renderer must not be sized by it.
+        let voice = VoiceMeta {
+            duration_ms: 1_000,
+            peaks: vec![42; 10_000],
+        };
+        assert_eq!(voice.drawable_peaks().len(), VoiceMeta::MAX_PEAKS);
+        assert!(voice.drawable_peaks().iter().all(|&p| p == 42));
+    }
+
+    #[test]
+    fn a_short_waveform_is_left_alone() {
+        let voice = VoiceMeta {
+            duration_ms: 900,
+            peaks: vec![1, 2, 3],
+        };
+        assert_eq!(voice.drawable_peaks(), &[1, 2, 3]);
     }
 
     #[test]
@@ -833,6 +1051,7 @@ mod tests {
             mime: "image/jpeg".into(),
             size: 1,
             body: None,
+            voice: None,
             id: None,
         };
         assert_eq!(payload.preview(), "holiday.jpg");
@@ -849,6 +1068,7 @@ mod tests {
             mime: "image/jpeg".into(),
             size: 1,
             body: Some("from the trip".into()),
+            voice: None,
             id: None,
         };
         assert_eq!(payload.preview(), "from the trip");
@@ -867,6 +1087,7 @@ mod tests {
             mime: "application/pdf".into(),
             size: 10,
             body: None,
+            voice: None,
             id: None,
         };
         let encoded = payload.encode();

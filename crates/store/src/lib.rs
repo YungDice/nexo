@@ -35,7 +35,7 @@ pub type StoredIdentity = (Zeroizing<Vec<u8>>, Vec<u8>);
 /// The schema version this build writes and expects.
 ///
 /// One constant, so a migration and the test that checks it cannot disagree.
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// The file name the store always uses, under the app data directory.
 pub const STORE_FILE_NAME: &str = "store.db";
@@ -635,6 +635,31 @@ impl EncryptedStore {
                  COMMIT;",
             )?;
         }
+
+        if version < 16 {
+            // What a reply answers.
+            //
+            // A column rather than a payload the reader decodes, because this
+            // is asked once per drawn bubble: the thread resolves every quote
+            // it is about to show, and decoding a JSON payload per message to
+            // find one UUID would put a parse in that loop. `client_id` is
+            // already indexed for the same reason.
+            //
+            // Deliberately **not** a foreign key. The message being answered
+            // may never have reached this device -- somebody joined the
+            // conversation late, or the sync that carried it failed -- and a
+            // constraint would turn that into a refused insert, losing a reply
+            // that was perfectly readable. The unresolved case is drawn as
+            // itself instead.
+            self.add_column("messages", "reply_to", "TEXT")?;
+            self.connection.execute_batch(
+                "BEGIN;
+                 CREATE INDEX IF NOT EXISTS messages_reply_to_idx
+                     ON messages (reply_to) WHERE reply_to IS NOT NULL;
+                 PRAGMA user_version = 16;
+                 COMMIT;",
+            )?;
+        }
         Ok(())
     }
 
@@ -850,6 +875,7 @@ impl EncryptedStore {
             payload: None,
             sent_at_ms,
             client_id: None,
+            reply_to: None,
         })
     }
 
@@ -864,8 +890,8 @@ impl EncryptedStore {
         self.connection.execute(
             "INSERT INTO messages
                  (envelope_id, conversation_id, sender_device_id, body, payload,
-                  sent_at_ms, client_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                  sent_at_ms, client_id, reply_to)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT (envelope_id) DO NOTHING",
             rusqlite::params![
                 message.envelope_id,
@@ -874,7 +900,8 @@ impl EncryptedStore {
                 message.body,
                 message.payload,
                 message.sent_at_ms,
-                message.client_id
+                message.client_id,
+                message.reply_to
             ],
         )?;
         Ok(())
@@ -1019,7 +1046,7 @@ impl EncryptedStore {
         // disagree about what is pinned.
         let mut statement = self.connection.prepare(
             "SELECT m.envelope_id, m.sender_device_id, m.body, m.payload, m.sent_at_ms,
-                    m.client_id, m.retracted_at_ms, m.edited_at_ms,
+                    m.client_id, m.retracted_at_ms, m.edited_at_ms, m.reply_to,
                     p.envelope_id IS NOT NULL AS pinned
              FROM messages m
              LEFT JOIN pinned_messages p
@@ -1038,7 +1065,8 @@ impl EncryptedStore {
                 client_id: row.get(5)?,
                 retracted_at_ms: row.get(6)?,
                 edited_at_ms: row.get(7)?,
-                pinned: row.get(8)?,
+                reply_to: row.get(8)?,
+                pinned: row.get(9)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1330,7 +1358,7 @@ impl EncryptedStore {
     pub fn pinned_messages(&self, conversation_id: &str) -> Result<Vec<StoredMessage>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT m.envelope_id, m.sender_device_id, m.body, m.payload, m.sent_at_ms,
-                    m.client_id, m.retracted_at_ms, m.edited_at_ms
+                    m.client_id, m.retracted_at_ms, m.edited_at_ms, m.reply_to
              FROM pinned_messages p
              JOIN messages m
                  ON m.conversation_id = p.conversation_id
@@ -1348,6 +1376,7 @@ impl EncryptedStore {
                 client_id: row.get(5)?,
                 retracted_at_ms: row.get(6)?,
                 edited_at_ms: row.get(7)?,
+                reply_to: row.get(8)?,
                 pinned: true,
             })
         })?;
@@ -1913,6 +1942,8 @@ pub struct NewMessage<'a> {
     pub sent_at_ms: i64,
     /// The sender's own name for it, from `Payload::id`.
     pub client_id: Option<&'a str>,
+    /// The message this one answers, when it answers one.
+    pub reply_to: Option<&'a str>,
 }
 
 /// A message as it sits in the local store, already decrypted.
@@ -1940,6 +1971,11 @@ pub struct StoredMessage {
     pub retracted_at_ms: Option<i64>,
     /// When the sender last changed it, by their own clock. Shown, not judged.
     pub edited_at_ms: Option<i64>,
+    /// The `client_id` of the message this one answers, when it answers one.
+    ///
+    /// Whether that message is *here* is a separate question, and often no:
+    /// see the schema-16 migration for why this is not a foreign key.
+    pub reply_to: Option<String>,
     /// Pinned **on this device**.
     ///
     /// Local by design, not by omission — see the schema-12 migration. The UI
@@ -2770,6 +2806,7 @@ mod tests {
                 payload: None,
                 sent_at_ms: 1_000 + id,
                 client_id: Some(name),
+                reply_to: None,
             })
             .unwrap();
     }
@@ -3132,6 +3169,7 @@ mod tests {
                 payload: None,
                 sent_at_ms: 1_000,
                 client_id: Some(client_id),
+                reply_to: None,
             })
         };
 

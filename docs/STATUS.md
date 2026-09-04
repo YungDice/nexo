@@ -407,7 +407,19 @@ decision rather than configuration.
   elements at their own ratio, up to 440px tall, and a message carrying media
   gets a wider column than a message carrying a paragraph.
 - **Video and sound play in the bubble.** An mp4 gets a player, and so does an
-  mp3, an m4a or an ogg. A `.wav` or a `.flac` is shown as a voice message
+  mp3, an m4a or an ogg.
+
+  **This did not actually work in v0.1.19 or v0.1.20**, and the entry was written by
+  walking the code rather than by playing a file. The players were built
+  correctly and were handed a `data:` URL, but the CSP in `tauri.conf.json`
+  named no `media-src`, so media fell back to `default-src 'self'` and every
+  such URL was refused. `img-src` listed `data:`, which is why pictures worked
+  throughout and hid the problem. Tauri appends script and style hashes to a
+  CSP and nothing else, so nothing was going to add the directive at runtime.
+  Fixed by naming `media-src 'self' data: blob:` — `blob:` because the recorder
+  produces one.
+
+  A `.wav` or a `.flac` is shown as a voice message
   instead — those are what a recorder writes before anything has compressed it.
   That is a reading of what arrives, not a fact about it: there is no recorder
   in the app yet, so nothing marks a file as speech, and when there is one the
@@ -513,3 +525,75 @@ decision rather than configuration.
 - The strip's viewer (Prev/Next, the progress dots, the fetch-per-story dance)
   moved into its own `StoryViewer` component so the new rings could open the
   same one rather than a second implementation of it.
+
+### Voice messages (wave 1)
+
+- **Voice messages record.** The microphone in the composer was a label with
+  nothing behind it; now it captures. Holding it turns the whole composer row
+  into the recorder — a pulsing dot, a running timer, a waveform that grows as
+  you speak, a bin on the left and send on the right — because while it runs the
+  text box does nothing and leaving it there only invites typing into it.
+
+  **The sender says it is a recording; the receiver does not guess.**
+  `Payload::Attachment` gained `voice`, carrying the duration and a coarse
+  amplitude envelope of at most 64 bytes. That was the design `lib/media.ts`
+  asked for in a comment when it had no recorder to serve: the WAV/FLAC
+  extension list was only ever a reading of what arrived, and it now answers
+  for old messages and picked files while the flag answers for everything a
+  recorder made. It has to, because a recorder writes WebM/Opus, which by MIME
+  type alone is a video clip.
+
+  The peaks are sampled from the analyser *while recording* rather than by
+  decoding the finished blob — decoding a minute of speech to draw sixty-four
+  bars would mean holding several megabytes of PCM for a picture. They are
+  capped twice, on the way in and again in `drawable_peaks`, so neither the
+  ciphertext nor the renderer is sized by whatever a sender felt like sending.
+
+  **The bytes cross IPC here, against the rule the file picker follows**, and
+  the reason is where the plaintext starts: a picked file is on disk, so passing
+  its path keeps it out of the WebView entirely, while a recording is made in
+  the WebView by `MediaRecorder` and is already there. Sending it down is moving
+  plaintext out, not letting it in. No key comes back, and the encryption still
+  happens in Rust. Five minutes is the ceiling.
+
+  A denied microphone says so in the composer and points at Windows privacy
+  settings. A tap rather than a hold sends nothing — under 400 ms is room tone
+  somebody would have to delete.
+
+### Replies and quotes (wave 2)
+
+- **A message can answer another one.** `Payload::Reply` names its target the
+  way `Edit` and `Retract` already do — by the sender's own name for the
+  message, not the envelope id — so a message sent before names existed cannot
+  be replied to and the menu does not offer it. Reply is the menu's first entry,
+  because it is what somebody usually opened the menu for.
+
+  **A reply carries no copy of what it answers.** Only the name. Copying the
+  quoted words in would put a second, unrevocable copy of somebody's sentence
+  inside a message they did not send: retracting the original would leave it
+  quoted forever, and quoting would become the way to defeat taking a message
+  back. There is a test for that shape, not just a comment.
+
+  The reader resolves the quote against what it holds, and the three answers are
+  drawn differently because they are different things: the message is here (jump
+  to it), it was taken back, or this device never received it. The last is
+  ordinary — somebody joined the conversation after the message being answered —
+  so the quote says so rather than rendering a blank strip that looks broken.
+  A quote you cannot jump to is not drawn as a button.
+
+  Resolution happens in Rust over the conversation already loaded, not with a
+  query per bubble, and `reply_to` is a column (schema 16) rather than something
+  decoded out of the payload per message. It is deliberately **not** a foreign
+  key: the answered message may never have reached this device, and a constraint
+  would turn that into a refused insert — losing a reply that was perfectly
+  readable.
+
+  Jumping flashes the message you land on. In a wall of similar bubbles,
+  arriving somewhere with no signal leaves you unsure anything happened; the
+  wash fades rather than a border appearing, since a border would resize the
+  bubble exactly as you start reading it. `prefers-reduced-motion` keeps the
+  mark and drops the animation.
+
+  A pending reply is cleared when the conversation changes — it names a message
+  in the thread it was written for — and an attachment does not spend it: a file
+  and a reply are two different messages.

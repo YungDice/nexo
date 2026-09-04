@@ -43,14 +43,53 @@ export interface Attachment {
   /**
    * How the bubble draws it.
    *
-   * `voice` is not a MIME type: it is what a `.wav` or a `.flac` is treated as,
-   * because those are what a recorder writes before anything has compressed it
-   * and a message-length one of them is somebody talking. Everything else with
-   * sound in it is `audio` and gets an ordinary player. There is no recorder in
-   * the app yet, so this is a reading of what arrives rather than something the
-   * app produced.
+   * `voice` is not a MIME type. When `voice` below is set the sender recorded
+   * this and said so, which settles it. Without that flag it is still a
+   * reading: a `.wav` or a `.flac` is what a recorder writes before anything
+   * has compressed it, so a message-length one is more often somebody talking
+   * than not — and that guess is all a message sent before v0.1.21 left us.
    */
   kind: "image" | "video" | "audio" | "voice" | "file";
+  /**
+   * Set when the sender recorded this in the app.
+   *
+   * Carried in the payload rather than inferred, so the bubble knows instead of
+   * supposing. Absent on every file picked from disk and on everything sent
+   * before recording existed.
+   */
+  voice?: VoiceMeta;
+}
+
+/**
+ * The message a reply answers.
+ *
+ * `found` false is ordinary rather than an error: somebody can join a
+ * conversation after the message they are being answered about. The bubble says
+ * so instead of drawing an empty quote.
+ */
+export interface QuotedMessage {
+  target: string;
+  found: boolean;
+  /** What a jump-to scrolls by. Absent when the message is not here. */
+  envelopeId?: number;
+  /** Whether this device sent the message being answered. */
+  outgoing: boolean;
+  retracted: boolean;
+  /** Already shortened in Rust. Empty when retracted or not found. */
+  excerpt: string;
+}
+
+/** What the bubble needs to draw a recording before it has decoded one. */
+export interface VoiceMeta {
+  /** As the recorder measured it. The player's own figure wins once it has one. */
+  durationMs: number;
+  /**
+   * A coarse amplitude envelope, `0`–`255` per bar, already capped in Rust.
+   *
+   * Drawn and nothing else. It exists so a four-second note looks different
+   * from a forty-second one before anybody presses play.
+   */
+  peaks: number[];
 }
 
 export interface LinkPreview {
@@ -90,6 +129,13 @@ export interface Message {
    * reacting, editing, taking back — are simply not offered on those.
    */
   clientId?: string;
+  /**
+   * What this message answers, when it answers something.
+   *
+   * Resolved in Rust against what this device holds — the page cannot know
+   * whether the quoted message ever arrived here.
+   */
+  replyTo?: QuotedMessage;
   /**
    * Pinned **on this device**.
    *

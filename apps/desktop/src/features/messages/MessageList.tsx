@@ -34,8 +34,15 @@ import {
   saveAttachmentTo,
   type AttachmentEntry,
 } from "../../lib/conversations";
+import { Waveform } from "./Composer";
+import { formatDuration } from "./useRecorder";
 import { fieldFor, fileTone } from "../../lib/palette";
-import type { Attachment, Conversation, Message } from "../../lib/types";
+import type {
+  Attachment,
+  Conversation,
+  Message,
+  QuotedMessage,
+} from "../../lib/types";
 import { Avatar } from "../../components/ui/Avatar";
 import { HandleAvatar } from "../../components/ui/HandleAvatar";
 import { IconButton } from "../../components/ui/Button";
@@ -87,12 +94,15 @@ export function MessageList({
   now,
   conversation,
   onChanged,
+  onReply,
 }: {
   messages: Message[];
   now: Date;
   conversation: Conversation;
   /** Pinning or deleting changed the local store; reload from it. */
   onChanged?: () => void;
+  /** Start answering this message. The composer takes it from here. */
+  onReply?: (message: Message) => void;
 }) {
   const rows = buildRows(messages, now);
   const scroller = useRef<HTMLDivElement>(null);
@@ -128,6 +138,25 @@ export function MessageList({
   // is reached again, however they got there.
   const [missed, setMissed] = useState(0);
   const seen = useRef(count);
+
+  // Scrolling to a quoted message, and saying which one you landed on.
+  //
+  // The flash is not decoration: in a wall of similar-looking bubbles, arriving
+  // somewhere with no signal leaves you unsure whether anything happened. It is
+  // removed on a timer rather than by state so a second jump to the same
+  // message re-triggers it.
+  const jumpTo = useCallback((envelopeId: number) => {
+    const el = document.querySelector<HTMLElement>(
+      `[data-envelope-id="${envelopeId}"]`,
+    );
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.remove("quote-landed");
+    // Forces the class to be re-applied rather than coalesced away.
+    void el.offsetWidth;
+    el.classList.add("quote-landed");
+    window.setTimeout(() => el.classList.remove("quote-landed"), 1200);
+  }, []);
 
   const scrollToBottom = useCallback(() => {
     const el = scroller.current;
@@ -183,6 +212,8 @@ export function MessageList({
                 index={index}
                 conversation={conversation}
                 onOpenMedia={(id) => void openMedia(id)}
+                onReply={onReply}
+                onJumpTo={jumpTo}
                 onRevise={async (target, body) => {
                   await reviseMessage(conversation.id, target, body);
                   onChanged?.();
@@ -260,11 +291,87 @@ function DayDivider({ label }: { label: string }) {
   );
 }
 
+/**
+ * The quoted message above a reply.
+ *
+ * Three states, and they are genuinely different things to a reader: the
+ * message is here and can be jumped to, it was taken back, or this device never
+ * received it. The last is ordinary — somebody joined the conversation after
+ * the message being answered — so it says that rather than drawing a blank line
+ * that looks like a bug.
+ *
+ * Only the first is a button. A quote you cannot go to must not look like one
+ * you can.
+ */
+function QuoteBlock({
+  quote,
+  mine,
+  onJumpTo,
+}: {
+  quote: QuotedMessage;
+  mine: boolean;
+  onJumpTo: (envelopeId: number) => void;
+}) {
+  const label = quote.retracted
+    ? "This message was taken back"
+    : !quote.found
+      ? "Not on this device"
+      : quote.excerpt;
+
+  const body = (
+    <>
+      <span
+        aria-hidden
+        className={cn(
+          "w-[2px] shrink-0 self-stretch rounded-full",
+          quote.found && !quote.retracted ? "bg-accent-soft" : "bg-line-strong",
+        )}
+      />
+      <span className="min-w-0 flex-1 truncate text-left">
+        <span className="text-text-mid block text-[11px] font-medium">
+          {quote.outgoing ? "You" : "Them"}
+        </span>
+        <span
+          className={cn(
+            "block truncate text-[12px]",
+            quote.found && !quote.retracted
+              ? "text-text-lo"
+              : "text-text-lo italic",
+          )}
+        >
+          {label}
+        </span>
+      </span>
+    </>
+  );
+
+  const shell = cn(
+    "rounded-control bg-surface-3/60 mb-1 flex max-w-full items-stretch gap-2 px-2 py-1",
+    mine ? "ml-auto" : "mr-auto",
+  );
+
+  if (!quote.found || quote.envelopeId === undefined) {
+    return <span className={shell}>{body}</span>;
+  }
+  return (
+    <button
+      type="button"
+      className={cn(shell, "hover:bg-surface-3 cursor-pointer text-left")}
+      onClick={() => onJumpTo(quote.envelopeId as number)}
+      aria-label="Go to the message this answers"
+    >
+      {body}
+    </button>
+  );
+}
+
 function Bubble({
   row,
   index,
   conversation,
   onOpenMedia,
+  onReply,
+  onJumpTo,
   onPinnedChange,
   onDeleteForMe,
   onReact,
@@ -274,6 +381,8 @@ function Bubble({
   index: number;
   conversation: Conversation;
   onOpenMedia: (envelopeId: number) => void;
+  onReply?: ((message: Message) => void) | undefined;
+  onJumpTo: (envelopeId: number) => void;
   onPinnedChange: (envelopeId: number, pinned: boolean) => void | Promise<void>;
   onReact: (target: string, emoji: string, on: boolean) => void | Promise<void>;
   onRevise: (target: string, body?: string) => void | Promise<void>;
@@ -327,6 +436,7 @@ function Bubble({
         pinned: !!message.pinned,
       },
       {
+        reply: () => onReply?.(message),
         copy: () => void copyText(message.body),
         edit: () => setEditing(message.body),
         react: () => setPicking(true),
@@ -352,6 +462,9 @@ function Bubble({
       )}
       style={{ "--stagger": `${Math.min(index, 10) * 30}ms` } as CSSProperties}
       onContextMenu={onContextMenu}
+      // What a quote scrolls to. A queued message has a negative id, which is
+      // fine: it is unique, and nothing can be replying to it yet anyway.
+      data-envelope-id={message.id}
     >
       {menu}
       <span className="w-8 shrink-0">
@@ -404,6 +517,15 @@ function Bubble({
 
             <LinkPreviewCard message={message} />
 
+            {/*
+              Above the bubble rather than inside it: the quote is context for
+              the answer, not part of what was said. A retracted reply loses its
+              quote too -- what it was answering stops mattering once the answer
+              is gone.
+            */}
+            {message.replyTo && !message.retracted ? (
+              <QuoteBlock quote={message.replyTo} mine={mine} onJumpTo={onJumpTo} />
+            ) : null}
             {message.retracted ? (
               // The row is still here on purpose. Removing it would close the
               // gap where something used to be, which is not what being taken
@@ -784,12 +906,29 @@ function SoundRow({
           size={14}
           className="text-accent-soft shrink-0"
         />
-        <span className="text-text-hi min-w-0 flex-1 truncate text-[12px]">
-          {voice ? "Voice message" : attachment.name}
-        </span>
-        <span className="text-text-lo shrink-0 font-mono text-[11px]">
-          {fileSize(attachment.size)}
-        </span>
+        {/*
+          A recording carries its own waveform, so the row shows that instead of
+          a file name it was never given one worth reading -- `voice-1725…webm`
+          tells nobody anything. A sound file somebody attached keeps its name,
+          because they chose it.
+        */}
+        {attachment.voice ? (
+          <>
+            <Waveform peaks={attachment.voice.peaks} className="min-w-0 flex-1" />
+            <span className="text-text-lo shrink-0 font-mono text-[11px] tabular-nums">
+              {formatDuration(attachment.voice.durationMs)}
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="text-text-hi min-w-0 flex-1 truncate text-[12px]">
+              {voice ? "Voice message" : attachment.name}
+            </span>
+            <span className="text-text-lo shrink-0 font-mono text-[11px]">
+              {fileSize(attachment.size)}
+            </span>
+          </>
+        )}
       </span>
       {url ? (
         <audio

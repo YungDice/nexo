@@ -42,6 +42,7 @@ export interface MessageMenuState {
 
 /** What each entry does. Kept apart so the order can be tested without them. */
 export interface MessageMenuActions {
+  reply: () => void;
   copy: () => void;
   edit: () => void;
   react: () => void;
@@ -55,6 +56,16 @@ export function messageMenuItems(
   actions: MessageMenuActions,
 ): MenuItem[] {
   const items: MenuItem[] = [];
+
+  // First, because it is what somebody most often came to the menu for.
+  //
+  // Needs the name inside the ciphertext, like reacting does: a reply refers to
+  // its target by that name, so a message sent before names existed cannot be
+  // answered and the entry is absent rather than shown and refused. A retracted
+  // message is not offered either -- there is nothing left to answer.
+  if (state.clientId && !state.retracted && !state.queued) {
+    items.push({ label: "Reply", icon: "send", onSelect: actions.reply });
+  }
 
   if (state.hasBody) {
     items.push({ label: "Copy text", icon: "file", onSelect: actions.copy });

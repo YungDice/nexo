@@ -36,6 +36,22 @@ describe("attachmentKind", () => {
     }
   });
 
+  it("believes a sender who says they recorded it", () => {
+    // The whole reason the flag exists. A recorder writes WebM/Opus, which by
+    // MIME type alone is indistinguishable from a video clip somebody attached
+    // -- so the guess below gets it wrong, and the flag has to win.
+    expect(attachmentKind("audio/webm")).toBe("audio");
+    expect(attachmentKind("audio/webm", true)).toBe("voice");
+    expect(attachmentKind("video/webm", true)).toBe("voice");
+  });
+
+  it("still guesses for messages sent before the flag existed", () => {
+    // A v0.1.20 payload carries no `voice`, so the extension list is all there
+    // is. It stays the fallback rather than being dropped.
+    expect(attachmentKind("audio/wav", false)).toBe("voice");
+    expect(attachmentKind("audio/mpeg", false)).toBe("audio");
+  });
+
   it("treats the rest of sound as a track", () => {
     expect(attachmentKind("audio/mpeg")).toBe("audio");
     expect(attachmentKind("audio/mp4")).toBe("audio");

@@ -7,6 +7,7 @@ import {
 } from "./menu";
 
 const actions: MessageMenuActions = {
+  reply: vi.fn(),
   copy: vi.fn(),
   edit: vi.fn(),
   react: vi.fn(),
@@ -40,6 +41,7 @@ const labels = (state: Partial<MessageMenuState>) =>
 describe("messageMenuItems", () => {
   it("ends with the two deletions, least reaching first", () => {
     expect(labels({})).toEqual([
+      "Reply",
       "Copy text",
       "Edit",
       "React",
@@ -47,6 +49,26 @@ describe("messageMenuItems", () => {
       "Delete for me",
       "Delete for everyone",
     ]);
+  });
+
+  it("offers Reply first, because that is what the menu is usually for", () => {
+    expect(labels({})[0]).toBe("Reply");
+  });
+
+  it("cannot reply to a message with no name to refer to", () => {
+    // A reply names its target the way an edit does. Sent before names
+    // existed, there is nothing to point at -- absent, not shown and refused.
+    expect(labels({ clientId: undefined })).not.toContain("Reply");
+  });
+
+  it("cannot reply to a message that was taken back", () => {
+    expect(labels({ retracted: true })).not.toContain("Reply");
+  });
+
+  it("cannot reply to a message still in the outbox", () => {
+    // Nobody has seen it, so nobody is answering it -- and its own name is
+    // not yet anywhere the other side could resolve.
+    expect(labels({ queued: true })).not.toContain("Reply");
   });
 
   it("keeps them last when there is nothing to copy", () => {

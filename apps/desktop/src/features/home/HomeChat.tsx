@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { useApp } from "../../app/store";
+import type { Message } from "../../lib/types";
 import { useConversations } from "../../app/useConversations";
 import { cn } from "../../lib/cn";
 import { ConversationAvatar } from "../../components/ui/ConversationAvatar";
@@ -106,6 +107,11 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
   // chose that one and it stays until they choose otherwise.
   const [chosenId, setChosenId] = useState<string | undefined>(undefined);
   const live = useConversations(shownId);
+  // Cleared when the shown conversation changes: this pane slides between
+  // conversations, and a reply aimed at a message in one must not follow you
+  // into another where its target does not exist.
+  const [replyingTo, setReplyingTo] = useState<Message | undefined>(undefined);
+  useEffect(() => setReplyingTo(undefined), [shownId]);
   const newest = live.conversations[0];
   const following = chosenId === undefined;
 
@@ -254,6 +260,7 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
             now={now}
             conversation={{ ...conversation, ...overrides[conversation.id] }}
             onChanged={() => void live.refresh()}
+            onReply={setReplyingTo}
           />
 
           <Composer
@@ -261,8 +268,21 @@ export function HomeChat({ now, width }: { now: Date; width: string }) {
             onSend={(body, attachment) => {
               if (attachment)
                 void live.sendFile(attachment.path, body || undefined);
-              else void live.send(body);
+              else if (replyingTo?.clientId) {
+                void live.sendReply(body, replyingTo.clientId);
+                setReplyingTo(undefined);
+              } else void live.send(body);
             }}
+            onSendVoice={(recording) => void live.sendVoice(recording)}
+            replyingTo={
+              replyingTo
+                ? {
+                    excerpt: replyingTo.body,
+                    outgoing: replyingTo.authorId === "me",
+                  }
+                : undefined
+            }
+            onCancelReply={() => setReplyingTo(undefined)}
           />
         </>
       ) : (

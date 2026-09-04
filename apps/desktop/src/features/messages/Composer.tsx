@@ -3,6 +3,7 @@ import { IconButton } from "../../components/ui/Button";
 import { EmojiPicker } from "../../components/ui/EmojiPicker";
 import { Icon } from "../../components/ui/Icon";
 import { pickFile, type PickedFile } from "../../lib/native";
+import { formatDuration, useRecorder, type Recording } from "./useRecorder";
 
 
 /**
@@ -12,15 +13,23 @@ import { pickFile, type PickedFile } from "../../lib/native";
  * roughly six lines before it scrolls. It sits on the pane behind a single
  * hairline rather than inside a bordered card: the composer is the floor of
  * the conversation, not a widget parked on top of it. The attachment button
- * opens the real Explorer file picker; emoji and voice are still labelled but
- * inert until the milestones that give them something to do — a control that
- * lies about being ready is worse than one that is visibly not.
+ * opens the real Explorer file picker, and the microphone records — while it is
+ * running the row becomes the recorder, because a timer and a waveform beside a
+ * text box you cannot type in anyway is two controls pretending to be
+ * available.
  */
 export function Composer({
   onSend,
+  onSendVoice,
+  replyingTo,
+  onCancelReply,
   conversationTitle,
 }: {
   onSend: (body: string, attachment?: PickedFile) => void;
+  onSendVoice: (recording: Recording) => void;
+  /** The message being answered, when one is. */
+  replyingTo?: { excerpt: string; outgoing: boolean } | undefined;
+  onCancelReply?: (() => void) | undefined;
   conversationTitle: string;
 }) {
   const [value, setValue] = useState("");
@@ -28,6 +37,7 @@ export function Composer({
   const [emojiOpen, setEmojiOpen] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
   const emojiWrap = useRef<HTMLDivElement>(null);
+  const recorder = useRecorder();
 
   useEffect(() => {
     const el = box.current;
@@ -58,8 +68,39 @@ export function Composer({
     if (picked) setAttachment(picked);
   };
 
+  const finishRecording = async () => {
+    const recording = await recorder.stop();
+    // `null` means the button was tapped rather than held: nothing was said,
+    // so nothing is sent.
+    if (recording) onSendVoice(recording);
+  };
+
   return (
     <div className="shrink-0 border-t border-[var(--hairline)] px-3 py-2">
+      {replyingTo ? (
+        <div className="rounded-control bg-fill mb-1.5 flex items-stretch gap-2 px-2.5 py-1.5">
+          <span
+            aria-hidden
+            className="bg-accent-soft w-[2px] shrink-0 rounded-full"
+          />
+          <span className="min-w-0 flex-1">
+            <span className="text-text-mid block text-[11px] font-medium">
+              Replying to {replyingTo.outgoing ? "yourself" : "them"}
+            </span>
+            <span className="text-text-lo block truncate text-meta">
+              {replyingTo.excerpt || "a message"}
+            </span>
+          </span>
+          <button
+            type="button"
+            aria-label="Stop replying"
+            onClick={onCancelReply}
+            className="text-text-lo hover:text-text-hi shrink-0 self-center"
+          >
+            <Icon name="close" size={13} />
+          </button>
+        </div>
+      ) : null}
       {attachment ? (
         <div className="rounded-control bg-fill mb-1.5 flex items-center gap-2 px-2.5 py-1.5 text-meta">
           <Icon name="paperclip" size={14} className="text-text-lo shrink-0" />
@@ -74,6 +115,42 @@ export function Composer({
           </button>
         </div>
       ) : null}
+      {recorder.state === "denied" ? (
+        <div className="rounded-control bg-fill text-text-lo mb-1.5 flex items-center gap-2 px-2.5 py-1.5 text-meta">
+          <Icon name="mic" size={14} className="shrink-0" />
+          <span className="min-w-0 flex-1">
+            Nexo cannot reach a microphone. Check Windows privacy settings for
+            this app, then try again.
+          </span>
+        </div>
+      ) : null}
+      {recorder.state === "recording" ? (
+        // The whole row, not a badge beside the text box: while this runs the
+        // text box does nothing, and leaving it there invites typing into it.
+        <div className="flex items-center gap-1.5">
+          <IconButton
+            name="trash"
+            label="Discard this recording"
+            onClick={recorder.cancel}
+          />
+          <div className="rounded-control bg-fill flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-2">
+            <span
+              aria-hidden
+              className="size-2 shrink-0 rounded-full bg-[var(--danger)] motion-safe:animate-pulse"
+            />
+            <span className="text-text-hi shrink-0 font-mono text-meta tabular-nums">
+              {formatDuration(recorder.elapsedMs)}
+            </span>
+            <Waveform peaks={recorder.peaks} className="min-w-0 flex-1" />
+          </div>
+          <IconButton
+            name="send"
+            label="Send this recording"
+            variant="primary"
+            onClick={() => void finishRecording()}
+          />
+        </div>
+      ) : (
       <div className="flex items-end gap-1.5">
         <IconButton
           name="paperclip"
@@ -117,14 +194,63 @@ export function Composer({
             </div>
           ) : null}
         </div>
-        <IconButton
-          name="send"
-          label="Send message"
-          variant="primary"
-          disabled={value.trim().length === 0 && !attachment}
-          onClick={send}
-        />
+        {/*
+          The microphone gives way to Send as soon as there is anything to
+          send. Two primary-looking actions side by side is a choice nobody
+          asked for, and the one you want is never ambiguous: an empty box
+          means a recording, a full one means a message.
+        */}
+        {value.trim().length === 0 && !attachment ? (
+          <IconButton
+            name="mic"
+            label="Record a voice message"
+            disabled={recorder.state === "asking"}
+            onClick={() => void recorder.start()}
+          />
+        ) : (
+          <IconButton
+            name="send"
+            label="Send message"
+            variant="primary"
+            onClick={send}
+          />
+        )}
       </div>
+      )}
     </div>
+  );
+}
+
+/**
+ * The bars a recording is drawn as.
+ *
+ * One flex row of rounded slivers rather than a canvas or an SVG path: there
+ * are at most sixty-four of them, they need no anti-aliasing, and this way they
+ * take their colour from the same tokens as everything around them instead of
+ * carrying their own.
+ *
+ * A bar is never drawn at zero height — a silent moment is a dot on the line,
+ * not a gap in it, and a gap reads as the recording having stopped.
+ */
+export function Waveform({
+  peaks,
+  className = "",
+}: {
+  peaks: number[];
+  className?: string;
+}) {
+  return (
+    <span
+      aria-hidden
+      className={`flex h-6 items-center gap-[2px] overflow-hidden ${className}`}
+    >
+      {peaks.map((peak, index) => (
+        <span
+          key={index}
+          className="bg-text-lo w-[2px] shrink-0 rounded-full"
+          style={{ height: `${Math.max(10, (peak / 255) * 100)}%` }}
+        />
+      ))}
+    </span>
   );
 }

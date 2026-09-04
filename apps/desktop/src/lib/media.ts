@@ -15,8 +15,16 @@ import type { Attachment } from "./types";
  * A type this does not recognise is a file. There is no "probably audio"
  * branch, because a file row is a working answer for anything -- it saves and
  * opens elsewhere -- while a player that cannot play is a dead control.
+ *
+ * `recorded` is the sender saying they made this, which ends the guessing. It
+ * is checked before the MIME type because the recorder writes WebM/Opus, and
+ * that is indistinguishable by type from a video clip somebody attached.
  */
-export function attachmentKind(mime: string): Attachment["kind"] {
+export function attachmentKind(
+  mime: string,
+  recorded = false,
+): Attachment["kind"] {
+  if (recorded) return "voice";
   const type = mime.toLowerCase();
   if (type.startsWith("image/")) return "image";
   if (type.startsWith("video/")) return "video";
@@ -33,10 +41,10 @@ export function attachmentKind(mime: string): Attachment["kind"] {
  * than it is music somebody chose to send. Everything else with sound in it --
  * mp3, m4a, ogg -- is a track, and gets the ordinary player with a scrubber.
  *
- * A reading of what arrives, not a fact about it. The app has no recorder yet,
- * so nothing here produced these files and nothing marked them; when there is
- * one, what it records should be flagged in the payload and this list becomes
- * the fallback for everything else.
+ * A reading of what arrives, not a fact about it -- and now only the fallback.
+ * Since v0.1.21 a recording carries `voice` in its payload and says what it is,
+ * so this list answers for messages sent before that and for files somebody
+ * picked by hand.
  */
 const VOICE_TYPES = new Set([
   "audio/wav",

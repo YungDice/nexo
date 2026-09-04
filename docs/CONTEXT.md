@@ -125,13 +125,13 @@ without a regenerated `.sqlx` breaks an offline build — see
 
 ### Desktop shell (`apps/desktop/src-tauri/src`)
 
-92 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
+94 `#[tauri::command]` functions, the whole IPC surface. Rule 2 lives here: what
 crosses into the WebView is already decrypted, and nothing else does.
 
 | File | Commands | Owns |
 |---|---|---|
 | `feed.rs` (750 ln) | 23 | Posts, comments, votes, reactions. |
-| `conversations.rs` | 26 | Messaging, attachments, reactions, pinning, local delete, edit and retract. |
+| `conversations.rs` | 28 | Messaging, replies, attachments, voice messages, reactions, pinning, local delete, edit and retract. |
 | `commands.rs` | 15 | Profile, settings, misc. |
 | `auth.rs` (665 ln) | 11 | Register, login, lock, PIN, delete the account. |
 | `meet.rs` | 17 | Meet&Greet: the map, the pin, intros, reporting, search, invitations, stories. |
@@ -248,7 +248,8 @@ Read cost matters. Sizes are approximate and current.
 | [`PIN-ROTATION.md`](PIN-ROTATION.md) | 3 KB | Exactly what the PIN does and does not buy. |
 | [`SIGNAL-ANALYSIS.md`](SIGNAL-ANALYSIS.md) | 10 KB | Why MLS and not the Signal protocol. |
 | [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | 10 KB | What must ship beside the `.exe`. |
-| [`README.md`](../README.md) | 12 KB | Setup, prerequisites, troubleshooting. For humans on a new machine. |
+| [`README.md`](../README.md) | 5 KB | What Nexo is, who it is for, what it does and does not protect. No build steps. |
+| [`DEVELOPMENT.md`](DEVELOPMENT.md) | 8 KB | Setup, prerequisites, commands, troubleshooting. For humans on a new machine. |
 | [`THREAT-MODEL.md`](THREAT-MODEL.md) | 17 KB | Adversaries in and out of scope; what is deliberately not protected. |
 | [`TUTORIAL.md`](TUTORIAL.md) | 18 KB | Every value you personally have to supply: accounts, costs, domains, secrets — and which of them block you today. |
 | [`OPS.md`](OPS.md) | 19 KB | The Hetzner runbook. Deploy, TLS, backups, incidents. |
@@ -269,6 +270,15 @@ move.
 
 - **Pinned dependencies, everywhere.** `=1.0.229`, not `^1.0`. Rule 8. A bump is
   a deliberate act that goes through `cargo deny` and `cargo audit`.
+- **A new kind of media needs a CSP directive, and fails silently without one.**
+  The CSP in `tauri.conf.json` is the whole policy: Tauri appends script and
+  style hashes to it and touches nothing else, so an absent directive falls back
+  to `default-src 'self'` and the content is refused with no error the app can
+  see. This cost v0.1.19 and v0.1.20 all media playback — `img-src` listed
+  `data:` so pictures worked, `media-src` was missing so no `<video>` or
+  `<audio>` ever loaded, and the bug was invisible to every test. Adding a
+  player, a font source or a worker means adding its directive in the same
+  change.
 - **The local store's schema version is one constant.**
   `crates/store/src/lib.rs` `SCHEMA_VERSION` and the last `PRAGMA
   user_version` in `migrate()` must agree; a test fails if they drift. Add a
